@@ -45,3 +45,10 @@ sequenceDiagram
     end
 ```
 
+
+<h3>3. Post order logistic handling</h3>
+<h3>4. Inventory management</h3>
+<h3>5. Product recommendation/advertisement</h3>
+<h3>6. Business data analysis and insight</h3>
+<h3>7. Product review</h3>
+<h3>8. Customer feedback</h3>
