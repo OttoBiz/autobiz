@@ -8,7 +8,7 @@ session = Session()
 fake = Faker()
 
 
-    # Populate the database with dummy data
+# Populate the database with dummy data
 def create_dummy_businesses(num_businesses):
     businesses = []
     for _ in range(num_businesses):
@@ -23,7 +23,7 @@ def create_dummy_businesses(num_businesses):
             phone_number=fake.phone_number()[:15],
             business_description=fake.text()[:15],
             business_niche=fake.word()[:15],
-            business_type=random.choice(['logistics', 'vendor']),
+            business_type=random.choice(['logistics', 'vendor', 'service']),
         )
         businesses.append(business)
     return businesses

@@ -1,0 +1,21 @@
+Product,Description,Price,Available amount,Product category,Date created,Date modified
+Lipstick,Matte red lipstick,10.99,50,Lipstick,2024-06-05 09:00:00,2024-06-05 09:00:00
+Foundation,Medium coverage foundation,15.99,30,Makeup,2024-06-05 09:05:00,2024-06-05 09:05:00
+Perfume,"Eau de Parfum, floral scent",29.99,20,Perfume,2024-06-05 09:10:00,2024-06-05 09:10:00
+Eyeshadow palette,"12-color eyeshadow palette",19.99,25,Eyeshadow,2024-06-05 09:15:00,2024-06-05 09:15:00
+Mascara,Lengthening mascara,12.99,40,Mascara,2024-06-05 09:20:00,2024-06-05 09:20:00
+Face cream,"Hydrating face cream, SPF 30",24.99,35,Skincare,2024-06-05 09:25:00,2024-06-05 09:25:00
+Nail polish,Red nail polish,7.99,60,Nail polish,2024-06-05 09:30:00,2024-06-05 09:30:00
+Shampoo,Gentle daily shampoo,9.99,55,Haircare,2024-06-05 09:35:00,2024-06-05 09:35:00
+Conditioner,Moisturizing conditioner,11.99,50,Haircare,2024-06-05 09:40:00,2024-06-05 09:40:00
+Blush,"Peachy blush, matte finish",8.99,45,Makeup,2024-06-05 09:45:00,2024-06-05 09:45:00
+Lip gloss,Shiny lip gloss,6.99,55,Lip gloss,2024-06-05 09:50:00,2024-06-05 09:50:00
+Eyeliner,Precision eyeliner,9.99,30,Eyeliner,2024-06-05 09:55:00,2024-06-05 09:55:00
+Face mask,"Detoxifying charcoal face mask",12.99,40,Skincare,2024-06-05 10:00:00,2024-06-05 10:00:00
+Body lotion,Hydrating body lotion,14.99,25,Body care,2024-06-05 10:05:00,2024-06-05 10:05:00
+Face serum,Anti-aging face serum,29.99,20,Skincare,2024-06-05 10:10:00,2024-06-05 10:10:00
+Bronzer,"Matte bronzer, sun-kissed glow",11.99,35,Makeup,2024-06-05 10:15:00,2024-06-05 10:15:00
+Hair spray,"Strong hold hair spray",8.99,40,Haircare,2024-06-05 10:20:00,2024-06-05 10:20:00
+Face primer,"Pore-minimizing face primer",17.99,30,Makeup,2024-06-05 10:25:00,2024-06-05 10:25:00
+Body wash,Gentle body wash,10.99,45,Body care,2024-06-05 10:30:00,2024-06-05 10:30:00
+Toner,"Balancing facial toner",13.99,30,Skincare,2024-06-05 10:35:00,2024-06-05 10:35:00
