@@ -1,78 +1,109 @@
-import random
-from db import Business, Product, Transaction, engine
-from faker import Faker
+from datetime import datetime
+import uuid
+
+import pandas as pd
+from schemas import Business, Product, Transaction, engine
 from sqlalchemy.orm import sessionmaker
 
 Session = sessionmaker(bind=engine)
 session = Session()
-fake = Faker()
+
+Session = sessionmaker(bind=engine)
 
 
-# Populate the database with dummy data
-def create_dummy_businesses(num_businesses):
-    businesses = []
-    for _ in range(num_businesses):
-        business = Business(
-            business_name=fake.company()[:15],
-            ig_page=fake.url()[:15],
-            facebook_page=fake.url()[:15],
-            twitter_page=fake.url()[:15],
-            email=fake.email()[:15],
-            tiktok=fake.url()[:15],
-            website=fake.url()[:15],
-            phone_number=fake.phone_number()[:15],
-            business_description=fake.text()[:15],
-            business_niche=fake.word()[:15],
-            business_type=random.choice(['logistics', 'vendor', 'service']),
-        )
-        businesses.append(business)
-    return businesses
+def load_csv_to_db(csv_file_path, table_name):
+    df = pd.read_csv(csv_file_path)
+    df = df.fillna("")
+    df = df.astype(str)
 
-def create_dummy_products(businesses, num_products):
-    products = []
-    for business in businesses:
-        for _ in range(num_products):
-            product = Product(
-                business_id=business.id,
-                product_name=fake.word()[:30],
-                product_description=fake.text(),
-                product_category=fake.word()[:30],
-                price=round(random.uniform(10.0, 1000.0), 2),
-                items_in_stock=random.randint(1, 100),
-                tags=', '.join(fake.words(nb=3)),
-            )
-            products.append(product)
-    return products
+    session = Session()
 
-def create_dummy_transactions(products, num_transactions):
-    transactions = []
-    for _ in range(num_transactions):
-        product = random.choice(products)
-        transaction = Transaction(
-            product_id=product.id,
-            product_desc=product.product_description,
-            business_id=product.business_id,
-            payment_status=random.choice(['pending', 'verified']),
-            price=product.price,
-            item_category=product.product_category,
-            items_bought=random.randint(1, 10),
-            bot_marketed=fake.boolean(),
-        )
-        transactions.append(transaction)
-    return transactions
+    try:
+        if table_name == "businesses":
+            for index, row in df.iterrows():
+                print(row)  # Print each row for debugging
+                business = Business(
+                    business_name=str(row["business name"]),
+                    ig_page=str(row.get("ig page", "")),
+                    facebook_page=str(row.get("facebook page", "")),
+                    twitter_page=str(row.get("twitter page", "")),
+                    email=str(row["email"]),
+                    tiktok=str(row.get("tiktok", "")),
+                    website=str(row.get("website", "")),
+                    phone_number=str(row.get("phone number", "")),
+                    business_description=str(row.get("business description", "")),
+                    business_niche=str(row.get("business niche", "")),
+                    business_type=str(row.get("type", "")),
+                    date_created=(
+                        datetime.strptime(row["date created"], "%Y-%m-%d")
+                        if "date created" in row and row["date created"]
+                        else datetime.now()
+                    ),
+                )
+                session.add(business)
 
-def populate_database(num_businesses=10, num_products_per_business=10, num_transactions=50):
-    businesses = create_dummy_businesses(num_businesses)
-    session.add_all(businesses)
-    session.commit()
+        elif table_name == "products":
+            for index, row in df.iterrows():
+                print(row)  # Print each row for debugging
+                product = Product(
+                    business_id=row["id"],
+                    product_name=row["Product"],
+                    product_description=row["Description"],
+                    product_category=row["Product category"],
+                    price=float(row["Price"]),
+                    items_in_stock=int(row["Available amount"]),
+                    date_created=(
+                        datetime.strptime(row["Date created"], "%Y-%m-%d")
+                        if row["Date created"]
+                        else datetime.now()
+                    ),
+                    date_modified=(
+                        datetime.strptime(row["Date modified"], "%Y-%m-%d")
+                        if row["Date modified"]
+                        else datetime.now()
+                    ),
+                )
+                session.add(product)
 
-    products = create_dummy_products(businesses, num_products_per_business)
-    session.add_all(products)
-    session.commit()
+        elif table_name == "transactions":
+            for index, row in df.iterrows():
+                transaction = Transaction(
+                    product_id=row["product_id"],
+                    product_desc=row.get("product_desc"),
+                    business_id=row["business_id"],
+                    payment_status=row["payment_status"],
+                    price=row["price"],
+                    item_category=row.get("item_category"),
+                    items_bought=row["items_bought"],
+                    bot_marketed=row.get("bot_marketed", False),
+                    date=(
+                        datetime.strptime(row["date"], "%Y-%m-%d %H:%M:%S")
+                        if "date" in row
+                        else datetime.now()
+                    ),
+                    time=(
+                        datetime.strptime(row["time"], "%Y-%m-%d %H:%M:%S")
+                        if "time" in row
+                        else datetime.now()
+                    ),
+                )
+                session.add(transaction)
 
-    transactions = create_dummy_transactions(products, num_transactions)
-    session.add_all(transactions)
-    session.commit()
+        # Commit the transaction
+        session.commit()
+
+    except Exception as e:
+        # Rollback the transaction in case of an error
+        session.rollback()
+        print(f"An error occurred: {e}")
+
+    finally:
+        # Close the session
+        session.close()
+
 
 if __name__ == "__main__":
-    populate_database()
+    load_csv_to_db("/workspaces/autobiz/dummy_data/Business_table.csv", "businesses")
+    load_csv_to_db("/workspaces/autobiz/dummy_data/donrey_fashion.csv", "products")
+    load_csv_to_db("/workspaces/autobiz/dummy_data/junae_cosmetics.csv", "products")
+    load_csv_to_db("/workspaces/autobiz/dummy_data/manny_gadgets.csv", "products")
