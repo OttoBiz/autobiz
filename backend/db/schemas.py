@@ -1,6 +1,15 @@
 import os
 
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, ForeignKey, DateTime
+from sqlalchemy import (
+    create_engine,
+    Column,
+    Integer,
+    String,
+    Float,
+    Boolean,
+    ForeignKey,
+    DateTime,
+)
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -15,8 +24,9 @@ engine = create_engine(DB_URL)
 
 Base = declarative_base()
 
+
 class Business(Base):
-    __tablename__ = 'businesses'
+    __tablename__ = "businesses"
     id = Column(Integer, primary_key=True)
     business_name = Column(String(100), nullable=False)
     ig_page = Column(String(100))
@@ -31,13 +41,14 @@ class Business(Base):
     business_type = Column(String(50))  # Could be 'logistics' or 'vendor'
     date_created = Column(DateTime, default=datetime.now)
 
-    products = relationship('Product', back_populates='business')
-    transactions = relationship('Transaction', back_populates='business')
+    products = relationship("Product", back_populates="business")
+    transactions = relationship("Transaction", back_populates="business")
+
 
 class Product(Base):
-    __tablename__ = 'products'
+    __tablename__ = "products"
     id = Column(Integer, primary_key=True)
-    business_id = Column(Integer, ForeignKey('businesses.id'), nullable=False)
+    business_id = Column(Integer, ForeignKey("businesses.id"), nullable=False)
     product_name = Column(String(100), nullable=False)
     product_description = Column(String(500))
     product_category = Column(String(100))
@@ -47,14 +58,15 @@ class Product(Base):
     date_created = Column(DateTime, default=datetime.now)
     date_modified = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
-    business = relationship('Business', back_populates='products')
+    business = relationship("Business", back_populates="products")
+
 
 class Transaction(Base):
-    __tablename__ = 'transactions'
+    __tablename__ = "transactions"
     id = Column(Integer, primary_key=True)
-    product_id = Column(Integer, ForeignKey('products.id'), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
     product_desc = Column(String(500))
-    business_id = Column(Integer, ForeignKey('businesses.id'), nullable=False)
+    business_id = Column(Integer, ForeignKey("businesses.id"), nullable=False)
     payment_status = Column(String(50))  # Could be 'pending' or 'verified'
     price = Column(Float, nullable=False)
     item_category = Column(String(100))
@@ -63,8 +75,9 @@ class Transaction(Base):
     date = Column(DateTime, default=datetime.now)
     time = Column(DateTime, default=datetime.now)
 
-    product = relationship('Product')
-    business = relationship('Business', back_populates='transactions')
+    product = relationship("Product")
+    business = relationship("Business", back_populates="transactions")
+
 
 # Create all tables in the engine
 Base.metadata.create_all(engine)
