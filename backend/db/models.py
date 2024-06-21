@@ -60,6 +60,20 @@ class Product(Base):
 
     business = relationship("Business", back_populates="products")
 
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "business_id": self.business_id,
+            "product_name": self.product_name,
+            "product_description": self.product_description,
+            "product_category": self.product_category,
+            "price": self.price,
+            "items_in_stock": self.items_in_stock,
+            "tags": self.tags,
+            "date_created": self.date_created.isoformat(),
+            "date_modified": self.date_modified.isoformat(),
+        }
+
 
 class Transaction(Base):
     __tablename__ = "transactions"
