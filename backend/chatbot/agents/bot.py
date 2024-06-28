@@ -9,7 +9,6 @@ from .function_args_schema import arg_schema
 from dotenv import load_dotenv
 from langchain.output_parsers.openai_functions import JsonOutputFunctionsParser
 from .product_agent import run_product_agent
-from .payment_verification_agent import run_question_generator_agent
 import json
 
 import os
