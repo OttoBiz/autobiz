@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  web:
+    build:
+      context: ../..
+      dockerfile: docker/dev/Dockerfile
+    volumes:
+      - ../../backend:/app/backend
+      - ../../main.py:/app/main.py
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://dev_user:dev_password@db:5432/dev_db
+    depends_on:
+      - db
+
+  db:
+    image: postgres:13-alpine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=dev_user
+      - POSTGRES_PASSWORD=dev_password
+      - POSTGRES_DB=dev_db
+
+volumes:
+  postgres_data:
