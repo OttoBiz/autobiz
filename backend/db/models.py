@@ -17,7 +17,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DB_URL = os.getenv("DB_URL")
+
+DB_URL = f"postgresql+psycopg2://{os.getenv('DATABASE_USERNAME')}:{os.getenv('DATABASE_PASSWORD')}@{os.getenv('DATABASE_HOST')}:5432/{os.getenv('DATABASE_NAME')}"
+
 
 # Replace with your actual database connection details
 engine = create_engine(DB_URL)
