@@ -1,6 +1,6 @@
 from sqlalchemy import or_
 from sqlalchemy.orm import sessionmaker
-from models import Product, engine
+from .models import Product, engine
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
