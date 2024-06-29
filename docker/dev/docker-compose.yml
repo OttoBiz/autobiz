@@ -10,7 +10,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://${DATABASE_USERNAME}:${DATABASE_PASSWORD}@db:5432/${DATABASE_NAME}
+      - DATABASE_URL=postgresql://${DATABASE_USERNAME}:${DATABASE_PASSWORD}@${DATABASE_HOST}:5432/${DATABASE_NAME}
     depends_on:
       - db
 
@@ -22,6 +22,7 @@ services:
       - POSTGRES_USER=${DATABASE_USERNAME}
       - POSTGRES_PASSWORD=${DATABASE_PASSWORD}
       - POSTGRES_DB=${DATABASE_NAME}
+      - POSTGRES_HOST=${DATABASE_HOST}
 
 volumes:
   postgres_data:
