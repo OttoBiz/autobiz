@@ -10,19 +10,21 @@ from sqlalchemy import (
     ForeignKey,
     DateTime,
 )
-from sqlalchemy.orm import declarative_base
+from sqlalchemy.dialects.postgresql import UUID
+# from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
 from datetime import datetime
 from dotenv import load_dotenv
-
+from .database import Base, engine
 load_dotenv()
 
-DB_URL = os.getenv("DB_URL")
+# DB_URL = os.getenv("DB_URL")
 
-# Replace with your actual database connection details
-engine = create_engine(DB_URL)
+# # Replace with your actual database connection details
+# engine = create_engine(DB_URL)
 
-Base = declarative_base()
+# Base = declarative_base()
 
 
 class Business(Base):
@@ -91,6 +93,18 @@ class Transaction(Base):
 
     product = relationship("Product")
     business = relationship("Business", back_populates="transactions")
+
+class Chat(Base):
+    __tablename__ = 'chats'
+    id = Column(UUID(as_uuid=True), primary_key=True)
+    from_user_id = Column(UUID(as_uuid=True), ForeignKey('users.id'))
+    to_user_id = Column(UUID(as_uuid=True), ForeignKey('users.id'))
+    session_id = Column(String(64))
+    chat_type = Column('type', String(20))
+    content = Column(String)
+    last_updated = Column(DateTime(timezone=True), onupdate=func.now())
+    read = Column(Boolean, default=False)
+    datetime_created = Column(DateTime(timezone=True), server_default=func.now())
 
 
 # Create all tables in the engine

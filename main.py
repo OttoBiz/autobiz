@@ -9,9 +9,14 @@ from backend.chatbot import *
 from dotenv import load_dotenv
 from backend.struct import *
 from backend.chatbot.agents.bot import chat
-
+import logging
+import os
 
 load_dotenv()
+LOG_FILE = os.getenv("LOG_FILE")
+logging.basicConfig(filename=LOG_FILE, level=logging.WARNING,
+                    format='%(asctime)s [%(levelname)s]: %(message)s')
+
 
 # Create an instance of FastAPI
 app = FastAPI()

@@ -1,7 +1,8 @@
 from datetime import datetime
 
 import pandas as pd
-from backend.db.models import Business, Product, Transaction, engine
+from backend.db.models import Business, Product, Transaction
+from backend.db.database import engine
 from sqlalchemy.orm import sessionmaker
 
 Session = sessionmaker(bind=engine)

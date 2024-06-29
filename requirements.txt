@@ -3,3 +3,10 @@ sqlalchemy==2.0.30
 python-dotenv==1.0.1
 faker==25.3.0
 pydantic==2.7.4
+langchain
+langchain_core
+langchain_community
+fastapi==0.104.1
+langchain-openai
+uvicorn==0.30.1
+redis==5.0.6
