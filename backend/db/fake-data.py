@@ -102,7 +102,7 @@ def load_csv_to_db(csv_file_path, table_name):
 
 
 if __name__ == "__main__":
-    load_csv_to_db("../../dummy_data/Business_table.csv", "businesses")
-    load_csv_to_db("../../dummy_data/donrey_fashion.csv", "products")
-    load_csv_to_db("../../dummy_data/junae_cosmetics.csv", "products")
-    load_csv_to_db("../../dummy_data/manny_gadgets.csv", "products")
+    load_csv_to_db("./dummy_data/Business_table.csv", "businesses")
+    load_csv_to_db("./dummy_data/donrey_fashion.csv", "products")
+    load_csv_to_db("./dummy_data/junae_cosmetics.csv", "products")
+    load_csv_to_db("./dummy_data/manny_gadgets.csv", "products")
