@@ -13,6 +13,7 @@ services:
       - DATABASE_URL=postgresql://${DATABASE_USERNAME}:${DATABASE_PASSWORD}@${DATABASE_HOST}:5432/${DATABASE_NAME}
     depends_on:
       - db
+      - redis
 
   db:
     image: postgres:13-alpine
@@ -23,6 +24,18 @@ services:
       - POSTGRES_PASSWORD=${DATABASE_PASSWORD}
       - POSTGRES_DB=${DATABASE_NAME}
       - POSTGRES_HOST=${DATABASE_HOST}
+
+  redis:
+    image: redis:7.2.2-alpine
+    restart: always
+    container_name: redis
+    command: redis-server --save 20 1 --loglevel warning --requirepass eYVX7EwVmmxKPCDmwMtyKVge8oLd2t81
+    ports:
+      - "6379:6379"
+    env_file:
+      - .env
+    volumes:
+      - ./docker/redis/data:/data
 
 volumes:
   postgres_data:
