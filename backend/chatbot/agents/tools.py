@@ -1,15 +1,10 @@
 
-import os
 from langchain_core.tools import tool
 from .function_args_schema import *   
-from langchain_community.utilities.tavily_search import TavilySearchAPIWrapper
+from langchain.utilities.tavily_search import TavilySearchAPIWrapper
 from langchain_openai import ChatOpenAI
-from langchain_community.tools.tavily_search import TavilySearchResults
-from dotenv import load_dotenv
-
-load_dotenv()
-
-os.environ['OPENAI_API_KEY'] = os.getenv('OPENAI_API_KEY')
+# from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_community.utilities.tavily_search import TavilySearchAPIWrapper
 
 llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0, streaming=True)
 
