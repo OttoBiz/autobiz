@@ -1,16 +1,14 @@
 from sqlalchemy import or_
-# from sqlalchemy.orm import sessionmaker
-from .models import Product #, engine
-from .database import engine, Base, get_db 
+from .models import Product
+from .database import engine, Base, get_db
 from typing import List
 
 
-# SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
 Base.metadata.create_all(bind=engine)
 
-## POSTGRES DATABASE FUNCTIONS      
-  
+## POSTGRES DATABASE FUNCTIONS
+
+
 async def get_products(
     name: str = None,
     category: str = None,
@@ -18,7 +16,6 @@ async def get_products(
     max_price: float = None,
 ):
     with get_db() as db:
-    # db = get_db() #SessionLocal()
         products_query = db.query(Product)
 
         if name:

@@ -10,6 +10,7 @@ from .config import (
     DATABASE_NAME
 )
 
+
 SQLALCHEMY_DATABASE_URL = f"postgresql://{DATABASE_USERNAME}:{DATABASE_PASSWORD}@{DATABASE_HOST}/{DATABASE_NAME}"
 
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
