@@ -163,3 +163,4 @@ docker
 init-user-db.sh
 log.txt
 app.log
+docker/postgres
