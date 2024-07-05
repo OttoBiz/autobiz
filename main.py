@@ -3,9 +3,6 @@ import uvicorn
 from fastapi import FastAPI #, Depends
 
 from backend.chatbot import *
-# from backend.chatbot.utils import generate_qa
-# from backend.chatbot.prompts.prompt import q_a_prompt
-
 from dotenv import load_dotenv
 from backend.struct import *
 from backend.chatbot.agents.bot import chat

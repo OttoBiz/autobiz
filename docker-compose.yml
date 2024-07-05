@@ -19,16 +19,16 @@ services:
       - .env
 
   postgres:
-    image: postgres:13
-    # container_name: postgres
+    image: postgres
+    container_name: postgres
     restart: always
     env_file: 
       - .env
     ports:
-      - "5432:5432"
+      - "5050:5050"
     volumes:
       - ./docker/postgres/data:/var/lib/postgresql/data
-      - ./docker/postgres/init-user-db.sh:/docker-entrypoint-initdb.d/init-user-db.sh
+      #- ./docker/postgres/init-user-db.sh:/docker-entrypoint-initdb.d/init-user-db.sh
 
   redis:
     image: redis:7.2.2-alpine
