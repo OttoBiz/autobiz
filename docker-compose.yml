@@ -1,0 +1,47 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  chatbot:
+    image: python:3.11-alpine
+    build: .
+    container_name: chatbot
+    restart: always
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+    command: ["sh", "-c", "uvicorn --host 0.0.0.0 --port 8000 main:app --reload"]
+    volumes:
+      - ./:/app
+    env_file:
+      - .env
+
+  postgres:
+    image: postgres
+    container_name: postgres
+    restart: always
+    env_file: 
+      - .env
+    ports:
+      - "5050:5050"
+    volumes:
+      - ./docker/postgres/data:/var/lib/postgresql/data
+      #- ./docker/postgres/init-user-db.sh:/docker-entrypoint-initdb.d/init-user-db.sh
+
+  redis:
+    image: redis:7.2.2-alpine
+    restart: always
+    container_name: redis
+    command: redis-server --save 20 1 --loglevel warning --requirepass eYVX7EwVmmxKPCDmwMtyKVge8oLd2t81
+    ports:
+      - "6379:6379"
+    env_file:
+      - .env
+    volumes:
+      - ./docker/redis/data:/data
+
+
+# volumes:
+#   postgres_data:

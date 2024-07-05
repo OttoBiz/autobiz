@@ -1,7 +1,6 @@
 from sqlalchemy import or_
-
-from models import Product
-from database import engine, Base, get_db
+from .models import Product
+from .database import engine, Base, get_db
 from typing import List
 
 
@@ -43,3 +42,9 @@ async def get_products(
         products = [product.to_dict() for product in products]
 
     return products
+
+
+
+if __name__ == "__main__":
+
+    print(get_products(name="iPhone 12"))

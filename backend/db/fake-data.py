@@ -1,8 +1,8 @@
 from datetime import datetime
 
 import pandas as pd
-from models import Business, Product, Transaction
-from database import engine
+from backend.db.models import Business, Product, Transaction
+from backend.db.database import engine
 from sqlalchemy.orm import sessionmaker
 
 
