@@ -1,5 +1,4 @@
-
-#from langchain_core.
+# from langchain_core.
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -13,49 +12,38 @@ import json
 from backend.db.cache_utils import get_user_state, modify_user_state
 from backend.db.db_utils import *
 
-prompt= PromptTemplate.from_template(base_prompt)
-llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0, streaming=True).bind(tools=[convert_to_openai_tool(func) for func in arg_schema])
+prompt = PromptTemplate.from_template(base_prompt)
+llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0, streaming=True).bind(
+    tools=[convert_to_openai_tool(func) for func in arg_schema]
+)
 
-chain = prompt | llm  #| StrOutputParser()
+chain = prompt | llm  # | StrOutputParser()
 function_schema_parser = JsonOutputFunctionsParser()
 str_output_parser = StrOutputParser()
 
 
 # Agent functions
-agent_functions = {"ProductInfo": run_product_agent,
-                    "PaymentVerification": ..., 
-                    "Logistics": ...,
-                    "AdsMarketing": ...,
-                    "CustomerComplaint": ...}
+agent_functions = {
+    "ProductInfo": run_product_agent,
+    "PaymentVerification": ...,
+    "Logistics": ...,
+    "AdsMarketing": ...,
+    "CustomerComplaint": ...,
+}
 
 
 #id,business name,ig page,facebook page,twitter page,email,tiktok,website,phone number,business description,business niche,Bank name,
 # Bank account number,Bank account name,type,date created
 # chat function that interfaces with chatbot
 async def chat(user_request):
-    # Fetch business details if it doesnt exist in our cache:
-    business_information = await get_business_info(user_request.vendor_id)
-    
-    # get chat history if it exists
-    chat_history = ""
-    
-    response =  chain.invoke({"user_message" : user_request.message,
-                              "business_name": business_information.business_name,
-                              "facebook_page": business_information.facebook_page,
-                              "twitter_page": business_information.twitter_page,
-                              "website": business_information.website,
-                              "tiktok": business_information.tiktok,
-                              "description": business_information.business_description,
-                              "chat_history": chat_history})
+    response =  chain.invoke({"user_message" : user_request.message})
     
     if response.content == "":
-        tool_called  = response.additional_kwargs.get("tool_calls")[0].get("function")
+        tool_called = response.additional_kwargs.get("tool_calls")[0].get("function")
         function_name = tool_called["name"]
         args = json.loads(tool_called["arguments"])
         conversation_stage = args["conversation_stage"]
-        
+
         return agent_functions[function_name](**args)
     else:
         return str_output_parser.stream(response)
-    
-

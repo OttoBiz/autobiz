@@ -1,5 +1,3 @@
-
-    
 explanations = """
  
 """
@@ -52,4 +50,3 @@ Your response:
 conversation_prompt = """
 
 """
-

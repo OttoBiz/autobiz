@@ -49,4 +49,3 @@ class Cache:
     def flush_db(self):
         self._client.flushdb()
     
-    
