@@ -1,6 +1,6 @@
 from sqlalchemy import or_
 # from sqlalchemy.orm import sessionmaker
-from .models import Product #, engine
+from .models import Product, Business, Transaction #, engine
 from .database import engine, Base, get_db 
 from typing import List
 
@@ -46,7 +46,32 @@ async def get_products(
 
     return products
 
+#Business: 
+async def get_business_info(
+    vendor_id,
+    
+):  
+    # vendor_id = f"%{vendor_id}%"
+    print(vendor_id)
+    with get_db() as db:
+        business_query = db.query(Business)
+        
+        business_query = business_query.filter(
+            or_(
+                Business.ig_page.ilike(vendor_id),
+                Business.facebook_page.ilike(vendor_id),
+                Business.twitter_page.ilike(vendor_id),
+                Business.phone_number.ilike(vendor_id),
+                Business.email.ilike(vendor_id),
+                Business.tiktok.ilike(vendor_id)
+            )
+        )
+        # business_query = business_query.filter(Business.tiktok == "2347000000004")
+        # business_query = business_query.filter(Business.phone_number == vendor_id)
+      
+        business_informations =  business_query.all()
 
+    return business_informations[0]
 
 if __name__ == "__main__":
 

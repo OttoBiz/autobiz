@@ -10,6 +10,7 @@ import json
 # load_dotenv()
 DEBUG = os.getenv("DEBUG")
 
+
 class Cache:
     def __init__(self, host, port, password):
         if DEBUG:

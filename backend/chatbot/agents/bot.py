@@ -10,10 +10,8 @@ from langchain.output_parsers.openai_functions import JsonOutputFunctionsParser
 from .product_agent import run_product_agent
 from .payment_verification_agent import *
 import json
-from backend.db.cache_utils import *
+from backend.db.cache_utils import get_user_state, modify_user_state
 from backend.db.db_utils import *
-import os
-
 
 prompt= PromptTemplate.from_template(base_prompt)
 llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0, streaming=True).bind(tools=[convert_to_openai_tool(func) for func in arg_schema])
@@ -31,9 +29,24 @@ agent_functions = {"ProductInfo": run_product_agent,
                     "CustomerComplaint": ...}
 
 
+#id,business name,ig page,facebook page,twitter page,email,tiktok,website,phone number,business description,business niche,Bank name,
+# Bank account number,Bank account name,type,date created
 # chat function that interfaces with chatbot
 async def chat(user_request):
-    response =  chain.invoke({"user_message" : user_request.message})
+    # Fetch business details if it doesnt exist in our cache:
+    business_information = await get_business_info(user_request.vendor_id)
+    
+    # get chat history if it exists
+    chat_history = ""
+    
+    response =  chain.invoke({"user_message" : user_request.message,
+                              "business_name": business_information.business_name,
+                              "facebook_page": business_information.facebook_page,
+                              "twitter_page": business_information.twitter_page,
+                              "website": business_information.website,
+                              "tiktok": business_information.tiktok,
+                              "description": business_information.business_description,
+                              "chat_history": chat_history})
     
     if response.content == "":
         tool_called  = response.additional_kwargs.get("tool_calls")[0].get("function")
