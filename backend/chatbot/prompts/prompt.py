@@ -17,6 +17,7 @@ Here’s how you achieve this:
 - description: {description}
 - fb_page: {facebook_page}
 - twitter_page: {twitter_page}
+- ig_page: {ig_page}
 - website: {website}
 - tiktok: {tiktok}
 
