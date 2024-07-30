@@ -88,6 +88,7 @@ async def run_product_agent(
                                     chat_history:{}
     }
     """
+    print("Customer's message: ", customer_message)
     if product_name != "NONE":
         products = user_state.get("products", {})
         product = products.get(product_name, {})

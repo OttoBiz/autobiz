@@ -11,8 +11,6 @@ from .tools import *
 
 import os
 
-llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0, streaming=True)
-
 
 """
 CRITERIA THAT MUST BE MET FOR A PAYMENT TO BE CONFIRMED AS SUCCESSFUL
@@ -41,3 +39,42 @@ CRITERIA THAT MUST BE MET FOR A PAYMENT TO BE CONFIRMED AS SUCCESSFUL
 If transaction is sucessful, the vendor must be notified (if mono is enabled) through central agent, conversation will then be handed over to
 the logistics and central agents.
 """
+
+
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, streaming=True)
+
+
+product_evaluator = llm.bind(
+    tools=[convert_to_openai_tool(ProductInfoEvaluationOutput)]
+)
+
+
+system_message = SystemMessagePromptTemplate.from_template(system_prompt)
+rule_system_message = SystemMessagePromptTemplate.from_template(rule_system_prompt)
+human_message = HumanMessagePromptTemplate.from_template(human_prompt)
+prompt = ChatPromptTemplate.from_messages(
+    [
+        system_message,
+        human_message,
+        rule_system_message,
+        # MessagesPlaceholder("agent_scratchpad"),
+    ]
+)
+
+system_message = SystemMessagePromptTemplate.from_template(product_evaluation_prompt)
+evaluator_prompt = ChatPromptTemplate.from_messages(
+    [
+        system_message
+    ]
+)
+
+evaluator_chain = evaluator_prompt | product_evaluator #|JsonOutputFunctionsParser()
+
+
+
+# Create an agent executor by passing in the agent and tools
+product_agent = prompt | llm | StrOutputParser() #AgentExecutor(agent=agent, tools=tools, verbose=True)
+
+
+async def run_payment_verification_agent():
+    return
