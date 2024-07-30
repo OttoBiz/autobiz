@@ -20,3 +20,5 @@ tavily_tool = TavilySearchResults(api_wrapper=search)
 def get_info_from_internet(text: str) -> str:
     "Useful for when you need information from the internet."
     return tavily_tool.invoke(text)
+
+

@@ -1,5 +1,5 @@
 from langchain_core.pydantic_v1 import BaseModel, Field
-from typing import Optional
+from typing import Optional, List, Union, Dict
 
 
 class BaseSchema(BaseModel):
@@ -26,23 +26,33 @@ class ProductInfo(BaseSchema):
 
     customer_message: str = Field(..., description="Customer's need summarized.")
     product_name: str = Field(..., description="Product name.")
-    miscellaneous: Optional[str] = Field(
+    product_attributes: Optional[dict] = Field(
         ...,
-        description="Additional info about the product as a list of ',' separated values",
+        description="Additional product attribute. A dictionary of key, value pairs of product attribute requested."
     )
     product_category: Optional[str] = Field(
-        ..., description="product category e.g fashion, furniture etc"
+        ..., description="product category e.g fashion"
     )
     intent: str = Field(..., description="Customer's Intent: [enquiry, purchase]")
     instruction: Optional[str] = Field(
         ...,
         description="Additonal instruction to be used to ensure better service to customer.",
     )
-    use_internet: bool = Field(
-        ...,
-        description="Whether to use internet to fetch information about product description",
-    )
+   
 
+class ProductInfoEvaluationOutput(BaseModel):
+   
+    product_match: str = Field(..., description="""if the product mentioned in the customer's enquiry completely matches any product in the list of available products, return 'EXACT_MATCH'
+                               if there is a partial or generic match return 'GENERIC_MATCH' else return 'NO_MATCH'.""")
+    
+    product_attribute_enquiry: Optional[Union[List[str], None]] = Field(
+        ..., description="List of specific product attributes to confirm from the customer to finetune results. Set to None if EXACT_MATCH."
+    )
+    available_products: List = Field(...,
+             description="""A list of **unique** products and its respective information gotten from the list of available products that completely or partially matched the product
+             the customer enquires about.""" 
+        )
+    instruction: str = Field(..., description="Next course of action for product agent to carry out.")
 
 class PaymentVerification(BaseSchema):
     """Provide accurate details about a payment transaction for verification."""

@@ -12,6 +12,7 @@ import json
 from backend.db.cache_utils import get_user_state, modify_user_state
 from backend.db.db_utils import *
 
+
 prompt = PromptTemplate.from_template(base_prompt)
 llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0, streaming=True).bind(
     tools=[convert_to_openai_tool(func) for func in arg_schema]
@@ -36,14 +37,44 @@ agent_functions = {
 # Bank account number,Bank account name,type,date created
 # chat function that interfaces with chatbot
 async def chat(user_request):
-    response =  chain.invoke({"user_message" : user_request.message})
+    ## If state between user and vendor exists in cache, fetch it:
+    user_state  = await get_user_state(user_request.user_id, user_request.vendor_id)
+    if user_state is None:
+        # else fetch vendor's business info
+        business_information = await get_business_info(user_request.vendor_id)
+        business_information = business_information
+        chat_history = ""
+        user_state = {"chat_history": chat_history , "business_information": business_information}
+    else:
+        business_information = user_state.get("business_information")
+        chat_history  = user_state.get("chat_history")
+        
+    
+    response =  chain.invoke({"user_message" : user_request.message,
+                              "business_name": business_information["business_name"],
+                              "description": business_information["business_description"],
+                              "facebook_page": business_information["facebook_page"],
+                              "twitter_page": business_information["twitter_page"],
+                              "website": business_information["website"],
+                              "tiktok": business_information["tiktok"],
+                              "ig_page": business_information["ig_page"],
+                              "chat_history": chat_history})
     
     if response.content == "":
         tool_called = response.additional_kwargs.get("tool_calls")[0].get("function")
         function_name = tool_called["name"]
-        args = json.loads(tool_called["arguments"])
+        try:
+            args = json.loads(tool_called["arguments"])
+            args.update({"user_state": user_state})
+        except:
+            pass
         conversation_stage = args["conversation_stage"]
-
-        return agent_functions[function_name](**args)
+        
+        response, user_state = await agent_functions[function_name](**args)
+        # update user_state in cache
+        await modify_user_state(user_request.user_id, user_request.vendor_id, user_state)
+        
+        return response
     else:
+        await modify_user_state(user_request.user_id, user_request.vendor_id, user_state)
         return str_output_parser.stream(response)
