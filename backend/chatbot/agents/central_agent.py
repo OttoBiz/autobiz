@@ -8,6 +8,8 @@ from langchain_core.prompts import (
 )  # PromptTemplate,
 from langchain_openai import ChatOpenAI
 from langchain.agents import AgentExecutor, create_openai_tools_agent
+from .product_agent import product_agent
+
 
 
 llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0, streaming=True)
