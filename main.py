@@ -34,7 +34,6 @@ app = FastAPI()
 @app.post("/chat")
 async def get_chat_response(user_request: UserRequest):
     response = await chat(user_request)
-    print(response)
     return {"message": response}
 
 
