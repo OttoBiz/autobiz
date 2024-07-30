@@ -1,0 +1,31 @@
+id,Product,Product details,Price,amount in stock,size,fragrance,color,category of product
+1,Shirt,Casual cotton shirt with short sleeves,29.99,50,L,,Red,Clothing
+2,Trousers,Formal trousers made of polyester,39.99,30,M,,Black,Clothing
+3,Perfume,Floral fragrance perfume with a hint of citrus,59.99,20,,Floral,Pink,Beauty
+4,Lipstick,Matte lipstick in vibrant red,14.99,40,,Spicy,Red,Beauty
+5,Foundation,Full coverage liquid foundation for all skin types,24.99,60,,Woody,Beige,Beauty
+6,Body Lotion,Moisturizing body lotion with shea butter,12.99,80,,Fresh,White,Beauty
+7,Shirt,Formal cotton shirt with long sleeves,35.99,25,XL,,Blue,Clothing
+8,Trousers,Casual denim jeans for everyday wear,49.99,70,L,,Dark Blue,Clothing
+9,Perfume,Woody fragrance for men,65.99,15,,Woody,Green,Beauty
+10,Lipstick,Long-lasting liquid lipstick in nude shade,16.99,50,,Citrus,Nude,Beauty
+11,Foundation,Lightweight foundation for oily skin,22.99,55,,Floral,Fair,Beauty
+12,Body Lotion,Scented body lotion for smooth skin,18.99,65,,Spicy,Lavender,Beauty
+13,Shirt,Slim-fit dress shirt,44.99,40,S,,White,Clothing
+14,Trousers,Comfortable lounge pants,29.99,45,XL,,Gray,Clothing
+15,Perfume,Citrus fragrance for summer,58.99,18,,Citrus,Yellow,Beauty
+16,Lipstick,Glossy lipstick in deep plum,17.99,35,,Floral,Plum,Beauty
+17,Foundation,Matte foundation with SPF 15,26.99,45,,Woody,Light Beige,Beauty
+18,Body Lotion,Hydrating body lotion with aloe vera,13.99,70,,Fresh,Green,Beauty
+19,Shirt,Casual t-shirt with printed design,19.99,85,M,,Black,Clothing
+20,Trousers,Formal chinos for work,42.99,50,M,,Khaki,Clothing
+21,Perfume,Spicy fragrance for winter,62.99,12,,Spicy,Dark Red,Beauty
+22,Lipstick,Satin lipstick in pink rose,15.99,55,,Fresh,Pink,Beauty
+23,Foundation,Medium coverage foundation,23.99,60,,Citrus,Medium,Beauty
+24,Body Lotion,Nourishing body lotion with cocoa butter,14.99,78,,Woody,Brown,Beauty
+25,Shirt,Polo shirt with embroidered logo,28.99,90,XL,,Navy,Clothing
+26,Trousers,Slim-fit jeans for casual outings,39.99,65,L,,Blue,Clothing
+27,Perfume,Fresh fragrance for all-day wear,60.99,20,,Fresh,Turquoise,Beauty
+28,Lipstick,Moisturizing lipstick in coral shade,14.99,45,,Woody,Coral,Beauty
+29,Foundation,Oil-free foundation for acne-prone skin,27.99,52,,Spicy,Light,Beauty
+30,Body Lotion,Exfoliating body lotion with sea salt,19.99,62,,Floral,Aqua,Beauty
