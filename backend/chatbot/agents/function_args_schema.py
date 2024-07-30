@@ -25,7 +25,7 @@ class ProductInfo(BaseSchema):
     """Provide accurate information about the product enquiries."""
 
     customer_message: str = Field(..., description="Customer's need summarized.")
-    product_name: str = Field(..., description="Product name.")
+    product_name: str = Field(..., description="Product name. if you cannot determine any form of product name from the customer's message, set to 'NONE'.")
     product_attributes: Optional[dict] = Field(
         ...,
         description="Additional product attribute. A dictionary of key, value pairs of product attribute requested."
