@@ -4,13 +4,14 @@ from langchain_core.prompts import (
     SystemMessagePromptTemplate,
     HumanMessagePromptTemplate,
     MessagesPlaceholder,
-)  # PromptTemplate,
+)  
 from langchain_openai import ChatOpenAI
 from langchain.agents import AgentExecutor, create_openai_tools_agent
+from langchain_core.output_parsers import StrOutputParser
+from ..prompts.payment_verificatioin_prompt import *
 from .tools import *
 
 import os
-
 
 """
 CRITERIA THAT MUST BE MET FOR A PAYMENT TO BE CONFIRMED AS SUCCESSFUL
@@ -43,12 +44,6 @@ the logistics and central agents.
 
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, streaming=True)
 
-
-product_evaluator = llm.bind(
-    tools=[convert_to_openai_tool(ProductInfoEvaluationOutput)]
-)
-
-
 system_message = SystemMessagePromptTemplate.from_template(system_prompt)
 rule_system_message = SystemMessagePromptTemplate.from_template(rule_system_prompt)
 human_message = HumanMessagePromptTemplate.from_template(human_prompt)
@@ -61,19 +56,8 @@ prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
-system_message = SystemMessagePromptTemplate.from_template(product_evaluation_prompt)
-evaluator_prompt = ChatPromptTemplate.from_messages(
-    [
-        system_message
-    ]
-)
-
-evaluator_chain = evaluator_prompt | product_evaluator #|JsonOutputFunctionsParser()
-
-
-
 # Create an agent executor by passing in the agent and tools
-product_agent = prompt | llm | StrOutputParser() #AgentExecutor(agent=agent, tools=tools, verbose=True)
+payment_verification_agent = prompt | llm | StrOutputParser() #AgentExecutor(agent=agent, tools=tools, verbose=True)
 
 
 async def run_payment_verification_agent():
