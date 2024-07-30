@@ -34,6 +34,9 @@ def load_csv_to_db(csv_file_path, table_name):
                     business_description=str(row.get("business description", "")),
                     business_niche=str(row.get("business niche", "")),
                     business_type=str(row.get("type", "")),
+                    bank_name = str(row.get("Bank name", "")),
+                    bank_account_number = str(row.get("Bank account number","")),
+                    bank_account_name = str(row.get("Bank account name","")),
                     date_created=(
                         datetime.strptime(row["date created"], "%Y-%m-%d")
                         if "date created" in row and row["date created"]

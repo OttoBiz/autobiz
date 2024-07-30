@@ -3,7 +3,8 @@ from sqlalchemy import or_
 from .models import Product, Business, Transaction #, engine
 from .database import engine, Base, get_db 
 from typing import List
-
+from sqlalchemy.inspection import inspect
+from sqlalchemy import or_, and_
 
 Base.metadata.create_all(bind=engine)
 
@@ -15,6 +16,7 @@ async def get_products(
     category: str = None,
     min_price: float = None,
     max_price: float = None,
+    **kwargs
 ):
     with get_db() as db:
         products_query = db.query(Product)
@@ -29,8 +31,8 @@ async def get_products(
                 )
             )
 
-        if category:
-            products_query = products_query.filter(Product.product_category == category)
+        # if category:
+        #     products_query = products_query.filter(Product.product_category == category)
 
         if min_price is not None:
             products_query = products_query.filter(Product.price >= min_price)
@@ -38,11 +40,57 @@ async def get_products(
         if max_price is not None:
             products_query = products_query.filter(Product.price <= max_price)
 
+        # Dynamically add filters based on kwargs
+        # for key, value in kwargs.items():
+        #     column_attr = getattr(Product, key, None)
+        #     if column_attr is not None:
+        #         if isinstance(value, str):
+        #             value = f"%{value}%"
+        #             products_query = products_query.filter(column_attr.ilike(value))
+        #         else:
+        #             products_query = products_query.filter(column_attr == value)
+
         products = products_query.all()
 
         products = [product.to_dict() for product in products]
 
     return products
+
+
+# async def get_products(
+#     name: str = None,
+#     category: str = None,
+#     min_price: float = None,
+#     max_price: float = None,
+#     **kwargs
+# ):
+#     with get_db() as db:
+#         products_query = db.query(Product)
+
+#         if name:
+#             search_term = f"%{name}%"
+#             products_query = products_query.filter(
+#                 or_(
+#                     Product.product_name.ilike(search_term),
+#                     Product.product_description.ilike(search_term),
+#                     Product.tags.ilike(search_term),
+#                 )
+#             )
+
+#         if category:
+#             products_query = products_query.filter(Product.product_category == category)
+
+#         if min_price is not None:
+#             products_query = products_query.filter(Product.price >= min_price)
+
+#         if max_price is not None:
+#             products_query = products_query.filter(Product.price <= max_price)
+
+#         products = products_query.all()
+
+#         products = [product.to_dict() for product in products]
+
+#     return products
 
 #Business: 
 async def get_business_info(
@@ -67,10 +115,19 @@ async def get_business_info(
         # business_query = business_query.filter(Business.tiktok == "2347000000004")
         # business_query = business_query.filter(Business.phone_number == vendor_id)
       
-        business_informations =  business_query.all()
+        business_information =  business_query.all()
+        business_information = [business.to_dict() for business in business_information]
 
-    return business_informations[0]
+    return business_information[0]
 
+
+def to_dict(db_object):
+    # Assuming `db_object` is your SQLAlchemy ORM object
+    dict_obj = {c.key: getattr(db_object, c.key) for c in inspect(db_object).mapper.column_attrs}
+    return dict_obj
+    
+    
+    
 if __name__ == "__main__":
 
     print(get_products(name="iPhone 12"))

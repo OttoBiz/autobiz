@@ -31,11 +31,41 @@ class Business(Base):
     phone_number = Column(String(20))
     business_description = Column(String(500))
     business_niche = Column(String(100))
+    bank_name = Column(String(100))
+    bank_account_number = Column(String(50))
+    bank_account_name = Column(String(50))
     business_type = Column(String(50))  # Could be 'logistics' or 'vendor'
     date_created = Column(DateTime, default=datetime.now)
 
     products = relationship("Product", back_populates="business")
     transactions = relationship("Transaction", back_populates="business")
+    
+
+    def to_dict(self):
+        """
+        Converts the Business object to a dictionary representation.
+
+        Returns:
+            A dictionary containing all the attributes of the Business object.
+        """
+        return {
+            "id": self.id,
+            "business_name": self.business_name,
+            "ig_page": self.ig_page,
+            "facebook_page": self.facebook_page,
+            "twitter_page": self.twitter_page,
+            "email": self.email,
+            "tiktok": self.tiktok,
+            "website": self.website,
+            "phone_number": self.phone_number,
+            "business_description": self.business_description,
+            "business_niche": self.business_niche,
+            "business_type": self.business_type,
+            "bank_name": self.bank_name,
+            "bank_account_number": self.bank_account_number,
+            "bank_account_name": self.bank_account_name
+            # "date_created": self.date_created.isoformat(),  # Convert datetime to ISO format
+        }
 
 
 class Product(Base):
@@ -55,16 +85,10 @@ class Product(Base):
 
     def to_dict(self):
         return {
-            "id": self.id,
-            "business_id": self.business_id,
             "product_name": self.product_name,
-            "product_description": self.product_description,
-            "product_category": self.product_category,
             "price": self.price,
-            "items_in_stock": self.items_in_stock,
-            "tags": self.tags,
-            "date_created": self.date_created.isoformat(),
-            "date_modified": self.date_modified.isoformat(),
+            "items_left_in_stock": self.items_in_stock,
+            "tags": self.tags
         }
 
 
