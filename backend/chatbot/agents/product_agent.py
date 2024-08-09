@@ -50,11 +50,12 @@ evaluator_prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
+# Define evaluator chain
 evaluator_chain = evaluator_prompt | product_evaluator #|JsonOutputFunctionsParser()
 
 
 
-# Create an agent executor by passing in the agent and tools
+# Create an product agent
 product_agent = prompt | llm | StrOutputParser() #AgentExecutor(agent=agent, tools=tools, verbose=True)
 
 
@@ -70,7 +71,7 @@ async def run_product_agent(
     **kwargs
 ):
     # Get relevant products from database.
-    """ user_state products key structure ==  { 
+    """ user_state products key structure currently ==  { 
                                     products: {
                                     product1 :{
                                         retrieved_result (from database): List[str] list of products
@@ -89,36 +90,48 @@ async def run_product_agent(
     }
     """
     print("Customer's message: ", customer_message)
+    
+    # if a product was actually enquired.
     if product_name != "NONE":
+        # Retrieve all product details if it exists in cache (already been discussed before)
         products = user_state.get("products", {})
         product = products.get(product_name, {})
+        
+        # Fetch products that were previously retrieved from the database for this index product if exists
         retrieved_products_info = product.get("retrieved_results", None)
         
         db_queried = product.get("db_queried", False)
         # print("Product name: ", product_name)
         # print("category: ", product_category)
         
+        # if this is a new product (never been retrieved from db before), get items from db
         if retrieved_products_info is None and not db_queried:
             retrieved_products_info = await get_products(product_name, product_category, **kwargs )
             # products["product_name"] = product_name
             # print("Products: ", products)
             # print("Retrieved products: ", retrieved_products_info)
-            products[product_name] = {}
-            products[product_name]["retrieved_results"]= retrieved_products_info
-            products[product_name]["db_queried"] = True
-            user_state["products"] = products
+            product = {}
+            product["retrieved_results"]= retrieved_products_info
+            products["db_queried"] = True
+            user_state["products"][product_name] = product
         
-        result_match = await evaluator_chain.ainvoke({
-            "available_products": retrieved_products_info,
-            "customer_enquiry": customer_message
-        })
-        
-        print("Retrieved products info: ", retrieved_products_info)
+        # Use evaluator to determine if enquired product matches any product in the retrieved products
+        result_match = product.get("result_match", None)
+        if not result_match:
+            result_match = await evaluator_chain.ainvoke({
+                "available_products": retrieved_products_info,
+                "customer_enquiry": customer_message
+            })
+            
+            print("Retrieved products info: ", retrieved_products_info)
 
-        result_match = json.loads(result_match.additional_kwargs.get("tool_calls")[0].get("function")["arguments"])
-        print("Result match: ", result_match)
+            # Retrieve output of the evaluator chain
+            result_match = json.loads(result_match.additional_kwargs.get("tool_calls")[0].get("function")["arguments"])
+            print("Result match: ", result_match)
+            
         
-        
+        # if the customer's intent is to purchase or there were items retrieved, get business account details.
+        # TODO: change the conditional statement.
         if intent== "purchase" or len(retrieved_products_info) > 1:
             business_information = user_state.get("business_information")
             print("Business information: ", business_information)
@@ -127,12 +140,12 @@ async def run_product_agent(
         else:
             bank_details = ""
             
-            
+        # prepare inputs for product agent. 
         chain_input = {
                 "vendor_bank_details": bank_details, #TODO: add account or payment details to businesses.
                 "customer_message": customer_message,
                 # "product_name": product_name,
-                "product_category": product_category,
+                "product_category": product_category, # might not neeed this.
                 "intent": intent,
                 "tone": tone,
                 "product_attributes": product_attributes,
@@ -141,13 +154,27 @@ async def run_product_agent(
             }
         
         # print("Result match: " , result_match)
-        chain_input["available_products"] = result_match.get("available_products", "NO PRODUCT IS AVAILABLE CURRENTLY") 
+        
+        # put in available product into input, if no available product, inform product agent that product is not available.
+        # We might have to upsell here instead.'
+        
+        # Add result match to product cache.
+        user_state["products"][product_name]['result_match'] = result_match
+        
+        # Get available products
+        available_products = result_match.get("available_products", None)
+        
+        if available_products is not None:
+            chain_input["available_products"] = available_products
+        else:
+            chain_input["available_products"] = "NO PRODUCT IS AVAILABLE CURRENTLY"
+            
         # print(chain_input)
         return await product_agent.ainvoke(
             chain_input
         ), user_state
         
-    else:
+    else: # Else inform user that no product was specified and one needs to be specified.
         chain_input = {
                 "vendor_bank_details": "", #TODO: add account or payment details to businesses.
                 "customer_message": customer_message,
