@@ -6,12 +6,12 @@ from langchain_openai import ChatOpenAI
 from ..prompts.prompt import base_prompt
 from .function_args_schema import arg_schema
 from langchain.output_parsers.openai_functions import JsonOutputFunctionsParser
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from .product_agent import run_product_agent
 from .payment_verification_agent import *
 import json
 from backend.db.cache_utils import get_user_state, modify_user_state
 from backend.db.db_utils import *
-
 
 prompt = PromptTemplate.from_template(base_prompt)
 llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0, streaming=True).bind(
