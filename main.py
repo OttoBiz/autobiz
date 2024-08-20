@@ -1,10 +1,6 @@
 import uvicorn
-from fastapi import FastAPI  # , Depends
-
+from fastapi import FastAPI, BackgroundTasks, Request   # , Depends
 from backend.chatbot import *
-
-# from backend.chatbot.utils import generate_qa
-# from backend.chatbot.prompts.prompt import q_a_prompt
 
 from dotenv import load_dotenv
 from backend.struct import *
@@ -12,6 +8,9 @@ from backend.chatbot.agents.bot import chat
 import logging
 import os
 from backend.db.fake_data import load_csv_to_db
+from backend.chatbot.agents.central_agent import run_central_agent
+from backend.chatbot.agents.product_agent import run_product_agent
+from backend.chatbot.agents.sales_marketing_agent import run_upselling_agent
 
 
 load_dotenv()
@@ -40,6 +39,20 @@ async def get_chat_response(user_request: UserRequest):
 @app.get("/")
 async def health():
     return {"status": "ok"}
+
+
+@app.post("/agent")
+async def chat_agent(agent_request: AgentRequest):
+    if agent_request.agent == "central_agent":
+        response = await run_central_agent()
+    elif agent_request.agent == "product_agent":
+        response = await run_product_agent()
+    elif agent_request.agent == "upselling_agent":
+        response = await run_upselling_agent()
+    else:
+        response = "Hello world"
+    return {"message": response}
+        
 
 
 if __name__ == "__main__":
