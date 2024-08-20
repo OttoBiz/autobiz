@@ -6,6 +6,11 @@ from langchain_openai import ChatOpenAI
 from langchain_community.tools.tavily_search import TavilySearchResults
 from dotenv import load_dotenv
 import base64
+from typing import List, Tuple, Union, Dict
+import tiktoken
+from datetime import datetime, timedelta
+import re
+import json
 
 load_dotenv()
 
@@ -26,19 +31,6 @@ def get_info_from_internet(text: str) -> str:
 def encode_image(image_path):
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode("utf-8")
-
-from langchain.schema.runnable import RunnableLambda
-from typing import List, Tuple, Union, Dict
-from langchain.memory import ChatMessageHistory
-import tiktoken
-from .chat_history_examples import *
-from .constants import USER_INFORMATION_KEYS, MIN_DOCUMENTATION_RATE
-
-
-from datetime import datetime, timedelta
-import re
-import json
-
 
 def string_to_datetime(timestamp_str, format='%Y-%m-%d %H:%M:%S'):
     """
@@ -231,7 +223,7 @@ def num_tokens_from_messages(messages, model="gpt-3.5-turbo"):
     if not messages or len(messages) == 0:
         return 0
     if type(messages[0]) == str:
-        messages = standardize_chat_history(messages)
+        messages = format_communication(messages) # change to standardize chat history later.
     try:
         encoding = tiktoken.encoding_for_model(model)
     except KeyError:
@@ -309,30 +301,6 @@ def convert_tuple_history_to_list(chat_history: List[Tuple]) -> str:
         ai = "Tunu: " + dialogue_turn[1]
         buffer += "\n" + "\n".join([human, ai])
     return buffer
-
-def format_user_information(**kwargs):
-    """
-    Formats user information into a string for inclusion in a prompt.
-
-    Parameters:
-    - **kwargs: Keyword arguments containing user information.
-
-    Returns:
-    The formatted string containing user information.
-    """
-    if not any(kwargs.values()):
-        return ""
-
-    prompt_to_inject = "**User's Medical Information**\n ---\n"
-    for key, value in kwargs.items():
-        if value is not None:
-            if isinstance(value, dict):
-                prompt_to_inject += f"{key.capitalize()}: {stringify(value)}\n"
-            else:
-                prompt_to_inject += f"{key.capitalize()}: {value}\n"
-    prompt_to_inject += " ---\n"
-    return prompt_to_inject
-
 
 def convert_history_to_list(chat_history: str) -> List[str]:
     """
@@ -413,71 +381,6 @@ def map_to_score(value: str, score_mapping: dict) -> int:
                 return score
     return 0
 
-import re
-
-MIN_DOCUMENTATION_RATE = 0  # Assuming this is defined somewhere
-
-def calculate_user_engagement_factor(n_requests, avg_request_per_day: float = 1.0, normalization_factor: int = 10):
-    """
-    Calculate user engagement factor.
-
-    Parameters:
-    - n_requests (int): Number of requests.
-    - avg_request_per_day (float): Average requests per day.
-    - normalization_factor (int): Normalization factor.
-
-    Returns:
-    float: User engagement factor.
-    """
-    return (avg_request_per_day * n_requests) / normalization_factor
-
-
-def calculate_documentation_rate(engagement_level: str, user_params: dict, min_documentation_cost: float = 10,
-                                 documentation_detail_level: float = 1.0, min_rate: int = MIN_DOCUMENTATION_RATE):
-    """
-    Calculate documentation rate based on engagement level, message significance, and documentation details.
-
-    Parameters:
-    - engagement_level (str): User engagement level.
-    - user_params (dict): Dictionary containing message information.
-    - min_documentation_cost (float): Minimum documentation cost.
-    - documentation_detail_level (float): Documentation detail level.
-    - min_rate (int): Minimum documentation rate.
-
-    Returns:
-    int: Calculated documentation rate.
-    """
-    # Map engagement level to a numeric value
-    if engagement_level:
-        if re.search(r'\b(?:high|engage)\b', engagement_level, flags=re.IGNORECASE):
-            engagement_level = 1.0
-        elif re.search(r'\b(?:moderate|medium|Improving)\b', engagement_level, flags=re.IGNORECASE):
-            engagement_level = 0.75
-        elif re.search(r'\b(?:low|Bad|Negative|None|active)\b', engagement_level, flags=re.IGNORECASE):
-            engagement_level = 0.5
-        else:
-            engagement_level = 0.25
-    else:
-        engagement_level = 0.5
-
-    # Calculate interaction significance
-    interaction_significance = user_params.get("Interaction_significance", [1])
-    if isinstance(interaction_significance, list) and len(interaction_significance) > 0:
-        interaction_significance = (sum(interaction_significance) / len(interaction_significance))
-    else:
-        interaction_significance = 0
-
-    # Calculate cost efficiency factor
-    cost_efficiency_factor = min_documentation_cost / documentation_detail_level
-
-    # Calculate user engagement
-    user_engagement = calculate_user_engagement_factor(user_params["n_messages"], user_params["avg_msgs_per_day"]) * engagement_level
-
-    # Calculate documentation rate
-    rate = min(round(1 / ((user_engagement * interaction_significance / cost_efficiency_factor) + 1)), min_rate)
-    
-    return rate
-
 
 async def update_dict(old_dict, new_dict):
     """
@@ -505,14 +408,6 @@ async def update_dict(old_dict, new_dict):
             new_dict[key] = await update_dict(value, new_dict[key])
     return new_dict
 
-
-async def recommend_resource(recommendation_list):
-    for each in recommendation_list:
-        if len(each.strip().split(" ")) > 1:
-            recommendation_list.extend(each.strip().split(" "))
-
-    # API Call to recommendation engine.
-    pass
 
 def flatten_list(lst):
     """
