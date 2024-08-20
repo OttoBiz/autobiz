@@ -53,10 +53,8 @@ evaluator_prompt = ChatPromptTemplate.from_messages(
 # Define evaluator chain
 evaluator_chain = evaluator_prompt | product_evaluator #|JsonOutputFunctionsParser()
 
-
-
 # Create an product agent
-product_agent = prompt | llm | StrOutputParser() #AgentExecutor(agent=agent, tools=tools, verbose=True)
+product_agent = prompt | llm | StrOutputParser() 
 
 
 async def run_product_agent(
@@ -71,22 +69,32 @@ async def run_product_agent(
     **kwargs
 ):
     # Get relevant products from database.
-    """ user_state products key structure currently ==  { 
-                                    products: {
-                                    product1 :{
-                                        retrieved_result (from database): List[str] list of products
-                                        db_queried: bool
-                                        available_products : List[str] of products
-                                    },
-                                    product1: {
-                                        retrieved_result (from database): List[str] list of products
-                                    }},
-                                    business_information:{
-                                        business_name: 
-                                        acc_name : 
-                                        acc_number:
-                                    },
-                                    chat_history:{}
+    """ 
+    A user state is used to hold all information related to a customer including all products currently enquired about or being bought.
+    Since a user can interact with different businesses at once and also interact with different products for any given business, 
+    we use a combination of user id and business id as the key to the user_state as follows:
+    user_id:business_id
+
+    The structure of the value (user_state) of this key is given below:
+    user_state ==  { 
+                        products: {
+                            product1 :{
+                                retrieved_result (from database): List[str] list of products
+                                db_queried: bool
+                                available_products : List[str] of products
+                            },
+                            product2: {
+                                retrieved_result (from database): List[str] list of products
+                                db_queried: bool
+                                available_products : List[str] of products
+                            }
+                        },
+                        business_information:{
+                            business_name: 
+                            acc_name : 
+                            acc_number:
+                        },
+                        chat_history:{}
     }
     """
     print("Customer's message: ", customer_message)
