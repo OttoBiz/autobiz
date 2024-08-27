@@ -18,12 +18,12 @@ MODEL = "gpt-4o-mini"
 UPSELLING_SYSTEM_PROMPT = """
 You're an AI upselling assistant. After a customer's purchase or inquiry:
 
-1. Identify complementary or related products.
+1. Identify complementary products.
 2. Suggest these items, emphasizing benefits and compatibility.
 3. Use persuasive language, but respect customer preferences.
 4. Offer bundle deals or discounts when appropriate.
 5. Adapt recommendations based on customer responses.
-6. Aim to enhance the customer's experience, not just increase sales.
+6. Aim to enhance customer's experience and increase sales.
 7. Be friendly, knowledgeable, and focused on customer satisfaction.
 
 These tools are available for you to use. Invoke them when needed:
@@ -120,10 +120,10 @@ async def execute_tool(tool_calls, messages):
     return messages
 
 
-async def run_upselling_agent(user_query, conversation_messages=[]):
-    user_message = {"role": "user", "content": user_query}
+async def run_upselling_agent(product_name, product_category, instruction, conversation_messages=[]):
+    user_message = {"role": "assistant", "content": f"Product: {product_name}, Product_category: {product_category}, Instruction: {instruction}"}
     conversation_messages.append(user_message)
-
+    
     messages = [{"role": "system", "content": UPSELLING_SYSTEM_PROMPT}]
     messages.extend(conversation_messages)
 
