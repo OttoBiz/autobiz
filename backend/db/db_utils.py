@@ -3,8 +3,10 @@ from sqlalchemy import or_
 from .models import Product, Business, Transaction #, engine
 from .database import engine, Base, get_db 
 from typing import List
-from sqlalchemy.inspection import inspect
+from sqlalchemy.inspection import inspect, text
 from sqlalchemy import or_, and_
+from typing import List
+from sqlalchemy.exc import ProgrammingError
 
 Base.metadata.create_all(bind=engine)
 
@@ -125,6 +127,52 @@ def to_dict(db_object):
     # Assuming `db_object` is your SQLAlchemy ORM object
     dict_obj = {c.key: getattr(db_object, c.key) for c in inspect(db_object).mapper.column_attrs}
     return dict_obj
+
+
+def search_products(query: str, limit: int = 10, offset: int = 0) -> List[Product]:
+    with get_db() as db:
+        try:
+            formatted_query = " | ".join(query.split())  # Use OR instead of AND
+            
+            sql_query = text("""
+                SELECT *
+                FROM products
+                WHERE ts_vector @@ to_tsquery('english', :query)
+                ORDER BY ts_rank(ts_vector, to_tsquery('english', :query)) DESC
+                LIMIT :limit OFFSET :offset
+            """)
+            
+            results = db.execute(sql_query, {
+                "query": formatted_query,
+                "limit": limit,
+                "offset": offset
+            })
+            
+            # Get the column names of the Product model
+            product_columns = set(inspect(Product).columns.keys())
+            
+            # Filter out any columns that aren't in the Product model
+            products = [
+                Product(**{k: v for k, v in row._asdict().items() if k in product_columns})
+                for row in results
+            ]
+            
+            if not products:
+                print("No results found. Checking ts_vector content...")
+                check_query = text("""
+                    SELECT id, product_name, ts_vector::text
+                    FROM products
+                    LIMIT 5
+                """)
+                check_results = db.execute(check_query)
+                for row in check_results:
+                    print(f"ID: {row.id}, Name: {row.product_name}, ts_vector: {row.ts_vector}")
+            
+            return products
+        except ProgrammingError as e:
+            print(f"An error occurred: {str(e)}")
+            return []
+
     
     
     
