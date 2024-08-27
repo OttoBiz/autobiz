@@ -177,5 +177,13 @@ def search_products(query: str, limit: int = 10, offset: int = 0) -> List[Produc
     
     
 if __name__ == "__main__":
-
-    print(get_products(name="iPhone 12"))
+    # Usage
+    search_results = search_products("i want to buy a gaming laptop", limit=15)
+    if search_results:
+        for product in search_results:
+            print(f"Product: {product.product_name}")
+            print(f"Description: {product.product_description}")
+            print(f"Price: ${product.price}")
+            print("---")
+    else:
+        print("No results found.")
