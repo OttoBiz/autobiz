@@ -1,3 +1,4 @@
+from enum import Enum
 import json
 import os
 from pydantic import BaseModel, Field
@@ -5,7 +6,7 @@ import openai
 from typing import List
 from dotenv import load_dotenv
 
-from backend.db.db_utils import get_products
+from agents.db_utils import get_products
 
 load_dotenv()
 
@@ -49,6 +50,17 @@ class Product(BaseModel):
         return results
 
 
+instructions = {
+    "purchased": "This item was purchased. Suggest only complementary products that can be used alongside the bought product(s).",
+    "inquired": "This item was inquired but not available. Suggest only direct/complete alternative products to buy.",
+}
+
+
+class Instruction(str, Enum):
+    purchased = "purchased"
+    inquired = "inquired"
+
+
 class ProductLists(BaseModel):
     """
     Use to determine products related or could be used
@@ -64,15 +76,20 @@ class GetRelatedProducts(BaseModel):
     """
 
     product: str
+    instruction: Instruction  # = Field(description="Intent of purchase, either 'purchased' or 'inquired'")
 
     async def execute(
         self,
     ):  # add context/intent and based on it, the prompt varies e.g customer bought, customer requested for etc.
         completion = get_parsed_completion(
             ProductLists,
-            [{"role": "user", "content": f"Product is {self.product}"}],
+            [
+                {"role": "system", "content": instructions[self.instruction]},
+                {"role": "user", "content": f"Product is {self.product}"},
+            ],
         )
         results = ProductLists.model_validate_json(completion)
+        print(results, "\n\n")
         search_terms = [await get_products(name=p.name) for p in results.products]
         results = (
             search_terms  # todo: add a function that looks up db with search terms
@@ -142,3 +159,12 @@ async def run_upselling_agent(product_name, product_category, instruction, conve
             )
         else:
             return response.choices[0].message.content
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    async def main():
+        print(await run_upselling_agent("Oxford shoes size 38", "purchased"))
+
+    asyncio.run(main())
