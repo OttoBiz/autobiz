@@ -187,15 +187,17 @@ async def run_product_agent(
         # Get available products
         available_products = result_match.get("available_products", None)
         
-        if available_products is not None:
+        if available_products:
             chain_input["available_products"] = f"\n**product details**\navailable products: {available_products}"
+        
+            return await product_agent.ainvoke(
+                chain_input
+            ), user_state
         else:
-            chain_input["available_products"] = "NO PRODUCT IS AVAILABLE CURRENTLY"
+            response = await run_upselling_agent(product_name, "inquired")
+            return response , user_state
             
         # print(chain_input)
-        return await product_agent.ainvoke(
-            chain_input
-        ), user_state
         
         
     else: # Else inform user that no product was specified and one needs to be specified.
