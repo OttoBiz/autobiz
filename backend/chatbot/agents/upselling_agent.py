@@ -136,11 +136,10 @@ async def execute_tool(tool_calls, messages):
 
     return messages
 
-async def run_upselling_agent(product, intent):
-    conversation_messages = [
-        {"role": "user", "content": f"Product: {product} Instruction: {intent}"}
-    ]
-
+async def run_upselling_agent(product, intent, conversation_messages = []):
+    
+    conversation_messages.append( {"role": "user", "content": f"Product: {product} Instruction: {intent}"})
+        
     messages = [{"role": "system", "content": UPSELLING_SYSTEM_PROMPT}]
     messages.extend(conversation_messages)
 
