@@ -8,6 +8,10 @@ from .function_args_schema import arg_schema
 from langchain.output_parsers.openai_functions import JsonOutputFunctionsParser
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from .product_agent import run_product_agent
+from .upselling_agent import run_upselling_agent
+from .central_agent import run_central_agent
+from .payment_verification_agent import run_verification_agent
+from .customer_complaint_agent import run_customer_agent
 from .payment_verification_agent import *
 import json
 from backend.db.cache_utils import get_user_state, modify_user_state
@@ -26,10 +30,10 @@ str_output_parser = StrOutputParser()
 # Agent functions
 agent_functions = {
     "ProductInfo": run_product_agent,
-    "PaymentVerification": ...,
-    "Logistics": ...,
-    "AdsMarketing": ...,
-    "CustomerComplaint": ...,
+    "PaymentVerification": run_verification_agent,
+    "Logistics": run_central_agent,
+    "AdsMarketing": run_upselling_agent,
+    "CustomerComplaint": run_customer_agent,
 }
 
 
@@ -43,11 +47,11 @@ async def chat(user_request):
         # else fetch vendor's business info
         business_information = await get_business_info(user_request.vendor_id)
         business_information = business_information
-        chat_history = ""
+        chat_history = []
         user_state = {"chat_history": chat_history , "business_information": business_information}
     else:
         business_information = user_state.get("business_information")
-        chat_history  = user_state.get("chat_history")
+        chat_history  = user_state.get("chat_history",[])
         
     
     response =  chain.invoke({"user_message" : user_request.message,
@@ -65,16 +69,20 @@ async def chat(user_request):
         function_name = tool_called["name"]
         try:
             args = json.loads(tool_called["arguments"])
-            args.update({"user_state": user_state})
+            args.update({"user_state": user_state, "chat_history": chat_history, "customer_message": user_request.message})
         except:
             pass
+        
         conversation_stage = args["conversation_stage"]
         
         response, user_state = await agent_functions[function_name](**args)
-        # update user_state in cache
-        await modify_user_state(user_request.user_id, user_request.vendor_id, user_state)
         
-        return response
     else:
-        await modify_user_state(user_request.user_id, user_request.vendor_id, user_state)
-        return str_output_parser.stream(response)
+        response = str_output_parser.invoke(response)
+        
+    user_state["chat_history"].extend([{"role": "user" , "name": "customer", "content": user_request.message},
+                            {"role": "assistant", "name": "vendor", "content": response}])
+    
+    await modify_user_state(user_request.user_id, user_request.vendor_id, user_state)
+        
+    return response

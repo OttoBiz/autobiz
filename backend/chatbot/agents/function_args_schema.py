@@ -4,7 +4,6 @@ from typing import Optional, List, Union, Dict
 
 class BaseSchema(BaseModel):
     """"""
-
     conversation_stage: str = Field(
         ...,
         description="""stage of conversation/sales process. It must be one of the following:
@@ -15,10 +14,10 @@ class BaseSchema(BaseModel):
                                     - Ads Marketing: The last stage after successful product purchase and payment verification.
                                     - Customer complaint/Feedback: [Refund, Faulty product]""",
     )
-    tone: str = Field(
-        ...,
-        description="The best tone and style to use in communication given customer's message to maintain engagement.",
-    )
+    # tone: str = Field(
+    #     ...,
+    #     description="The best tone and style to use in communication given customer's message to maintain engagement.",
+    # )
 
 
 class ProductInfo(BaseSchema):
@@ -55,39 +54,34 @@ class ProductInfoEvaluationOutput(BaseModel):
     instruction: str = Field(..., description="Next course of action for product agent to carry out.")
 
 class PaymentVerification(BaseSchema):
-    """Provide accurate details about a payment transaction for verification."""
+    """Provide accurate details about a payment transaction for verification based on recent chat history.
+    Ask customer to provide all necessary fields if any is missing."""
 
-    product_name: str = Field(..., description="Product purchased.")
-    amount_paid: str = Field(..., description="Amount paid by user.")
-    customer_name: str = Field(..., description="customer's full name")
+    product_name: str = Field(..., description="Product purchased by customer.")
+    product_price: str = Field(..., description= "Product's price provided by vendor assistant not customer.")
+    amount_paid: str = Field(..., description="Amount paid by customer.")
+    customer_name: str = Field(..., description="customer's account full name")
     bank_account_number: str = Field(..., description="Bank account number.")
-    bank_name: str = Field(..., description="Name of bank used for payment.")
+    bank_name: str = Field(..., description="Bank Name.")
 
 
 class Logistics(BaseSchema):
     """Provide information about delivery logistics."""
-
     customer_address: str = Field(
         ..., description="The customer's address for product delivery"
     )
 
 
 class AdsMarketing(BaseSchema):
-    """Determine other products or accessories that can be sold to user given customers recent purchase."""
-
-    product_purchased: str = Field(..., description="product purchased by customer")
+    """To determine complimentary products that can be marketed to customer given index purchase."""
+    product_purchased: str = Field(..., description="index product purchased by customer")
     product_category: str = Field(
         ..., description="Product's category e.g Fashion, health etc"
     )
-    accessory: str = Field(
-        ...,
-        description="A list of 3 other products or accessories that are typically purchased or used alongside the item purchased by customer.",
-    )
-
+   
 
 class CustomerComplaint(BaseSchema):
     """Provide information about the complaint by user"""
-
     complaint: str = Field(..., description="customer's complaint summarized")
     product_name: Optional[str] = Field(..., description="product name")
     sentiment: Optional[str] = Field(

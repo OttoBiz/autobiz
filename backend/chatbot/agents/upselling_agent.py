@@ -6,7 +6,7 @@ import openai
 from typing import List
 from dotenv import load_dotenv
 
-from agents.db_utils import get_products
+from backend.db.db_utils import get_products
 
 load_dotenv()
 

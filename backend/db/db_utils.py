@@ -3,7 +3,8 @@ from sqlalchemy import or_
 from .models import Product, Business, Transaction #, engine
 from .database import engine, Base, get_db 
 from typing import List
-from sqlalchemy.inspection import inspect, text
+from sqlalchemy.inspection import inspect
+from sqlalchemy import text
 from sqlalchemy import or_, and_
 from typing import List
 from sqlalchemy.exc import ProgrammingError

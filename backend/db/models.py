@@ -16,8 +16,6 @@ from dotenv import load_dotenv
 from .database import Base, engine
 load_dotenv()
 
-
-
 class Business(Base):
     __tablename__ = "businesses"
     id = Column(Integer, primary_key=True)

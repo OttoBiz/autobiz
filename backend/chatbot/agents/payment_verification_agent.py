@@ -1,64 +1,22 @@
-# from langchain_openai import ChatOpenAI
-# from langchain_core.prompts import (
-#     ChatPromptTemplate,
-#     SystemMessagePromptTemplate,
-#     HumanMessagePromptTemplate,
-#     MessagesPlaceholder,
-# )  
-# from langchain_openai import ChatOpenAI
-# from langchain.agents import AgentExecutor, create_openai_tools_agent
-# from langchain_core.output_parsers import StrOutputParser
-# from ..prompts.central_agent_prompt import *
-# from .tools import *
+from .central_agent import run_central_agent
+from .central_agent_utils import create_structured_input
 
-# import os
-
-# """
-# CRITERIA THAT MUST BE MET FOR A PAYMENT TO BE CONFIRMED AS SUCCESSFUL
-# 1. IF EVIDENCE (PICTURE) IS PROVIDED BY THE CUSTOMER:
-#     - The agent must have provided bank details to the customer prior in the chat_history or must have had the account number
-#     maybe from previous chat sessions.
-#     - The agent must extract customer's bank name, bank account number, amount paid, product purchased, time of payment.
-#     - There must have been a product being talked about prior in the chat_history (within possibly 24 hrs)
-#     - Time of payment must be less than current time.
-#     - amount paid must match the amount of the product.
-#     - If mono is enabled for vendor, the bank name, account name, account number, amount paid, product purchased must exactly match an
-#     entry in the monitored account.
-
-# 2. IF WRITTEN (TEXT) IS PROVIDED BY THE CUSTOMER:
-#     - The agent must have provided bank details to the customer prior in the chat_history or must have had the account number
-#     maybe from previous chat sessions.
-#     - The customer must provide bank name, bank account number, amount paid, product purchased, time of payment.
-#     - There must have been a product being talked about prior in the chat_history (within possibly 24 hrs)
-#     - Time of payment must be less than current time.
-#     - amount paid must match the amount of the product.
-#     - If mono is enabled for vendor, the bank name, account name, account number, amount paid, product purchased must exactly match an
-#     entry in the monitored account.
-#     - Else, these details must be forwarded to the vendor for verbal confirmation. In this case, a timeholder message must be sent to the 
-#     customer to explain that verification is currently going on.
+async def run_verification_agent(product_name, product_price, amount_paid, customer_name, 
+                                 bank_account_number, bank_name, **args):
+     
+    customer_message = f"""I have made payments for the product. Here are my bank details to confirm transaction:
+                        Bank name: {bank_name}
+                        Bank account number: {bank_account_number}
+                        Account name: {customer_name}
+                        Amount paid: {amount_paid}"""
+                        
+    agent_input = create_structured_input(sender="customer", recipient="vendor", message=customer_message, product_name=product_name,
+                                  price= product_price, customer_id= args["customer_id"], business_id = args["business_id"])
+        
     
-# If transaction is sucessful, the vendor must be notified (if mono is enabled) through central agent, conversation will then be handed over to
-# the logistics and central agents.
-# """
-
-
-# llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, streaming=True)
-
-# system_message = SystemMessagePromptTemplate.from_template(system_prompt)
-# rule_system_message = SystemMessagePromptTemplate.from_template(rule_system_prompt)
-# human_message = HumanMessagePromptTemplate.from_template(human_prompt)
-# prompt = ChatPromptTemplate.from_messages(
-#     [
-#         system_message,
-#         human_message,
-#         rule_system_message,
-#         # MessagesPlaceholder("agent_scratchpad"),
-#     ]
-# )
-
-# # Create an agent executor by passing in the agent and tools
-# payment_verification_agent = prompt | llm | StrOutputParser() #AgentExecutor(agent=agent, tools=tools, verbose=True)
-
-
-# async def run_payment_verification_agent():
-#     return
+    #Structure input in the way central agent will use it.
+    response = await run_central_agent(agent_input)
+    
+    # Move on to Logistics from here.
+    
+    return response.message

@@ -10,7 +10,7 @@ import os
 from backend.db.fake_data import load_csv_to_db
 from backend.chatbot.agents.central_agent import run_central_agent
 from backend.chatbot.agents.product_agent import run_product_agent
-from backend.chatbot.agents.sales_marketing_agent import run_upselling_agent
+from backend.chatbot.agents.upselling_agent import run_upselling_agent
 
 
 load_dotenv()
@@ -42,12 +42,12 @@ async def health():
 
 
 @app.post("/agent")
-async def chat_agent(agent_request: AgentRequest):
-    if agent_request.agent == "central_agent":
-        response = await run_central_agent()
-    elif agent_request.agent == "product_agent":
+async def chat_agent(request: AgentRequest):
+    if request.agent == "central_agent":
+        response = await run_central_agent(request.agent_input)
+    elif request.agent == "product_agent":
         response = await run_product_agent()
-    elif agent_request.agent == "upselling_agent":
+    elif request.agent == "upselling_agent":
         response = await run_upselling_agent()
     else:
         response = "Hello world"
