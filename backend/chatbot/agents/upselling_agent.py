@@ -17,9 +17,13 @@ client = openai.OpenAI()
 MODEL = "gpt-4o-mini"
 
 UPSELLING_SYSTEM_PROMPT = """
-You're an AI upselling assistant. After a customer's purchase or inquiry:
+You're an AI upselling and marketing agent. 
+**OBJECTIVE**
+- Upsell and drive the sales of similar or complementary products to customers.
 
-1. Identify complementary products.
+**MODE OF OPERATION**
+After a customer's purchase or inquiry:
+1. Identify complementary or alternative products.
 2. Suggest these items, emphasizing benefits and compatibility.
 3. Use persuasive language, but respect customer preferences.
 4. Offer bundle deals or discounts when appropriate.
@@ -51,8 +55,8 @@ class Product(BaseModel):
 
 
 instructions = {
-    "purchased": "This item was purchased. Suggest only complementary products that can be used alongside the bought product(s).",
-    "inquired": "This item was inquired but not available. Suggest only direct/complete alternative products to buy.",
+    "purchased": "This item was purchased. Suggest and upsell only the best (at most 2) complementary products that can be used alongside the bought product(s).",
+    "inquired": "This item was inquired but not available. Suggest and upsell only the top 2 direct/complete alternative products to buy.",
 }
 
 
