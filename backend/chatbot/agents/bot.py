@@ -69,7 +69,9 @@ async def chat(user_request):
         function_name = tool_called["name"]
         try:
             args = json.loads(tool_called["arguments"])
-            args.update({"user_state": user_state, "chat_history": chat_history, "customer_message": user_request.message})
+            args.update({"user_state": user_state, "chat_history": chat_history, 
+                         "customer_message": user_request.message,
+                         "business_id": user_request.vendor_id, "customer_id": user_request.user_id})
         except:
             pass
         

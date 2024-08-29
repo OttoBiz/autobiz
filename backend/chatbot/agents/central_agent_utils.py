@@ -49,7 +49,7 @@ class Response(BaseModel):
     
 # Function to create structured Input
 async def create_structured_input(sender: str, recipient: str, response: str, message: str, product_name: str,
-                                  price: str, customer_id: str = None, business_id: Optional[str] = None):
+                                  price: str, customer_id: str = None, business_id: Optional[str] = None, message_type: Optional[str]=""):
     structured_input = Input(
         sender=sender,
         recipient=recipient,
@@ -58,7 +58,8 @@ async def create_structured_input(sender: str, recipient: str, response: str, me
         product_name=product_name,
         price=price,
         customer_id=customer_id,
-        business_id=business_id
+        business_id=business_id,
+        message_type = message_type
     )
     return structured_input
 
@@ -98,3 +99,8 @@ async def create_structured_process(product_name: str,  task_type: str, price: O
         customer_address = customer_address
     )
     return structured_process
+
+
+async def  get_chain_input_for_process():
+    
+    return chain_input

@@ -136,27 +136,25 @@ async def run_central_agent(event_message: Input):
         user_state['products'] = {}
         product = {} 
         
-    process = product.get("process", None)
+    processes = product.get("processes", None)
     
-    if not process:
+    if not processes:
         process = create_structured_process(event_message.product_name, event_message.message_type, 
-                    event_message.price, [(event_message.sender, event_message.message)]) #{"communication_history": [(event_message.sender_type, event_message.message)]}
+                    event_message.price, [{"role": "user", "name": event_message.sender, "content": event_message.message}]) #{"communication_history": [(event_message.sender_type, event_message.message)]}
     else:
-        process.communication_history.append((event_message.sender, event_message.message))
+        process = processes.get(event_message.message_type, 
+                    create_structured_process(event_message.product_name, event_message.message_type, event_message.price, []))
+        
+        process.communication_history.append({"role": "user", "name": event_message.sender, "content": event_message.message})
     
-    central_chain = llm_chains[event_message.message_type]
+    central_chain = llm_chains[process.task_type]
     
     #TODO: The chain inputs differ based on the llm_chain called. Handle this.
-    chain_inputs = {
-        "product_name": event_message.product_name,
-        "customer_id": event_message.customer_id,
-        "business_id": event_message.business_id,
-        "communication_history": format_communication(process.communication_history)
-    }
+    chain_inputs = get_chain_input_for_process(process.to_dict())
    
     response = central_chain.invoke(chain_inputs)
     # Update product and processes to the user state
-    process.communication_history.append((response.sender, response.message))
+    process.communication_history.append({"role": "user", "name": response.sender, "content": response.message})
     
     # If agent has achieved its objective
     if response.finished: 
