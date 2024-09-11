@@ -24,14 +24,16 @@ user_state ==  {
                                 retrieved_result (from database): List[str] list of products
                                 db_queried: bool
                                 available_products : List[str] of products
-                                processes: {}
                             },
                             product2: {
                                 retrieved_result (from database): List[str] list of products
                                 db_queried: bool
                                 available_products : List[str] of products
-                                processes: {}
+                                
                             }
+                        },
+                        processes: {
+                            
                         },
                         business_information:{
                             business_name: 
@@ -43,17 +45,25 @@ user_state ==  {
 
 A central agent's process will typically be as follows (only one of the following as these events are mutually exclusive):
 process = 
-    "Logistic_planning": {
-        communication_history:[],
-        logistic_id: "",
-        customer_address: ""
-        },
-    "Customer_feedback": {
-        communication_history: [],
+    "Logistic_planning": { product1: {
+            communication_history:[],
+            logistic_id: "",
+            customer_address: ""
+            },
+        }
+    "Customer_feedback": {product1: {
+            communication_history: [],
+            }
         
     },
-    "Unavailable_product": {
+    "Unavailable_product": { product1: {
         communication_history: [],
+        }
+        },
+    "payment verification": { product1: {
+        bank_details : {...}
+        communication_history: [],
+    }
     }
         
 
@@ -129,28 +139,30 @@ llm_chains = {
 async def run_central_agent(event_message: Input):
     user_id, vendor_id = event_message.customer_id, event_message.business_id
     user_state = get_user_state(user_id, vendor_id)
-    
-    if "products" in user_state.keys():
-        product = user_state.get('products').get(event_message.product_name, {})
-    else:
-        user_state['products'] = {}
-        product = {} 
         
-    processes = product.get("processes", None)
+    processes = user_state.get("processes", None)
     
     if not processes:
         process = create_structured_process(event_message.product_name, event_message.message_type, 
                     event_message.price, [{"role": "user", "name": event_message.sender, "content": event_message.message}]) #{"communication_history": [(event_message.sender_type, event_message.message)]}
+        processes[event_message.message_type] = {event_message.product_name: process}
     else:
         process = processes.get(event_message.message_type, 
-                    create_structured_process(event_message.product_name, event_message.message_type, event_message.price, []))
+                   {event_message.product_name: create_structured_process(event_message.product_name, event_message.message_type, event_message.price, [])})
         
+        process = process.get(event_message.product_name)
         process.communication_history.append({"role": "user", "name": event_message.sender, "content": event_message.message})
     
     central_chain = llm_chains[process.task_type]
     
-    #TODO: The chain inputs differ based on the llm_chain called. Handle this.
-    chain_inputs = get_chain_input_for_process(process.to_dict())
+    if process.task_type == "Payment verification":
+        kwargs = {"price": process.price}
+    else:
+        kwargs = {}
+   
+    chain_inputs = get_chain_input_for_process(event_message.product_name, event_message.customer_id,
+                                               event_message.business_id, event_message.logistic_id, process.communication_history,
+                                               kwargs)
    
     response = central_chain.invoke(chain_inputs)
     # Update product and processes to the user state
@@ -159,11 +171,11 @@ async def run_central_agent(event_message: Input):
     # If agent has achieved its objective
     if response.finished: 
         # delete processes for that product
-        product['process'] = None
+        processes[event_message.message_type][event_message.product_name] = None
     else:
-        product["process"] = process
+        processes[event_message.message_type][event_message.product_name] = process
         
-    user_state['products'][event_message.product_name] = product
+    user_state['processes'][event_message.product_name] = processes
     
     modify_user_state(event_message.customer_id, event_message.business_id, user_state)
     
@@ -177,6 +189,8 @@ async def run_central_agent(event_message: Input):
           
     else: # If its agent
         return "Not yet implemented."
+    
+    return
     
 
 # event_message = create_structured_input(
