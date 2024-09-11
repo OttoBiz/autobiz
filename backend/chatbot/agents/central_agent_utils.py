@@ -22,7 +22,7 @@ class Input(BaseModel):
 class Process(BaseModel):
     product_name: str 
     price: Optional[str] = ""
-    communication_history: Optional[Union[List[str], List[Tuple]]] = None
+    communication_history: Optional[Union[List[str], List[Tuple], List[Dict]]] = None
     task_type: str
     logistic_id: Optional[str] = ""
     logistic_details: Optional[str] = ""
@@ -41,8 +41,8 @@ class Response(BaseModel):
     sender: str = Field(..., description="message sender")
     customer_id: str =Field(..., description="Customer id")
     business_id: str = Field(..., description="Business id")
-    logistic_id: Optional[str] = Field(..., description="Logistic Id where applicable")
-    logistic_details: Optional[str] = Field(..., description="logistic details")
+    # logistic_id: Optional[str] = Field(..., description="Logistic Id where applicable")
+    # logistic_details: Optional[str] = Field(..., description="logistic details")
     product: str = Field(..., description="product name")
     finished: bool = Field(..., description="True if your full objective has been achieved else False")
     
@@ -107,12 +107,13 @@ async def create_structured_process(product_name: str,  task_type: str, price: O
 
 
 async def  get_chain_input_for_process(product="", customer_id="", business_id="", logistic_id="",
-                                       customer_address= "", communication_history="", **kwargs):
+                                       customer_address= "", communication_history="", instruction="", **kwargs):
     chain_input = {
         "product": product,
         "customer_id": customer_id, 
         "business_id": business_id,
         'communication_history': communication_history,
+        "instruction": instruction
     }
     
     if logistic_id:
@@ -122,7 +123,10 @@ async def  get_chain_input_for_process(product="", customer_id="", business_id="
         chain_input["customer_address"] = customer_address
     else:
         chain_input["customer_address"] = "Not yet gotten from customer"
-        
+    
+    print("Kwargs2 in the chain input function: ", kwargs)
+       
     if kwargs:
-        chain_input.update(kwargs)
+        print("Kwargs in the chain input function: ", kwargs)
+        chain_input.update(**kwargs)
     return chain_input
