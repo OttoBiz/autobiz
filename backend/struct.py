@@ -28,6 +28,15 @@ class UpsellingAgentInput(BaseModel):
     intent: Optional[str] = "inquired"
     conversation_messages: Optional[list] = []
 
+
+class CustomerComplaintAgent(BaseModel):
+    product_name: str
+    customer_message: str
+    customer_address: str
+    miscellaneous: str
+    customer_id: Optional[str] = "09071536199"
+    business_id: str
+    
 class PaymentVerifcationAgent(BaseModel):
     product_name: str
     customer_id: Optional[str] = "09071536199"
@@ -52,4 +61,4 @@ class AgentRequest(BaseModel):
     logistic_id: Optional[str] = None
     agent: str
     message: str
-    agent_input: Optional[Union[CentralAgentInput, PaymentVerifcationAgent, UpsellingAgentInput, ProductAgentInput]] = None
+    agent_input: Optional[Union[CentralAgentInput, CustomerComplaintAgent, PaymentVerifcationAgent, UpsellingAgentInput, ProductAgentInput]] = None
