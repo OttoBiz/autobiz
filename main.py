@@ -13,6 +13,7 @@ from backend.chatbot.agents.central_agent_utils import create_structured_input
 from backend.chatbot.agents.product_agent import run_product_agent
 from backend.chatbot.agents.upselling_agent import run_upselling_agent
 from backend.chatbot.agents.payment_verification_agent import run_verification_agent
+from backend.chatbot.agents.customer_complaint_agent import run_customer_complaint_agent
 
 
 load_dotenv()
@@ -51,6 +52,8 @@ async def chat_agent(request: AgentRequest):
         response = await run_product_agent(request.agent_input)
     elif request.agent == "upselling_agent":
         response = await run_upselling_agent(request.agent_input)
+    elif request.agent == "customer_complaint_agent":
+        respone = await run_customer_complaint_agent(request.agent_input)
     else:
         response = await run_verification_agent(request.agent_input)
     return {"message": response}
