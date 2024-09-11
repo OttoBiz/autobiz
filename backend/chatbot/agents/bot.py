@@ -11,7 +11,8 @@ from .product_agent import run_product_agent
 from .upselling_agent import run_upselling_agent
 from .central_agent import run_central_agent
 from .payment_verification_agent import run_verification_agent
-from .customer_complaint_agent import run_customer_agent
+from .customer_complaint_agent import run_customer_complaint_agent
+from .logistics_agent import run_logistics_agent
 from .payment_verification_agent import *
 import json
 from backend.db.cache_utils import get_user_state, modify_user_state
@@ -31,9 +32,9 @@ str_output_parser = StrOutputParser()
 agent_functions = {
     "ProductInfo": run_product_agent,
     "PaymentVerification": run_verification_agent,
-    "Logistics": run_central_agent,
+    "Logistics": run_logistics_agent,
     "AdsMarketing": run_upselling_agent,
-    "CustomerComplaint": run_customer_agent,
+    "CustomerComplaint": run_customer_complaint_agent,
 }
 
 
