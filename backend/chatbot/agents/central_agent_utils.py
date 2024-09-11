@@ -13,6 +13,7 @@ class Input(BaseModel):
     product_name: str
     price: str
     message_type: Optional[str]  #["Logistic planning", "Customer Feedback", "Product Unavailable", "Payment Verification"]
+    customer_address: Optional[str]
     
     def to_dict(self):
         return self.dict()
@@ -50,18 +51,20 @@ class Response(BaseModel):
     
     
 # Function to create structured Input
-async def create_structured_input(sender: str, recipient: str, response: str, message: str, product_name: str,
-                                  price: str, customer_id: str = None, business_id: Optional[str] = None, message_type: Optional[str]=""):
+async def create_structured_input(sender: str, recipient: str, message: str, product_name: str,
+                                  price: str, customer_id: str = None, business_id: Optional[str] = None, 
+                                  customer_address: str = "", message_type: Optional[str]=""):
     structured_input = Input(
         sender=sender,
         recipient=recipient,
-        response=response,
+        # response=response,
         message=message,
         product_name=product_name,
         price=price,
         customer_id=customer_id,
         business_id=business_id,
-        message_type = message_type
+        message_type = message_type,
+        customer_address = customer_address
     )
     return structured_input
 
