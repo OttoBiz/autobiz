@@ -9,8 +9,10 @@ import logging
 import os
 from backend.db.fake_data import load_csv_to_db
 from backend.chatbot.agents.central_agent import run_central_agent
+from backend.chatbot.agents.central_agent_utils import create_structured_input
 from backend.chatbot.agents.product_agent import run_product_agent
 from backend.chatbot.agents.upselling_agent import run_upselling_agent
+from backend.chatbot.agents.payment_verification_agent import run_verification_agent
 
 
 load_dotenv()
@@ -46,11 +48,11 @@ async def chat_agent(request: AgentRequest):
     if request.agent == "central_agent":
         response = await run_central_agent(request.agent_input)
     elif request.agent == "product_agent":
-        response = await run_product_agent()
+        response = await run_product_agent(request.agent_input)
     elif request.agent == "upselling_agent":
-        response = await run_upselling_agent()
+        response = await run_upselling_agent(request.agent_input)
     else:
-        response = "Hello world"
+        response = await run_verification_agent(request.agent_input)
     return {"message": response}
         
 
