@@ -19,4 +19,4 @@ async def run_verification_agent(product_name, product_price, amount_paid, custo
     
     # Move on to Logistics from here.
     
-    return response.message
+    return response
