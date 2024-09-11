@@ -55,7 +55,8 @@ class ProductInfoEvaluationOutput(BaseModel):
 
 class PaymentVerification(BaseSchema):
     """Provide accurate details about a payment transaction for verification based on recent chat history.
-    Ask customer to provide all necessary fields if any is missing."""
+    Ask customer to provide all necessary fields if any is missing. if no product was previously discussed, politely decline verification
+    and state your reasons to customer"""
 
     product_name: str = Field(..., description="Product purchased by customer.")
     product_price: str = Field(..., description= "Product's price provided by vendor assistant not customer.")
