@@ -63,7 +63,7 @@ async def run_product_agent(
     product_name,
     product_category,
     intent,
-    user_state,
+    user_state= None,
     instruction=None,
     product_attributes=None,
     debug = True,
