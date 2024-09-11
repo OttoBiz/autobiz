@@ -66,12 +66,6 @@ class PaymentVerification(BaseSchema):
     bank_name: str = Field(..., description="Bank Name.")
 
 
-class Logistics(BaseSchema):
-    """Provide information about delivery logistics."""
-    customer_address: str = Field(
-        ..., description="The customer's address for product delivery"
-    )
-
 
 class AdsMarketing(BaseSchema):
     """To determine complimentary products that can be marketed to customer given index purchase."""
@@ -81,9 +75,21 @@ class AdsMarketing(BaseSchema):
     )
    
 
-class CustomerComplaint(BaseSchema):
-    """Provide information about the complaint by user"""
-    complaint: str = Field(..., description="customer's complaint summarized")
+class CentralAgentBase(BaseSchema):
+    pass
+
+class Logistics(CentralAgentBase):
+    """Provide information about delivery logistics."""
+    product_name: str  = Field(... , description="Product name")
+    customer_message: str = Field(..., description="customer's message as standalone")
+    customer_address: str = Field(
+        ..., description="customer's address for product delivery")
+    
+    miscellaneous: str = Field(..., description="other important info to help with delivery e.g convenient time for delivery")
+    
+class CustomerComplaint(CentralAgentBase):
+    """Provide information about customer's complaint"""
+    complaint: str = Field(..., description="customer's complaint or message as standalone")
     product_name: Optional[str] = Field(..., description="product name")
     sentiment: Optional[str] = Field(
         ..., description="customer sentiment about product."
