@@ -17,6 +17,7 @@ redis_conn = Cache(
 
 async def get_user_state(user_id, vendor_id, session_id= None):
     user_state = redis_conn.get(f"{user_id}:{vendor_id}")
+
     # chat_history = redis_conn.get_chat_history(f"{user_id}:{vendor_id}") or []
     return user_state #, chat_history
 

@@ -34,7 +34,7 @@ class Cache:
         if value:
             return json.loads(value)
         else:
-            return None
+            return {}
 
     def get_chat_history(self, session_id: str) -> Union[List]: #List[Chat],
         chat_history = self._client.get(session_id)
