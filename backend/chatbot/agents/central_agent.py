@@ -152,6 +152,7 @@ async def run_central_agent(event_message: Input, user_state =None, debug=False)
     message_type = event_message.message_type
     price = event_message.price
     message = event_message.message
+    sender = event_message.sender
    
     # logistic_id = event_message.logistic_id
     
@@ -170,7 +171,7 @@ async def run_central_agent(event_message: Input, user_state =None, debug=False)
     
     central_chain = llm_chains[process["task_type"]]
     
-    if process["task_type"] == "Payment verification": # if it is a payment verification task
+    if process["task_type"] == "Payment verification" and sender == 'customer': # if it is a payment verification task
         if debug:
             print("Communication history: ", process["communication_history"])
         # get and process chain inputs for the payment verification chain
