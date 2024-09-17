@@ -53,6 +53,19 @@ class UserRequest(BaseModel):
     session_id: str
     message: str
     msg_date_time: Optional[Union[datetime, str]] = None
+
+
+class BusinessRequest(BaseModel):
+    user_id: str
+    vendor_id: str
+    logistic_id: str
+    session_id: str
+    sender: str
+    message: str
+    product_name: str
+    product_price: Optional[str]
+    message_type: str
+    msg_date_time: Optional[Union[datetime, str]] = None
     
 class AgentRequest(BaseModel):
     user_id: str
