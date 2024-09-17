@@ -38,7 +38,7 @@ async def get_chat_response(user_request: UserRequest):
 
 
 @app.post("/business_chat") # For logistics and businesses as they are both businesses.
-async def get_business_response(business_request: UserRequest):
+async def get_business_response(business_request: BusinessRequest):
     response = await business_chat(business_request)
     return {"message": response}
 
