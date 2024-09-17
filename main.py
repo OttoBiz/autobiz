@@ -4,7 +4,8 @@ from backend.chatbot import *
 
 from dotenv import load_dotenv
 from backend.struct import *
-from backend.chatbot.agents.bot import chat
+from backend.chatbot.agents.user_chat_interface import chat
+from backend.chatbot.agents.business_chat_interface import business_chat
 import logging
 import os
 from backend.db.fake_data import load_csv_to_db
@@ -33,6 +34,12 @@ app = FastAPI()
 @app.post("/chat")
 async def get_chat_response(user_request: UserRequest):
     response = await chat(user_request)
+    return {"message": response}
+
+
+@app.post("/business_chat") # For logistics and businesses as they are both businesses.
+async def get_business_response(business_request: UserRequest):
+    response = await business_chat(business_request)
     return {"message": response}
 
 
