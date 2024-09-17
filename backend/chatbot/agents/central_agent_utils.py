@@ -1,4 +1,55 @@
 from typing import Annotated, List, Tuple, TypedDict, Union, Optional, Dict    
+from langchain_core.pydantic_v1 import BaseModel, Field
+
+
+class Input(BaseModel):
+    # sender_type: str  
+    sender: str  #["Agent", "Customer", "Vendor", "Logistics"]
+    recipient: str
+    business_id: Optional[str] = ""
+    customer_id: Optional[str] = ""
+    logistic_id: Optional[str] = ""
+    message: str
+    product_name: str
+    price: Optional[str]
+    message_type: Optional[str]  #["Logistic planning", "Customer Feedback", "Product Unavailable", "Payment Verification"]
+    customer_address: Optional[str]
+    customer_bank_details: Optional[str] = ""
+    
+    def to_dict(self):
+        return self.dict()
+    
+    
+class Process(BaseModel):
+    product_name: str 
+    price: Optional[str] = ""
+    communication_history: Optional[Union[List[str], List[Tuple], List[Dict]]] = None
+    task_type: str
+    logistic_id: Optional[str] = ""
+    logistic_details: Optional[str] = ""
+    customer_address: Optional[str] = ""
+    
+    def to_dict(self):
+        return self.dict()
+    
+
+class Response(BaseModel):
+    """Response."""
+    reasoning: str = Field(..., description="Think about what should be done.")
+    next_step: str = Field(..., description="Determine your next step and to whom it should be directed.")
+    message: str = Field(..., description="message")
+    recipient: str =Field(..., description="message recipient. One of the following [Agent, Customer, Vendor, Logistics]")  # ["Agent", "Customer", "Vendor", "Logistics"]
+    sender: str = Field(..., description="message sender. One of the following [Agent, Customer, Vendor, Logistics]")
+    customer_id: str =Field(..., description="Customer id")
+    business_id: str = Field(..., description="Business id")
+    # logistic_id: Optional[str] = Field(..., description="Logistic Id where applicable")
+    # logistic_details: Optional[str] = Field(..., description="logistic details")
+    product: str = Field(..., description="product name")
+    finished: bool = Field(..., description="True if your full objective has been achieved else False")
+    
+    def to_dict(self):
+        return self.dict()
+    
     
 # Function to create structured Input
 async def create_structured_input(sender: str, recipient: str, message: str, product_name: str,
