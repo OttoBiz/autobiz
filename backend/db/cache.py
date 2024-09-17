@@ -46,6 +46,9 @@ class Cache:
     def set_chat_history(self, session_id: str, chat_history: Union[List]) -> None: #List[Chat], 
         return self._client.set(session_id, json.dumps(chat_history))
     
+    def delete(self, key: str) -> None:
+        self._client.delete(key)
+    
     def flush_db(self):
         self._client.flushdb()
     

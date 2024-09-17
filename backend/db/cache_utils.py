@@ -29,3 +29,7 @@ async def modify_user_state(user_id, vendor_id, user_state,  session_id=None):
     # redis_conn.set_chat_history(session_id, chat_history)
 
     return
+
+async def delete_user_state(user_id, vendor_id):
+    redis_conn.delete(f"{user_id}:{vendor_id}")
+    return
