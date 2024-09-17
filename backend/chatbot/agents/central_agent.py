@@ -135,7 +135,12 @@ llm_chains = {
 }
 
 # Define run_central_agent function
-async def run_central_agent(event_message: Input, user_state, debug=False):
+async def run_central_agent(event_message: Input, user_state =None, debug=False):
+    if user_state is None:
+        customer_id = event_message.customer_id
+        business_id = event_message.business_id
+        user_state = get_user_state(customer_id, business_id)
+        
     if debug:
         print("user_state inside central agent: ", user_state["chat_history"])
     
@@ -147,8 +152,7 @@ async def run_central_agent(event_message: Input, user_state, debug=False):
     message_type = event_message.message_type
     price = event_message.price
     message = event_message.message
-    # customer_id = event_message.customer_id
-    # business_id = event_message.business_id
+   
     # logistic_id = event_message.logistic_id
     
     if not processes:
