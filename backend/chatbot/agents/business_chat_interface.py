@@ -6,9 +6,6 @@ from .central_agent_utils import create_structured_input
 
 async def business_chat(business_request, debug=False):
     
-    # product_name, product_price, amount_paid, customer_name, 
-    #                              bank_account_number, bank_name, customer_message, **kwargs
-                                 
     agent_input = await create_structured_input(sender=business_request.sender, recipient="agent", message=business_request.message, 
                                                 product_name=business_request.product_name, price= business_request.product_price, 
                                                 customer_id= business_request.user_id, business_id = business_request.vendor_id,
