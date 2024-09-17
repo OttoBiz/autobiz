@@ -3,10 +3,8 @@ from langchain_core.prompts import (
     ChatPromptTemplate,
     SystemMessagePromptTemplate,
     HumanMessagePromptTemplate,
-    MessagesPlaceholder,
 )  # PromptTemplate,
 from langchain_openai import ChatOpenAI
-from langchain.agents import AgentExecutor, create_openai_tools_agent
 from backend.db.cache_utils import get_user_state, modify_user_state
 from backend.db.db_utils import *
 from ..prompts.product_agent_prompt import *
@@ -30,8 +28,7 @@ product_evaluator = llm.bind(
     tools=[convert_to_openai_tool(ProductInfoEvaluationOutput)]
 )
 
-# print(tavily_tool.invoke("who is micheal jackson?"))
-
+# product agent chain
 system_message = SystemMessagePromptTemplate.from_template(system_prompt)
 rule_system_message = SystemMessagePromptTemplate.from_template(rule_system_prompt)
 human_message = HumanMessagePromptTemplate.from_template(human_prompt)
@@ -40,10 +37,10 @@ prompt = ChatPromptTemplate.from_messages(
         system_message,
         human_message,
         rule_system_message,
-        # MessagesPlaceholder("agent_scratchpad"),
     ]
 )
 
+# Evaluator agent chain
 system_message = SystemMessagePromptTemplate.from_template(product_evaluation_prompt)
 evaluator_prompt = ChatPromptTemplate.from_messages(
     [
@@ -52,7 +49,7 @@ evaluator_prompt = ChatPromptTemplate.from_messages(
 )
 
 # Define evaluator chain
-evaluator_chain = evaluator_prompt | product_evaluator #|JsonOutputFunctionsParser()
+evaluator_chain = evaluator_prompt | product_evaluator 
 
 # Create an product agent
 product_agent = prompt | llm | StrOutputParser() 
@@ -89,6 +86,9 @@ async def run_product_agent(
                                 db_queried: bool
                                 available_products : List[str] of products
                             }
+                        },
+                        processes: {
+                            "Logistic planning" : {...}
                         },
                         business_information:{
                             business_name: 

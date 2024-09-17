@@ -21,9 +21,6 @@ LOG_FILE = os.getenv("LOG_FILE")
 logging.basicConfig(filename=LOG_FILE, level=logging.WARNING,
                     format='%(asctime)s [%(levelname)s]: %(message)s')
 
-##manny: 2347000000001, junae_cosmetics: 2347000000002, donrey:2347000000003, davidfurnitures:2347000000004, 
-# wakaso logistics :2347000000005, mega_deliver :2347000000006, perodont: 2347000000007, getwell: 2347000000008, blueteams: 2347000000009
-
 # Create an instance of FastAPI
 app = FastAPI()
 
@@ -53,7 +50,7 @@ async def chat_agent(request: AgentRequest):
     elif request.agent == "upselling_agent":
         response = await run_upselling_agent(request.agent_input)
     elif request.agent == "customer_complaint_agent":
-        respone = await run_customer_complaint_agent(request.agent_input)
+        response = await run_customer_complaint_agent(request.agent_input)
     else:
         response = await run_verification_agent(request.agent_input)
     return {"message": response}

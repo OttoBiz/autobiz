@@ -64,11 +64,13 @@ class PaymentVerification(BaseSchema):
     customer_name: str = Field(..., description="customer's account full name")
     bank_account_number: str = Field(..., description="Bank account number.")
     bank_name: str = Field(..., description="Bank Name.")
+    customer_message: str= Field(..., description='customer message as standalone message.')
 
 
 
 class AdsMarketing(BaseSchema):
-    """To determine complimentary products that can be marketed to customer given index purchase."""
+    """To determine complimentary products that can be marketed to customer given index purchase. You call this function after a user has finished 
+    purchasing an item and you want to upsell a complimentary product."""
     product_purchased: str = Field(..., description="index product purchased by customer")
     product_category: str = Field(
         ..., description="Product's category e.g Fashion, health etc"
@@ -76,11 +78,10 @@ class AdsMarketing(BaseSchema):
    
 
 class CentralAgentBase(BaseSchema):
-    pass
+    product_name: Optional[str] = Field(..., description="product name")
 
 class Logistics(CentralAgentBase):
     """Provide information about delivery logistics."""
-    product_name: str  = Field(... , description="Product name")
     customer_message: str = Field(..., description="customer's message as standalone")
     customer_address: str = Field(
         ..., description="customer's address for product delivery")
@@ -90,7 +91,7 @@ class Logistics(CentralAgentBase):
 class CustomerComplaint(CentralAgentBase):
     """Provide information about customer's complaint"""
     complaint: str = Field(..., description="customer's complaint or message as standalone")
-    product_name: Optional[str] = Field(..., description="product name")
+    
     sentiment: Optional[str] = Field(
         ..., description="customer sentiment about product."
     )

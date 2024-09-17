@@ -54,7 +54,6 @@ class UserRequest(BaseModel):
     message: str
     msg_date_time: Optional[Union[datetime, str]] = None
     
-
 class AgentRequest(BaseModel):
     user_id: str
     vendor_id: Optional[str] = None
