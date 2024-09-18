@@ -164,3 +164,9 @@ init-user-db.sh
 log.txt
 app.log
 docker/postgres
+help.txt
+evaluation.py
+fast.py
+app.py
+sabiyarn.py
+tests/test_script

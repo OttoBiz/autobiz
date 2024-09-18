@@ -1,0 +1,30 @@
+id,Product,price,processor,ram,storage space,gpu,status,color,charger included,warranty,type
+1,Laptop,1500.00,Intel i7,16GB,512GB SSD,NVIDIA GTX 1060,Brand New,Black,Yes,1 Year,Windows
+2,Desktop,1200.00,AMD Ryzen 5,32GB,1TB HDD,NVIDIA GTX 1070,Used,White,No,6 Months,Windows
+3,Graphics Card,400.00,,,,"NVIDIA GTX 1050",Brand New,Red,No,1 Year,
+4,RAM,150.00,,,16GB,,Used,Blue,No,6 Months,
+5,SSD,250.00,,,256GB SSD,,Brand New,Green,No,1 Year,
+6,HDD,100.00,,,1TB HDD,,Used,Yellow,No,6 Months,
+7,Monitor,300.00,,,,,Brand New,Black,No,1 Year,
+8,Keyboard,50.00,,,,,Used,White,No,6 Months,
+9,Mouse,30.00,,,,,Brand New,Blue,No,1 Year,
+10,Laptop,1800.00,Intel i5,8GB,256GB SSD,NVIDIA GTX 1080,Used,Silver,Yes,2 Years,Macbook
+11,Desktop,1400.00,AMD Ryzen 7,16GB,512GB SSD,AMD Radeon RX 580,Brand New,Gray,No,1 Year,Windows
+12,Graphics Card,500.00,,,,"AMD Radeon RX 580",Used,Black,No,6 Months,
+13,RAM,200.00,,,32GB,,Brand New,Red,No,1 Year,
+14,SSD,300.00,,,512GB SSD,,Used,White,No,6 Months,
+15,HDD,120.00,,,2TB HDD,,Brand New,Blue,No,1 Year,
+16,Monitor,350.00,,,,,Used,Green,No,6 Months,
+17,Keyboard,45.00,,,,,Brand New,Yellow,No,1 Year,
+18,Mouse,35.00,,,,,Used,Purple,No,6 Months,
+19,Laptop,1600.00,Intel i7,32GB,1TB HDD,NVIDIA GTX 1070,Brand New,Black,Yes,2 Years,Windows
+20,Desktop,1300.00,AMD Ryzen 5,16GB,256GB SSD,AMD Radeon RX 580,Used,White,No,1 Year,Windows
+21,Graphics Card,450.00,,,,"NVIDIA GTX 1060",Brand New,Red,No,1 Year,
+22,RAM,180.00,,,8GB,,Used,Blue,No,6 Months,
+23,SSD,275.00,,,256GB SSD,,Brand New,Green,No,1 Year,
+24,HDD,110.00,,,1TB HDD,,Used,Yellow,No,6 Months,
+25,Monitor,320.00,,,,,Brand New,Black,No,1 Year,
+26,Keyboard,55.00,,,,,Used,White,No,6 Months,
+27,Mouse,32.00,,,,,Brand New,Blue,No,1 Year,
+28,Laptop,1700.00,Intel i5,8GB,512GB SSD,NVIDIA GTX 1080,Used,Silver,Yes,2 Years,Macbook
+29,Desktop,1450.00,AMD Ryzen 7,32GB,1TB HDD,NVIDIA GTX 1070,Brand New,Gray,No,1 Year,Windows

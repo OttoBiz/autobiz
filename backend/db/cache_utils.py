@@ -15,21 +15,21 @@ redis_conn = Cache(
 )
 
 
-def get_user_state(user_id, session_id):
-    user_db = redis_conn.get(user_id)
-    chat_history = redis_conn.get_chat_history(session_id) or []
-    return user_db , chat_history
+async def get_user_state(user_id, vendor_id, session_id= None):
+    user_state = redis_conn.get(f"{user_id}:{vendor_id}")
+
+    # chat_history = redis_conn.get_chat_history(f"{user_id}:{vendor_id}") or []
+    return user_state #, chat_history
 
 
 
-async def modify_user_state(user_id, session_id, user_db, user_params, chat_history):
-    # Update user_db for now.
-    user_db["user_params"] = user_params
-    user_db["session_chat_history"] = chat_history
-
-
+async def modify_user_state(user_id, vendor_id, user_state,  session_id=None):
     # Rewrite history to redis.
-    redis_conn.set(user_id, user_db)
-    redis_conn.set_chat_history(session_id, chat_history)
+    redis_conn.set(f"{user_id}:{vendor_id}", user_state)
+    # redis_conn.set_chat_history(session_id, chat_history)
 
+    return
+
+async def delete_user_state(user_id, vendor_id):
+    redis_conn.delete(f"{user_id}:{vendor_id}")
     return
