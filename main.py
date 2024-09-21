@@ -15,6 +15,7 @@ from backend.chatbot.agents.product_agent import run_product_agent
 from backend.chatbot.agents.upselling_agent import run_upselling_agent
 from backend.chatbot.agents.payment_verification_agent import run_verification_agent
 from backend.chatbot.agents.customer_complaint_agent import run_customer_complaint_agent
+from backend.whatsapp.routers import router
 
 
 load_dotenv()
@@ -26,10 +27,10 @@ logging.basicConfig(filename=LOG_FILE, level=logging.WARNING,
 app = FastAPI()
 
 # Store dummy data in the database
-# load_csv_to_db("./dummy_data/Business_table.csv", "businesses")
-# load_csv_to_db("./dummy_data/donrey_fashion.csv", "products")
-# load_csv_to_db("./dummy_data/junae_cosmetics.csv", "products")
-# load_csv_to_db("./dummy_data/manny_gadgets.csv", "products")
+load_csv_to_db("./dummy_data/Business_table.csv", "businesses")
+load_csv_to_db("./dummy_data/donrey_fashion.csv", "products")
+load_csv_to_db("./dummy_data/junae_cosmetics.csv", "products")
+load_csv_to_db("./dummy_data/manny_gadgets.csv", "products")
 
 @app.post("/chat")
 async def get_chat_response(user_request: UserRequest):
@@ -62,6 +63,8 @@ async def chat_agent(request: AgentRequest):
         response = await run_verification_agent(request.agent_input)
     return {"message": response}
         
+
+app.include_router(router=router)
 
 
 if __name__ == "__main__":
