@@ -119,12 +119,12 @@ async def execute_tool(tool_calls, messages):
 
     return messages
 
-async def run_upselling_agent(product, intent, conversation_messages = []):
+async def run_upselling_agent(product, intent, chat_history = [], **kwargs):
     
-    conversation_messages.append( {"role": "user", "content": f"Product: {product} Instruction: {intent}"})
+    chat_history.append( {"role": "user", "content": f"Product: {product} Instruction: {intent}"})
         
     messages = [{"role": "system", "content": UPSELLING_SYSTEM_PROMPT}]
-    messages.extend(conversation_messages)
+    messages.extend(chat_history)
 
     while True:
         response = client.chat.completions.create(
@@ -135,9 +135,9 @@ async def run_upselling_agent(product, intent, conversation_messages = []):
         )
 
         if response.choices[0].message.tool_calls:
-            conversation_messages.extend([response.choices[0].message])
+            chat_history.extend([response.choices[0].message])
             messages = await execute_tool(
-                response.choices[0].message.tool_calls, conversation_messages
+                response.choices[0].message.tool_calls, chat_history
             )
         else:
             return response.choices[0].message.content
