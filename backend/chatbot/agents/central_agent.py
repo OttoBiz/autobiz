@@ -8,8 +8,10 @@ from langchain_openai import ChatOpenAI
 # from .product_agent import product_agent
 from ..prompts.central_agent_prompt import *
 from backend.db.cache_utils import get_user_state, modify_user_state
-from .tools import format_communication
+# from .tools import format_communication
 from .central_agent_utils import *
+from backend.whatsapp.utils import whatsapp
+
 import json
 
 """
@@ -135,10 +137,11 @@ llm_chains = {
 }
 
 # Define run_central_agent function
-async def run_central_agent(event_message: Input, user_state =None, debug=False):
+async def run_central_agent(event_message: Input, user_state =None, vendor_only=False, debug=False):
+    customer_id = event_message.customer_id
+    business_id = event_message.business_id
+        
     if user_state is None:
-        customer_id = event_message.customer_id
-        business_id = event_message.business_id
         user_state = get_user_state(customer_id, business_id)
         
     if debug:
@@ -190,8 +193,23 @@ async def run_central_agent(event_message: Input, user_state =None, debug=False)
     # Add agents response to the communication history
     process["communication_history"].append({"role": "user", "name": response.sender, "content": response.message})
     
+    
+    # get sender and recipient
+    sender = response.sender
+    recipient = response.recipient
+    
+    if user_state is not None:
+        if recipient == 'Customer' : #Add agent's response to chat history.
+            user_state['chat_history'].append({"role": "assistant", "name": sender, "content": response})
+        elif recipient == 'Customer':
+            user_state['chat_history'].append({"role": "assistant", "name": sender, "content": response})
+        elif recipient == 'Customer':
+            user_state['chat_history'].append({"role": "assistant", "name": sender, "content": response})
+            
+    
     if debug:
         print("Communication_history: ", process["communication_history"])
+        
     # If agent has achieved its objective
     if response.finished: 
         # delete processes for that product
@@ -202,18 +220,33 @@ async def run_central_agent(event_message: Input, user_state =None, debug=False)
         
     user_state['processes'] = processes
     
-    # await modify_user_state(user_id, vendor_id, user_state)
+    if vendor_only: # If only vendor/logistic is involved in the chat
+        await modify_user_state(business_id, business_id, user_state)
+    else:
+        await modify_user_state(customer_id, business_id, user_state)
+        
+    
     if debug:
         print("user_state inside central agent: ", user_state["chat_history"])
         print("Model Response: ", response)
     
+    
+    # Get the user_name / phone number for the sender
+    sender_number = get_contact(sender, event_message)
+    recipient_number = get_contact(recipient, event_message)
+    
+    # send message to recipient.
+    whatsapp.send_message(sender_number, recipient_number, response.message)
+    
+    return
+    
     # This is where we will have the function calls.
-    if response.recipient == "Customer": # if recipient is customer, send the message to customer
-        return response, user_state
-    elif response.recipient == "Logistics": # if recipient is logistics, send the message to logistics
-        return response, user_state
-    elif response.recipient == "Vendor": # If recipient is vendor, send message to vendor.
-        return response, user_state
-        # vendor_message = input(response.message + "\n")    
-    else: # If its agent, send message to agent.
-        return "Not yet implemented.", user_state
+    # if recipient == "Customer": # if recipient is customer, send the message to customer
+    #     return response, user_state
+    # elif recipient == "Logistics": # if recipient is logistics, send the message to logistics
+    #     return response, user_state
+    # elif recipient == "Vendor": # If recipient is vendor, send message to vendor.
+    #     return response, user_state
+    #     # vendor_message = input(response.message + "\n")    
+    # else: # If its agent, send message to agent.
+    #     return "Not yet implemented.", user_state
