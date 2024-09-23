@@ -1,8 +1,10 @@
 from .central_agent import run_central_agent
 from .central_agent_utils import create_structured_input
+from fastapi import BackgroundTasks
 
 
-async def run_logistics_agent(product_name, customer_message, customer_address, miscellaneous, **kwargs):
+async def run_logistics_agent(product_name, customer_message, customer_address, miscellaneous, background_tasks: BackgroundTasks,
+                              **kwargs):
     #sentiment, product_rating, date can be added as arguments to improve recommendations and user experience.
 
     customer_address += f"\nAdditional Information: {miscellaneous}"
@@ -14,6 +16,9 @@ async def run_logistics_agent(product_name, customer_message, customer_address, 
         
     
     # This call should be run in a background process 
-    response = await run_central_agent(agent_input, kwargs["user_state"])
+    # response = await run_central_agent(agent_input, kwargs["user_state"])
     
-    return response # f"Please, hold on why we work on the logistics around delivery)"
+    # Add the central agent execution as a background task.
+    background_tasks.add_task(run_central_agent, agent_input, kwargs["user_state"])
+    
+    return f"Please, hold on why we work on the logistics around delivery."
