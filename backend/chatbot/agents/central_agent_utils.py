@@ -42,7 +42,7 @@ class Response(BaseModel):
     sender: str = Field(..., description="message sender. One of the following [Agent, Customer, Vendor, Logistics]")
     customer_id: str =Field(..., description="Customer id")
     business_id: str = Field(..., description="Business id")
-    # logistic_id: Optional[str] = Field(..., description="Logistic Id where applicable")
+    logistic_id: Optional[str] = Field(..., description="Logistic Id where applicable")
     # logistic_details: Optional[str] = Field(..., description="logistic details")
     product: str = Field(..., description="product name")
     finished: bool = Field(..., description="True if your full objective has been achieved else False")
@@ -50,6 +50,13 @@ class Response(BaseModel):
     def to_dict(self):
         return self.dict()
     
+def get_contact(query, input_):
+    if query.lower() == 'customer':
+        return input_.customer_id
+    elif query.lower() == 'vendor':
+        return input_.business_id
+    else:
+        return input_.logistic_id
     
 # Function to create structured Input
 async def create_structured_input(sender: str, recipient: str, message: str, product_name: str,
