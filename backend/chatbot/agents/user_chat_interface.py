@@ -4,7 +4,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_openai import ChatOpenAI
 from ..prompts.prompt import base_prompt
-from .function_args_schema import arg_schema
+from .user_function_args_schema import arg_schema
 from langchain.output_parsers.openai_functions import JsonOutputFunctionsParser
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from .product_agent import run_product_agent
@@ -17,6 +17,7 @@ from .payment_verification_agent import *
 import json
 from backend.db.cache_utils import get_user_state, modify_user_state, delete_user_state
 from backend.db.db_utils import *
+from fastapi import BackgroundTasks
 
 prompt = PromptTemplate.from_template(base_prompt)
 llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0, streaming=True).bind(
@@ -41,7 +42,7 @@ agent_functions = {
 #id,business name,ig page,facebook page,twitter page,email,tiktok,website,phone number,business description,business niche,Bank name,
 # Bank account number,Bank account name,type,date created
 # chat function that interfaces with chatbot
-async def chat(user_request, reset_user_state=True, debug=False):
+async def chat(user_request, background_tasks: BackgroundTasks,  reset_user_state=True, debug=False):
     
     ## If state between user and vendor exists in cache, fetch it:
     user_state  = await get_user_state(user_request.user_id, user_request.vendor_id)
@@ -80,6 +81,7 @@ async def chat(user_request, reset_user_state=True, debug=False):
         try:
             args = json.loads(tool_called["arguments"])
             args.update({"user_state": user_state,
+                         "background_tasks": background_tasks,
                          "customer_message": user_request.message,
                          "business_id": user_request.vendor_id, "customer_id": user_request.user_id})
         except:
