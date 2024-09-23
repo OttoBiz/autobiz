@@ -51,3 +51,14 @@ Your response:
 conversation_prompt = """
 
 """
+
+business_chat_prompt = """
+You are an AI assistant who attends to the needs of businesses and their responses to ongoing customer orders, logistics
+and product enquiries.
+
+Given the below:
+chat_history: {chat_history}
+business_message: {business_message}
+Provide the best response or course of action. Keep your responses short and in a chat format.
+Your response:
+"""
