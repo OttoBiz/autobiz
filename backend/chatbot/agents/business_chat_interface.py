@@ -42,7 +42,7 @@ async def business_chat(business_request, background_tasks: BackgroundTasks, deb
     response = chain.invoke({"business_message": business_request.message,
                              "chat_history": chat_history})
     
-    # If a tool is called for either central agent or other tools
+    # If a tool is called: for either central agent or other tools
     if response.content == "":
         tool_called = response.additional_kwargs.get("tool_calls")[0].get("function")
         function_name = tool_called["name"]
@@ -53,14 +53,15 @@ async def business_chat(business_request, background_tasks: BackgroundTasks, deb
         except:
             pass
         
-        if not args.for_central_agent: # if the business (vendor/logistic) message is not related to the central agent (isn't a response to a central agent's previous message)
+        if not bool(args["for_central_agent"]): # if the business (vendor/logistic) message is not related to the central agent (isn't a response to a central agent's previous message)
             # Call agent and fetch response.
-            response, user_state = await agent_functions[function_name](**args)
+            # response, user_state = await agent_functions[function_name](**args)
             
-            # Update the chat history
-            user_state["chat_history"].extend([{"role": "user" , "name": "business", "content": business_request.message},
-                                    {"role": "assistant", "name": "ai", "content": response}])
-            return response
+            # # Update the chat history
+            # user_state["chat_history"].extend([{"role": "user" , "name": "business", "content": business_request.message},
+            #                         {"role": "assistant", "name": "ai", "content": response}])
+            # return response
+            return "Hello, Testing..."
         
         else: # Else parse message for central agent.
             agent_input = await create_structured_input(sender=business_request.sender, recipient="agent", message=business_request.message, 
@@ -68,9 +69,10 @@ async def business_chat(business_request, background_tasks: BackgroundTasks, deb
                                                     customer_id= business_request.user_id, business_id = business_request.vendor_id,
                                                     logistic_id = business_request.logistic_id, message_type=business_request.message_type,
                                         )
-            # response = await run_central_agent(agent_input)
-                # Update the chat history
+            
+            # Update the chat history
             user_state["chat_history"].extend([{"role": "user" , "name": "business", "content": business_request.message}])
+            # run central agent in the background. 
             background_tasks.add_task(run_central_agent, agent_input, user_state)      
         return 
     

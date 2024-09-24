@@ -8,10 +8,10 @@ class BaseSchema(BaseModel):
         ...,
         description="""stage of conversation/sales process. It must be one of the following:
                                     - Product Enquiry: Information about products.
-                                    - Product purchase: Customer's intent to purchase a product.
+                                    - Product purchase: Customer intends to purchase a product.
                                     - Payment verification: Verify customer's payment for a particular product.
-                                    - Logistics: Logistic planning after successful payment verification.
-                                    - Ads Marketing: The last stage after successful product purchase and payment verification.
+                                    - Logistics: Delivery & logistic planning after successful payment verification.
+                                    - Ads Marketing: Upselling complimentary products to customer after a successful logistic planning.
                                     - Customer complaint/Feedback: [Refund, Faulty product]""",
     )
     # tone: str = Field(
@@ -21,10 +21,10 @@ class BaseSchema(BaseModel):
 
 
 class ProductInfo(BaseSchema):
-    """Provide accurate information about the product enquiries."""
+    """Provide accurate & consistent information about the product enquired. Ask customer for more info if unsure."""
 
-    customer_message: str = Field(..., description="Customer's need summarized.")
-    product_name: str = Field(..., description="Product name. if you cannot determine any form of product name from the customer's message, set to 'NONE'.")
+    customer_message: str = Field(..., description="Customer's want summarized.")
+    product_name: str = Field(..., description="Product name. if you cannot determine any product name from the customer's message or chat history, set to 'NONE'.")
     product_attributes: Optional[dict] = Field(
         ...,
         description="Additional product attribute. A dictionary of key, value pairs of product attribute requested."
@@ -52,9 +52,10 @@ class ProductInfoEvaluationOutput(BaseModel):
              the customer enquires about.""" 
         )
     instruction: str = Field(..., description="Next course of action for product agent to carry out.")
+    
 
 class PaymentVerification(BaseSchema):
-    """Provide accurate details about a payment transaction for verification based on recent chat history.
+    """Provide accurate details about a payment transaction for verification based on most recent chat history.
     Ask customer to provide all necessary fields if any is missing. if no product was previously discussed, politely decline verification
     and state your reasons to customer"""
 
@@ -69,37 +70,37 @@ class PaymentVerification(BaseSchema):
 
 
 class AdsMarketing(BaseSchema):
-    """To determine complimentary products that can be marketed to customer given index purchase. You call this function after a user has finished 
-    purchasing an item and you want to upsell a complimentary product."""
-    product: str = Field(..., description="index product purchased by customer")
+    """To market/upsell complimentary products to a customer given index product purchased."""
+    product: str = Field(..., description="index product just purchased by customer")
     product_category: str = Field(
-        ..., description="Product's category e.g Fashion, health etc"        
+        ..., description="Product's category"        
     )
-    intent: str = Field(..., description= "customer's intent: Either 'purchased' or 'inquired'")
+    intent: str = Field(..., description= "customer's intent: ['purchased', 'inquired']")
    
 
 class CentralAgentBase(BaseSchema):
     product_name: Optional[str] = Field(..., description="product name")
 
 class Logistics(CentralAgentBase):
-    """Provide information about delivery logistics."""
+    """Provide information about delivery logistics. Get information from customer for all required fields."""
     customer_message: str = Field(..., description="customer's message as standalone")
     customer_address: str = Field(
         ..., description="customer's address for product delivery")
     
-    miscellaneous: str = Field(..., description="other important info to help with delivery e.g convenient time for delivery")
+    miscellaneous: Optional[str] = Field(default="", description="other important info to help with delivery e.g convenient time for delivery")
     
 class CustomerComplaint(CentralAgentBase):
     """Provide information about customer's complaint"""
     complaint: str = Field(..., description="customer's complaint or message as standalone")
     
     sentiment: Optional[str] = Field(
-        ..., description="customer sentiment about product."
+        ..., description="customer sentiment."
     )
     product_rating: Optional[str] = Field(
         ...,
-        description="Estimated rating of product based on customer message [1 - 10]",
+        description="Estimated rating of product [1 - 10]",
     )
+    order_no: str = Field(..., description="purchase order number.")
     Date: Optional[str] = Field(..., description="Date item was purchased.")
 
 

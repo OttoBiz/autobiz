@@ -34,8 +34,8 @@ class Product(BaseModel):
 
 
 instructions = {
-    "purchased": "This item was purchased. Suggest and upsell only the best (at most 2) complementary products that can be used alongside the bought product(s).",
-    "inquired": "This item was inquired but not available. Suggest and upsell only the top 2 direct/complete alternative products to buy.",
+    "purchased": "This item was purchased. Suggest, market and upsell persuasively only the best (at most 2) complementary products that can be used alongside the bought product(s).",
+    "inquired": "This item was inquired but not available. Suggest, market and upsell persuasively only the top 2 direct/complete alternative products to buy.",
 }
 
 

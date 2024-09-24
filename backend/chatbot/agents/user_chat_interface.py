@@ -9,7 +9,6 @@ from langchain.output_parsers.openai_functions import JsonOutputFunctionsParser
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from .product_agent import run_product_agent
 from .upselling_agent import run_upselling_agent
-from .central_agent import run_central_agent
 from .payment_verification_agent import run_verification_agent
 from .customer_complaint_agent import run_customer_complaint_agent
 from .logistics_agent import run_logistics_agent
@@ -43,7 +42,6 @@ agent_functions = {
 # Bank account number,Bank account name,type,date created
 # chat function that interfaces with chatbot
 async def chat(user_request, background_tasks: BackgroundTasks,  reset_user_state=True, debug=False):
-    
     ## If state between user and vendor exists in cache, fetch it:
     user_state  = await get_user_state(user_request.user_id, user_request.vendor_id)
     if debug:
@@ -58,7 +56,6 @@ async def chat(user_request, background_tasks: BackgroundTasks,  reset_user_stat
         #     print("Business informaton (user_state doesn't exist): ", business_information)
         
     else:
-        
         business_information = user_state.get("business_information")
         chat_history  = user_state.get("chat_history",[])
         # print("Business informaton (user_state exists): ", business_information)

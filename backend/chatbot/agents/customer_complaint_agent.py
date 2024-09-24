@@ -19,7 +19,5 @@ async def run_customer_complaint_agent(complaint, product_name, background_tasks
     background_tasks.add_task(run_central_agent, agent_input, kwargs["user_state"])
 
     # Return a placeholder message to customer.
-    if kwargs.get("first call", False):
-        return f"Please, hold while we verify payment for this product: {product_name}." , kwargs["user_state"]
-    else:
-        return "Please, hold on while we process your message. I will get back to you shortly.", kwargs['user_state']
+
+    return "Please, hold on while I process your message. \nI will get back to you shortly.", kwargs['user_state']
