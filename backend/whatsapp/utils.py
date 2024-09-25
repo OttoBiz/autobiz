@@ -4,8 +4,6 @@ import json
 import os
 from typing import Union
 from urllib.parse import parse_qs
-from backend.chatbot.agents.business_chat_interface import business_chat
-from backend.chatbot.agents.user_chat_interface import chat
 from pydantic import BaseModel
 import requests
 
@@ -110,6 +108,9 @@ class WhatsappBot:
         self.send_message(recipient_id, sender_id, response)
 
     async def get_response(request: Union[UserRequest, BusinessRequest]) -> str:
+        from backend.chatbot.agents.user_chat_interface import chat
+        from backend.chatbot.agents.business_chat_interface import business_chat
+
         if isinstance(request, UserRequest):
             response = await chat(request)
         elif isinstance(request, BusinessRequest):

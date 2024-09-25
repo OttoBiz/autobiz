@@ -1,5 +1,4 @@
 from backend.db.db_utils import *
-from .central_agent import run_central_agent
 from .central_agent_utils import create_structured_input
 from fastapi import BackgroundTasks
 from langchain_core.prompts import PromptTemplate
@@ -7,7 +6,6 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_openai import ChatOpenAI
 from ..prompts.prompt import business_chat_prompt
 from langchain_core.utils.function_calling import convert_to_openai_tool
-from .central_agent import run_central_agent
 from backend.db.cache_utils import get_user_state, modify_user_state, delete_user_state
 from backend.db.db_utils import *
 from fastapi import BackgroundTasks
@@ -27,6 +25,8 @@ agent_functions = {
 }
     
 async def business_chat(business_request, background_tasks: BackgroundTasks, debug=False):
+    from .central_agent import run_central_agent
+
     # We use the vendor_id as key to fetch the business state.
     user_state  = await get_user_state(business_request.vendor_id, business_request.vendor_id)
     if debug:
