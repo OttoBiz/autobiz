@@ -69,5 +69,5 @@ async def chat_agent(request: AgentRequest, background_tasks: BackgroundTasks):
 app.include_router(router=router)
 
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=PORT, reload=True)
+# if __name__ == "__main__":
+#     uvicorn.run(app, host="0.0.0.0", port=PORT, reload=True)
