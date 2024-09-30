@@ -29,10 +29,10 @@ app = FastAPI()
 PORT = os.getenv("PORT", 8000) 
 
 # # Store dummy data in the database
-load_csv_to_db("./dummy_data/Business_table.csv", "businesses")
-load_csv_to_db("./dummy_data/donrey_fashion.csv", "products")
-load_csv_to_db("./dummy_data/junae_cosmetics.csv", "products")
-load_csv_to_db("./dummy_data/manny_gadgets.csv", "products")
+# load_csv_to_db("./dummy_data/Business_table.csv", "businesses")
+# load_csv_to_db("./dummy_data/donrey_fashion.csv", "products")
+# load_csv_to_db("./dummy_data/junae_cosmetics.csv", "products")
+# load_csv_to_db("./dummy_data/manny_gadgets.csv", "products")
 
 @app.post("/chat")
 async def get_chat_response(user_request: UserRequest, background_tasks: BackgroundTasks):
