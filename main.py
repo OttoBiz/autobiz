@@ -30,7 +30,7 @@ PORT = os.getenv("PORT", 8000)
 
 # # Store dummy data in the database
 # load_csv_to_db("./dummy_data/Business_table.csv", "businesses")
-# load_csv_to_db("./dummy_data/donrey_fashion.csv", "products")
+load_csv_to_db("./dummy_data/donrey_fashion.csv", "products")
 # load_csv_to_db("./dummy_data/junae_cosmetics.csv", "products")
 # load_csv_to_db("./dummy_data/manny_gadgets.csv", "products")
 
