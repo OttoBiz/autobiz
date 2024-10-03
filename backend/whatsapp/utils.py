@@ -107,7 +107,7 @@ class WhatsappBot:
         response = await self.get_response(request=request)
         self.send_message(recipient_id, sender_id, response)
 
-    async def get_response(request: Union[UserRequest, BusinessRequest]) -> str:
+    async def get_response(self, request: Union[UserRequest, BusinessRequest]) -> str:
         from backend.chatbot.agents.user_chat_interface import chat
         from backend.chatbot.agents.business_chat_interface import business_chat
 
