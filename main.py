@@ -15,6 +15,7 @@ from backend.chatbot.agents.product_agent import run_product_agent
 from backend.chatbot.agents.upselling_agent import run_upselling_agent
 from backend.chatbot.agents.payment_verification_agent import run_verification_agent
 from backend.chatbot.agents.customer_complaint_agent import run_customer_complaint_agent
+from backend.whatsapp.routers import router
 
 
 load_dotenv()
@@ -25,21 +26,23 @@ logging.basicConfig(filename=LOG_FILE, level=logging.WARNING,
 # Create an instance of FastAPI
 app = FastAPI()
 
-# Store dummy data in the database
+PORT = os.getenv("PORT", 8000) 
+
+# # Store dummy data in the database
 # load_csv_to_db("./dummy_data/Business_table.csv", "businesses")
-# load_csv_to_db("./dummy_data/donrey_fashion.csv", "products")
+load_csv_to_db("./dummy_data/donrey_fashion.csv", "products")
 # load_csv_to_db("./dummy_data/junae_cosmetics.csv", "products")
 # load_csv_to_db("./dummy_data/manny_gadgets.csv", "products")
 
 @app.post("/chat")
-async def get_chat_response(user_request: UserRequest):
-    response = await chat(user_request)
+async def get_chat_response(user_request: UserRequest, background_tasks: BackgroundTasks):
+    response = await chat(user_request, background_tasks)
     return {"message": response}
 
 
 @app.post("/business_chat") # For logistics and businesses as they are both businesses.
-async def get_business_response(business_request: BusinessRequest):
-    response = await business_chat(business_request)
+async def get_business_response(business_request: BusinessRequest, background_tasks: BackgroundTasks):
+    response = await business_chat(business_request, background_tasks)
     return {"message": response}
 
 
@@ -49,20 +52,22 @@ async def health():
 
 
 @app.post("/agent")
-async def chat_agent(request: AgentRequest):
+async def chat_agent(request: AgentRequest, background_tasks: BackgroundTasks):
     if request.agent == "central_agent":
-        response = await run_central_agent(request.agent_input)
+        response = await run_central_agent(request.agent_input, background_tasks)
     elif request.agent == "product_agent":
-        response = await run_product_agent(request.agent_input)
+        response = await run_product_agent(request.agent_input, background_tasks)
     elif request.agent == "upselling_agent":
-        response = await run_upselling_agent(request.agent_input)
+        response = await run_upselling_agent(request.agent_input, background_tasks)
     elif request.agent == "customer_complaint_agent":
-        response = await run_customer_complaint_agent(request.agent_input)
+        response = await run_customer_complaint_agent(request.agent_input, background_tasks)
     else:
-        response = await run_verification_agent(request.agent_input)
+        response = await run_verification_agent(request.agent_input, background_tasks)
     return {"message": response}
         
 
+app.include_router(router=router)
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+
+# if __name__ == "__main__":
+#     uvicorn.run(app, host="0.0.0.0", port=PORT, reload=True)

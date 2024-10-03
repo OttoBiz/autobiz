@@ -1,9 +1,11 @@
 from .central_agent import run_central_agent
 from .central_agent_utils import create_structured_input
+from fastapi import BackgroundTasks
 
 async def run_verification_agent(product_name, product_price, amount_paid, customer_name, 
-                                 bank_account_number, bank_name, customer_message, **kwargs):
+                                 bank_account_number, bank_name, customer_message, background_tasks: BackgroundTasks, **kwargs):
     
+    is_first_call = kwargs["user_state"].get("first_verification_call", True)
     
     # Process customer's bank details.
     customer_bank_details = f"""
@@ -21,9 +23,18 @@ async def run_verification_agent(product_name, product_price, amount_paid, custo
         
     
     
-    # This call should be run in a background process
-    response = await run_central_agent(agent_input, kwargs["user_state"])
-    
-
+   
+    # await run_central_agent(agent_input, kwargs["user_state"])
     # Return a placeholder message to customer.
-    return response # f"Please, hold while we verify payment for this product: {product_name}."
+    if is_first_call:
+        kwargs["user_state"].set("first_verification_call", False)
+        # Add the central agent execution as a background task.
+        background_tasks.add_task(run_central_agent, agent_input, kwargs["user_state"])
+    
+        
+        return f"Please, hold while we verify payment for this product: {product_name}." , kwargs["user_state"]
+    else:
+        # Add the central agent execution as a background task.
+        background_tasks.add_task(run_central_agent, agent_input, kwargs["user_state"])
+    
+        return "Please, hold on while we process your message. I will get back to you shortly.", kwargs['user_state']

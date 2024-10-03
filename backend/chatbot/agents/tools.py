@@ -1,6 +1,6 @@
 import os
 from langchain_core.tools import tool
-from .function_args_schema import *
+from .user_function_args_schema import *
 from langchain_community.utilities.tavily_search import TavilySearchAPIWrapper
 from langchain_openai import ChatOpenAI
 from langchain_community.tools.tavily_search import TavilySearchResults

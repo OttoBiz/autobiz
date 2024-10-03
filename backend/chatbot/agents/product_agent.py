@@ -8,7 +8,7 @@ from langchain_openai import ChatOpenAI
 from backend.db.cache_utils import get_user_state, modify_user_state
 from backend.db.db_utils import *
 from ..prompts.product_agent_prompt import *
-from .function_args_schema import ProductInfoEvaluationOutput
+from .user_function_args_schema import ProductInfoEvaluationOutput
 from .upselling_agent import run_upselling_agent
 from langchain_core.output_parsers import StrOutputParser
 # from langchain.output_parsers.openai_functions import StrOJsonOutputFunctionsParser

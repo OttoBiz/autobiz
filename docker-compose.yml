@@ -1,9 +1,5 @@
-# docker-compose.yml
-version: '3.8'
-
 services:
   chatbot:
-    image: python:3.11-alpine
     build: .
     container_name: chatbot
     restart: always
@@ -12,36 +8,39 @@ services:
     depends_on:
       - postgres
       - redis
-    command: ["sh", "-c", "uvicorn --host 0.0.0.0 --port 8000 main:app --reload"]
+    command: sh -c "pip install -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
     volumes:
       - ./:/app
+    working_dir: /app
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://:${REDIS_SERVER_PASSWORD}@redis:6379/0
     env_file:
       - .env
 
   postgres:
-    image: postgres
+    image: postgres:13
     container_name: postgres
     restart: always
-    env_file: 
-      - .env
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
     ports:
-      - "5050:5050"
+      - "5432:5432"
     volumes:
-      - ./docker/postgres/data:/var/lib/postgresql/data
-      #- ./docker/postgres/init-user-db.sh:/docker-entrypoint-initdb.d/init-user-db.sh
+      - postgres_data:/var/lib/postgresql/data
 
   redis:
     image: redis:7.2.2-alpine
     restart: always
     container_name: redis
-    command: redis-server --save 20 1 --loglevel warning --requirepass eYVX7EwVmmxKPCDmwMtyKVge8oLd2t81
+    command: redis-server --requirepass ${REDIS_SERVER_PASSWORD}
     ports:
       - "6379:6379"
-    env_file:
-      - .env
     volumes:
-      - ./docker/redis/data:/data
+      - redis_data:/data
 
-
-# volumes:
-#   postgres_data:
+volumes:
+  postgres_data:
+  redis_data:
