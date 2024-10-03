@@ -9,6 +9,7 @@ import json
 
 # load_dotenv()
 DEBUG = os.getenv("DEBUG")
+REDIS_URL = os.getenv("REDIS_URL", None)
 
 
 class Cache:
@@ -19,12 +20,15 @@ class Cache:
             port=port,
             password=password,
             decode_responses=True)
-        else:            
-            self._client = RedisCluster(
-                host=host,
-                port=port,
-                password=password,
-                decode_responses=True)
+        else:
+            if REDIS_URL:
+                self._client = RedisCluster.from_url(REDIS_URL)
+            else:
+                self._client = RedisCluster(
+                    host=host,
+                    port=port,
+                    password=password,
+                    decode_responses=True)
 
     def set(self, key: str, val: dict) -> None: 
         self._client.set(key, json.dumps(val))
