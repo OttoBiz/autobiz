@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, BackgroundTasks
 from fastapi.responses import PlainTextResponse
 
 from backend.whatsapp.utils import whatsapp
@@ -14,6 +14,6 @@ def verification(request: Request):
 
 
 @router.post("/webhook")
-async def notification(request: Request):
+async def notification(request: Request, background_task: BackgroundTasks):
     response = await whatsapp.handle_webhook(request)
     return PlainTextResponse(response)

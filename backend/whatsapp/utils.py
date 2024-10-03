@@ -61,7 +61,7 @@ class WhatsappBot:
             else:
                 return "Invalid verification token"
 
-    async def handle_webhook(self, request):
+    async def handle_webhook(self, request, background_task):
         if request.method == "POST":
             body = await request.body()
             signature = request.headers.get("X-Hub-Signature", "")
@@ -86,13 +86,13 @@ class WhatsappBot:
             phone_number_id = messaging_events[0]["metadata"]["phone_number_id"]
             message = messaging_events[0]["messages"][0]
             sender_id = message["from"]
-            await self.handle_message(sender_id, phone_number_id, message)
+            await self.handle_message(sender_id, phone_number_id, message, background_task)
         return "OK"
 
     def process_audio(self, audio):
         pass
 
-    async def handle_message(self, sender_id, recipient_id, message):
+    async def handle_message(self, sender_id, recipient_id, message, background_task):
         message_text = ""
         if message.get("text"):
             message_text = message["text"]["body"]
@@ -104,17 +104,17 @@ class WhatsappBot:
         # Create structure for message
         request = UserRequest(user_id=sender_id, vendor_id=recipient_id, message=message_text)
 
-        response = await self.get_response(request=request)
+        response = await self.get_response(request=request, background_task=background_task)
         self.send_message(recipient_id, sender_id, response)
 
-    async def get_response(self, request: Union[UserRequest, BusinessRequest]) -> str:
+    async def get_response(self, request: Union[UserRequest, BusinessRequest], background_task) -> str:
         from backend.chatbot.agents.user_chat_interface import chat
         from backend.chatbot.agents.business_chat_interface import business_chat
 
         if isinstance(request, UserRequest):
-            response = await chat(request)
+            response = await chat(request, background_task)
         elif isinstance(request, BusinessRequest):
-            response = await business_chat(request)
+            response = await business_chat(request, background_task)
         else:
             raise ValueError(f"Unsupported request type: {type(request)}")
 
