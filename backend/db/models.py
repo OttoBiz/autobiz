@@ -29,9 +29,9 @@ class Business(Base):
     phone_number = Column(String(20))
     business_description = Column(String(500))
     business_niche = Column(String(100))
-    # bank_name = Column(String(100))
-    # bank_account_number = Column(String(50))
-    # bank_account_name = Column(String(50))
+    bank_name = Column(String(100))
+    bank_account_number = Column(String(50))
+    bank_account_name = Column(String(50))
     business_type = Column(String(50))  # Could be 'logistics' or 'vendor'
     date_created = Column(DateTime, default=datetime.now)
 
