@@ -15,5 +15,5 @@ def verification(request: Request):
 
 @router.post("/webhook")
 async def notification(request: Request, background_task: BackgroundTasks):
-    response = await whatsapp.handle_webhook(request)
+    response = await whatsapp.handle_webhook(request, background_task)
     return PlainTextResponse(response)
