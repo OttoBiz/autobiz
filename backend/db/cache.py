@@ -22,7 +22,7 @@ class Cache:
             decode_responses=True)
         else:
             if REDIS_URL:
-                self._client = RedisCluster.from_url(REDIS_URL)
+                self._client = Redis.from_url(REDIS_URL)
             else:
                 self._client = RedisCluster(
                     host=host,
