@@ -9,12 +9,12 @@ import json
 
 # load_dotenv()
 DEBUG = os.getenv("DEBUG")
-REDIS_URL = os.getenv("REDIS_URL", None)
+REDIS_URL = os.getenv("REDIS_URL")
 
 
 class Cache:
     def __init__(self, host, port, password):
-        if DEBUG:
+        if DEBUG == "true":
             self._client = Redis(
             host=host,
             port=port,
