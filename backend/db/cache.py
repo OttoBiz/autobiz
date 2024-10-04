@@ -3,11 +3,11 @@ from typing import List, Union
 from redis.cluster import RedisCluster
 from redis import Redis
 # from .models import Chat
-# from dotenv import load_dotenv
+from dotenv import load_dotenv
 import os
 import json
 
-# load_dotenv()
+load_dotenv()
 DEBUG = os.getenv("DEBUG")
 REDIS_URL = os.getenv("REDIS_URL")
 
