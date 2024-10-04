@@ -6,10 +6,10 @@ from redis import Redis
 from dotenv import load_dotenv
 import os
 import json
+from .config import REDIS_URL
 
 load_dotenv()
 DEBUG = os.getenv("DEBUG")
-REDIS_URL = os.getenv("REDIS_URL")
 
 
 class Cache:
