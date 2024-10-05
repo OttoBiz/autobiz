@@ -36,6 +36,3 @@ async def modify_user_state(user_id: str, vendor_id: str, user_state: dict, sess
 async def delete_user_state(user_id: str, vendor_id: str) -> None:
     key = f"user_state:{user_id}:{vendor_id}"
     redis_conn.delete(key)
-
-
-test_redis_connection()

@@ -1,3 +1,4 @@
+from backend.db.cache_utils import test_redis_connection
 import uvicorn
 from fastapi import FastAPI, BackgroundTasks, Request   # , Depends
 from backend.chatbot import *
@@ -30,9 +31,10 @@ PORT = os.getenv("PORT", 8000)
 
 # # Store dummy data in the database
 # load_csv_to_db("./dummy_data/Business_table.csv", "businesses")
-load_csv_to_db("./dummy_data/donrey_fashion.csv", "products")
+# load_csv_to_db("./dummy_data/donrey_fashion.csv", "products")
 # load_csv_to_db("./dummy_data/junae_cosmetics.csv", "products")
 # load_csv_to_db("./dummy_data/manny_gadgets.csv", "products")
+test_redis_connection()
 
 @app.post("/chat")
 async def get_chat_response(user_request: UserRequest, background_tasks: BackgroundTasks):
