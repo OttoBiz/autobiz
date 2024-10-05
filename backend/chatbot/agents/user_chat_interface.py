@@ -41,7 +41,7 @@ agent_functions = {
 #id,business name,ig page,facebook page,twitter page,email,tiktok,website,phone number,business description,business niche,Bank name,
 # Bank account number,Bank account name,type,date created
 # chat function that interfaces with chatbot
-async def chat(user_request, background_tasks: BackgroundTasks,  reset_user_state=True, debug=False):
+async def chat(user_request, background_tasks: BackgroundTasks,  reset_user_state=True, debug=True):
     ## If state between user and vendor exists in cache, fetch it:
     user_state  = await get_user_state(user_request.user_id, user_request.vendor_id)
     if debug:
