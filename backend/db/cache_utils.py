@@ -2,35 +2,30 @@ from .cache import Cache
 from .config import (
     REDIS_SERVER_HOST,
     REDIS_SERVER_PORT,
-    REDIS_SERVER_PASSWORD
+    REDIS_SERVER_PASSWORD,
+    REDIS_URL
 )
 
 
-from typing import List
+from typing import Optional
 
 redis_conn = Cache(
+    url=REDIS_URL,
     host=REDIS_SERVER_HOST,
     port=REDIS_SERVER_PORT,
     password=REDIS_SERVER_PASSWORD
 )
 
 
-async def get_user_state(user_id, vendor_id, session_id= None):
-    user_state = redis_conn.get(f"{user_id}:{vendor_id}")
-    print("User State", user_state)
+async def get_user_state(user_id: str, vendor_id: str, session_id: Optional[str] = None) -> dict:
+    key = f"user_state:{user_id}:{vendor_id}"
+    user_state = redis_conn.get(key)
+    return user_state or {}
 
-    # chat_history = redis_conn.get_chat_history(f"{user_id}:{vendor_id}") or []
-    return user_state #, chat_history
+async def modify_user_state(user_id: str, vendor_id: str, user_state: dict, session_id: Optional[str] = None) -> None:
+    key = f"user_state:{user_id}:{vendor_id}"
+    redis_conn.set(key, user_state)
 
-
-
-async def modify_user_state(user_id, vendor_id, user_state,  session_id=None):
-    # Rewrite history to redis.
-    redis_conn.set(f"{user_id}:{vendor_id}", user_state)
-    # redis_conn.set_chat_history(session_id, chat_history)
-
-    return
-
-async def delete_user_state(user_id, vendor_id):
-    redis_conn.delete(f"{user_id}:{vendor_id}")
-    return
+async def delete_user_state(user_id: str, vendor_id: str) -> None:
+    key = f"user_state:{user_id}:{vendor_id}"
+    redis_conn.delete(key)
