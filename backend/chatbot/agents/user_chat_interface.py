@@ -52,13 +52,13 @@ async def chat(user_request, background_tasks: BackgroundTasks,  reset_user_stat
         business_information = business_information
         chat_history = []
         user_state = {"chat_history": chat_history , "business_information": business_information}
-        # if debug:
-        #     print("Business informaton (user_state doesn't exist): ", business_information)
+        if debug:
+            print("Business informaton (user_state doesn't exist): ", business_information)
         
     else:
         business_information = user_state.get("business_information")
         chat_history  = user_state.get("chat_history",[])
-        # print("Business informaton (user_state exists): ", business_information)
+        print("Business informaton (user_state exists): ", business_information)
         
     # Get response from the chain  
     response =  chain.invoke({"user_message" : user_request.message,
