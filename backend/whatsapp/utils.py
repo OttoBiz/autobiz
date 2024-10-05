@@ -101,7 +101,7 @@ class WhatsappBot:
             self.process_audio(audio_id)
             # todo: process audio messages in the future
 
-        recipient_id = "+2349027728309"
+        recipient_id = "2349027728309"
 
         # Create structure for message
         request = UserRequest(user_id=sender_id, vendor_id=recipient_id, message=message_text)
