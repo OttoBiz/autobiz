@@ -17,6 +17,13 @@ redis_conn = Cache(
 )
 
 
+def test_redis_connection():
+    if redis_conn.ping():
+        print("Successfully connected to Redis!")
+    else:
+        print("Failed to connect to Redis.")
+
+
 async def get_user_state(user_id: str, vendor_id: str, session_id: Optional[str] = None) -> dict:
     key = f"user_state:{user_id}:{vendor_id}"
     user_state = redis_conn.get(key)
@@ -29,3 +36,6 @@ async def modify_user_state(user_id: str, vendor_id: str, user_state: dict, sess
 async def delete_user_state(user_id: str, vendor_id: str) -> None:
     key = f"user_state:{user_id}:{vendor_id}"
     redis_conn.delete(key)
+
+
+test_redis_connection()

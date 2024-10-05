@@ -21,6 +21,13 @@ class Cache:
                 decode_responses=True
             )
 
+    def ping(self) -> bool:
+        try:
+            return self._client.ping()
+        except Exception as e:
+            print(f"Redis connection error: {e}")
+            return False
+
     def set(self, key: str, val: dict) -> None: 
         self._client.set(key, json.dumps(val))
 
