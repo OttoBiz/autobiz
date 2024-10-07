@@ -26,12 +26,17 @@ def test_redis_connection():
 
 async def get_user_state(user_id: str, vendor_id: str, session_id: Optional[str] = None) -> dict:
     key = f"user_state:{user_id}:{vendor_id}"
+    print(key)
     user_state = redis_conn.get(key)
     return user_state or {}
 
 async def modify_user_state(user_id: str, vendor_id: str, user_state: dict, session_id: Optional[str] = None) -> None:
     key = f"user_state:{user_id}:{vendor_id}"
-    redis_conn.set(key, user_state)
+    print(key)
+    try:
+        redis_conn.set(key, user_state)
+    except:
+        print("Failed to store key")
 
 async def delete_user_state(user_id: str, vendor_id: str) -> None:
     key = f"user_state:{user_id}:{vendor_id}"

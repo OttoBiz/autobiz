@@ -29,7 +29,11 @@ class Cache:
             return False
 
     def set(self, key: str, val: dict) -> None: 
-        self._client.set(key, json.dumps(val))
+        try:
+            self._client.set(key, json.dumps(val))
+            print("Added to redis")
+        except:
+            print("Failed storing to redis")
 
     def get(self, key: str) -> Optional[dict]:
         value = self._client.get(key)
