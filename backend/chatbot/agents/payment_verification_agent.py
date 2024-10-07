@@ -27,7 +27,7 @@ async def run_verification_agent(product_name, product_price, amount_paid, custo
     # await run_central_agent(agent_input, kwargs["user_state"])
     # Return a placeholder message to customer.
     if is_first_call:
-        kwargs["user_state"].set("first_verification_call", False)
+        kwargs["user_state"]["first_verification_call"] = False
         # Add the central agent execution as a background task.
         background_tasks.add_task(run_central_agent, agent_input, kwargs["user_state"])
     
