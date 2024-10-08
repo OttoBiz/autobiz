@@ -164,7 +164,7 @@ async def run_central_agent(event_message: Input, user_state =None, vendor_only=
     if not processes:
         #If there are no processes, create a new process between vendor business and customer.
         process = await create_structured_process(product_name, message_type, 
-                    price, [{"role": "user", "name": event_message.sender, "content": message}]) #{"communication_history": [(event_message.sender_type, message)]}
+                    price, [{"role": "user", "name": event_message["sender"], "content": message}]) #{"communication_history": [(event_message.sender_type, message)]}
         processes[message_type] = {product_name: process}
     else:
         # Else, get the appropriate process given the product name being handled.
@@ -172,7 +172,7 @@ async def run_central_agent(event_message: Input, user_state =None, vendor_only=
                    {product_name: await create_structured_process(product_name, message_type, price, [])})
         
         process = process.get(product_name)
-        process["communication_history"].append({"role": "user", "name": event_message.sender, "content": message})
+        process["communication_history"].append({"role": "user", "name": event_message["sender"], "content": message})
     
     central_chain = llm_chains[process["task_type"]]
     
