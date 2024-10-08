@@ -80,7 +80,7 @@ async def chat(user_request, background_tasks: BackgroundTasks,  reset_user_stat
             args.update({"user_state": user_state,
                          "background_tasks": background_tasks,
                          "customer_message": user_request.message,
-                         "business_id": user_request.vendor_id, "customer_id": user_request.user_id})
+                         "business_id": user_request.vendor_id, "customer_id": user_request.user_id, "logistic_id": business_information["logistic_id"]})
         except:
             pass
         

@@ -18,7 +18,7 @@ async def run_verification_agent(product_name, product_price, amount_paid, custo
            
     # Structure input in the way central agent will use it.             
     agent_input = await create_structured_input(sender="customer", recipient="vendor", message=customer_message, product_name=product_name,
-                                  price= product_price, customer_id= kwargs["customer_id"], business_id = kwargs["business_id"], message_type="Payment verification",
+                                  price= product_price, customer_id= kwargs["customer_id"], business_id = kwargs["business_id"], logistic_id = kwargs["logistic_id"], message_type="Payment verification",
                                   bank_details = customer_bank_details)
         
     

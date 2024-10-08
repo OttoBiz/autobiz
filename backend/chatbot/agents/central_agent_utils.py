@@ -61,7 +61,7 @@ def get_contact(query, input_):
 # Function to create structured Input
 async def create_structured_input(sender: str, recipient: str, message: str, product_name: str,
                                   price: str, customer_id: str = None, business_id: Optional[str] = None, 
-                                  customer_address: str = "", bank_details: str="",  message_type: Optional[str]=""):
+                                  customer_address: str = "", bank_details: str="",  message_type: Optional[str]="", logistic_id: Optional[str] = ""):
     structured_input = {
         "sender":sender,
         "recipient":recipient,
@@ -73,7 +73,8 @@ async def create_structured_input(sender: str, recipient: str, message: str, pro
         "business_id":business_id,
         "message_type": message_type,
         "customer_address" : customer_address,
-        "customer_bank_details": bank_details
+        "customer_bank_details": bank_details,
+        "logistic_id":logistic_id 
     }
     return structured_input
 
