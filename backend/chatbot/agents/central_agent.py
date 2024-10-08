@@ -153,11 +153,11 @@ async def run_central_agent(event_message: Input, user_state =None, vendor_only=
     processes = user_state.get("processes", {})
     
     # Fetch the necessary items once to prevent multiple look ups.
-    product_name = event_message.product_name
-    message_type = event_message.message_type
-    price = event_message.price
-    message = event_message.message
-    sender = event_message.sender
+    product_name = event_message["product_name"]
+    message_type = event_message["message_type"]
+    price = event_message["price"]
+    message = event_message["message"]
+    sender = event_message["sender"]
    
     # logistic_id = event_message.logistic_id
     
@@ -180,13 +180,13 @@ async def run_central_agent(event_message: Input, user_state =None, vendor_only=
         if debug:
             print("Communication history: ", process["communication_history"])
         # get and process chain inputs for the payment verification chain
-        chain_inputs = await get_chain_input_for_process(product_name, event_message.customer_id,
-                                               event_message.business_id, event_message.logistic_id, process["communication_history"],
-                                               price=process["price"], bank_details = event_message.customer_bank_details)
+        chain_inputs = await get_chain_input_for_process(product_name, event_message["customer_id"],
+                                               event_message["business_id"], event_message["logistic_id"], process["communication_history"],
+                                               price=process["price"], bank_details = event_message["customer_bank_details"])
     else:
         # Get and process chain inputs for the other chains.
-         chain_inputs = await get_chain_input_for_process(product_name, event_message.customer_id,
-                                               event_message.business_id, event_message.logistic_id, process["communication_history"],
+         chain_inputs = await get_chain_input_for_process(product_name, event_message["customer_id"],
+                                               event_message["business_id"], event_message["logistic_id"], process["communication_history"],
                                                )
    
     # Fetch agent response
