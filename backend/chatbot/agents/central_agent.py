@@ -138,6 +138,8 @@ llm_chains = {
 
 # Define run_central_agent function
 async def run_central_agent(event_message: Input, user_state =None, vendor_only=False, debug=False):
+    print(event_message)
+    
     customer_id = event_message.customer_id
     business_id = event_message.business_id
         
