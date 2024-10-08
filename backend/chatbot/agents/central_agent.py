@@ -140,8 +140,8 @@ llm_chains = {
 async def run_central_agent(event_message: Input, user_state =None, vendor_only=False, debug=False):
     print(event_message)
     
-    customer_id = event_message.customer_id
-    business_id = event_message.business_id
+    customer_id = event_message["customer_id"]
+    business_id = event_message["business_id"]
         
     if user_state is None:
         user_state = get_user_state(customer_id, business_id)
