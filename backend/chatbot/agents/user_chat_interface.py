@@ -90,7 +90,8 @@ async def chat(user_request, background_tasks: BackgroundTasks,  reset_user_stat
             print("Current conversation stage : ", conversation_stage)
         
         # Call agent and fetch response.
-        response, user_state = await agent_functions[function_name](**args)
+        agent_function = agent_functions[function_name]
+        response, user_state = await agent_function(**args)
         
     else:
         # Else, just respond.
