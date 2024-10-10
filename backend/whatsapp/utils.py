@@ -112,7 +112,7 @@ class WhatsappBot:
         from backend.chatbot.agents.business_chat_interface import business_chat
 
         if isinstance(request, UserRequest):
-            response = await chat(request, background_task, reset_user_state=True)
+            response = await chat(request, background_task, reset_user_state=False)
         elif isinstance(request, BusinessRequest):
             response = await business_chat(request, background_task)
         else:
