@@ -158,18 +158,17 @@ async def run_central_agent(event_message: Input, user_state =None, vendor_only=
     price = event_message["price"]
     message = event_message["message"]
     sender = event_message["sender"]
-   
-    # logistic_id = event_message.logistic_id
+    logistic_id = event_message["logistic_id"]
     
     if not processes:
         #If there are no processes, create a new process between vendor business and customer.
         process = await create_structured_process(product_name, message_type, 
-                    price, [{"role": "user", "name": event_message["sender"], "content": message}]) #{"communication_history": [(event_message.sender_type, message)]}
+                    price, [{"role": "user", "name": event_message["sender"], "content": message}], logistic_id) #{"communication_history": [(event_message.sender_type, message)]}
         processes[message_type] = {product_name: process}
     else:
         # Else, get the appropriate process given the product name being handled.
         process = processes.get(message_type, 
-                   {product_name: await create_structured_process(product_name, message_type, price, [])})
+                   {product_name: await create_structured_process(product_name, message_type, price, [], logistic_id)})
         
         process = process.get(product_name)
         process["communication_history"].append({"role": "user", "name": event_message["sender"], "content": message})
