@@ -81,8 +81,8 @@ async def chat(user_request, background_tasks: BackgroundTasks,  reset_user_stat
                          "background_tasks": background_tasks,
                          "customer_message": user_request.message,
                          "business_id": user_request.vendor_id, "customer_id": user_request.user_id, "logistic_id": business_information["logistic_id"]}
-        except:
-            pass
+        except Exception as e:
+            print("Error: ", e)
         
         # fetch conversation stage
         conversation_stage = args["conversation_stage"]
