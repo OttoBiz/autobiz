@@ -5,6 +5,8 @@ from fastapi import BackgroundTasks
 async def run_verification_agent(product_name, product_price, amount_paid, customer_name, 
                                  bank_account_number, bank_name, customer_message, **kwargs):
     
+    print("Verification Kwargs", kwargs)
+    
     is_first_call = kwargs["user_state"].get("first_verification_call", True)
     
     # Process customer's bank details.
