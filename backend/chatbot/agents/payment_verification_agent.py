@@ -3,11 +3,11 @@ from .central_agent_utils import create_structured_input
 from fastapi import BackgroundTasks
 
 async def run_verification_agent(product_name, product_price, amount_paid, customer_name, 
-                                 bank_account_number, bank_name, customer_message, user_state, **kwargs):
+                                 bank_account_number, bank_name, customer_message, **kwargs):
     
-    print("User state", user_state)
+    print("Verification Kwargs", kwargs)
     
-    is_first_call = user_state.get("first_verification_call", True)
+    is_first_call = kwargs["user_state"].get("first_verification_call", True)
     
     # Process customer's bank details.
     customer_bank_details = f"""
