@@ -1,4 +1,4 @@
-from typing import Annotated, List, Tuple, TypedDict, Union, Optional, Dict    
+from typing import Annotated, List, Literal, Tuple, TypedDict, Union, Optional, Dict    
 from langchain_core.pydantic_v1 import BaseModel, Field
 
 
@@ -38,8 +38,8 @@ class Response(BaseModel):
     reasoning: str = Field(..., description="Think about what should be done.")
     next_step: str = Field(..., description="Determine your next step and to whom it should be directed.")
     message: str = Field(..., description="message")
-    recipient: str =Field(..., description="message recipient. One of the following [Agent, Customer, Vendor, Logistics]")  # ["Agent", "Customer", "Vendor", "Logistics"]
-    sender: str = Field(..., description="message sender. One of the following [Agent, Customer, Vendor, Logistics]")
+    recipient: Literal["Agent", "Customer", "Vendor", "Logistics"]  = Field(..., description="message recipient. One of the following [Agent, Customer, Vendor, Logistics]")  # ["Agent", "Customer", "Vendor", "Logistics"]
+    sender: Literal["Agent", "Customer", "Vendor", "Logistics"] = Field(..., description="message sender. One of the following [Agent, Customer, Vendor, Logistics]")
     customer_id: str =Field(..., description="Customer id")
     business_id: str = Field(..., description="Business id")
     logistic_id: str = Field(..., description="Logistic Id")
@@ -52,7 +52,7 @@ class Response(BaseModel):
     
 def get_contact(query, input_):
     if query.lower() == 'customer':
-        return input_["customer_id"]
+        return input_.get("customer_id")
     elif query.lower() == 'vendor':
         return input_["business_id"]
     else:
