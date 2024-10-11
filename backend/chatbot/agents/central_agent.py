@@ -187,6 +187,9 @@ async def run_central_agent(event_message: Input, user_state =None, vendor_only=
          chain_inputs = await get_chain_input_for_process(product_name, event_message["customer_id"],
                                                event_message["business_id"], event_message["logistic_id"], process["communication_history"],
                                                )
+
+
+    print("Response:", chain_inputs)
    
     # Fetch agent response
     response = await central_chain.ainvoke(chain_inputs)
