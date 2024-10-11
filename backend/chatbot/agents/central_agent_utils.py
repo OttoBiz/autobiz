@@ -54,7 +54,7 @@ def get_contact(query, input_):
     if query.lower() == 'customer':
         return input_.get("customer_id")
     elif query.lower() == 'vendor':
-        return "2349027728309" # input_["vendor_id"]
+        return "2349061554618" # input_["vendor_id"]
     elif query.lower() == 'agent':
         return input_["business_id"]
     else:
