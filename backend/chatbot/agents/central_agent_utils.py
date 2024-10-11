@@ -52,11 +52,11 @@ class Response(BaseModel):
     
 def get_contact(query, input_):
     if query.lower() == 'customer':
-        return input_.customer_id
+        return input_["customer_id"]
     elif query.lower() == 'vendor':
-        return input_.business_id
+        return input_["business_id"]
     else:
-        return input_.logistic_id
+        return input_["logistic_id"]
     
 # Function to create structured Input
 async def create_structured_input(sender: str, recipient: str, message: str, product_name: str,
