@@ -189,7 +189,6 @@ async def run_central_agent(event_message: Input, user_state =None, vendor_only=
                                                )
 
 
-    print("Response:", chain_inputs)
    
     # Fetch agent response
     response = await central_chain.ainvoke(chain_inputs)
@@ -197,10 +196,14 @@ async def run_central_agent(event_message: Input, user_state =None, vendor_only=
     # Add agents response to the communication history
     process["communication_history"].append({"role": "user", "name": response.sender, "content": response.message})
     
-    
+    print("Response:", response)
+
     # get sender and recipient
     sender = response.sender
     recipient = response.recipient
+
+    print("Sender:", sender)
+    print("Recipient:", recipient)
     
     if user_state is not None:
         if recipient == 'Customer' : #Add agent's response to chat history.
