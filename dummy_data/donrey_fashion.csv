@@ -1,30 +1,30 @@
 id,Product,Description,Price,Available amount,Product category,Date created,Date modified
-2,Sneakers,"Classic white sneakers",50,100,Shoes,2024-06-05,2024-06-05
-2,High heels,"Black stiletto heels",80,50,Shoes,2024-06-05,2024-06-05
-2,Backpack,"Canvas backpack with floral print",40,80,Accessories,2024-06-05,2024-06-05
-2,Sunglasses,"Aviator sunglasses with polarized lenses",30,120,Accessories,2024-06-05,2024-06-05
-2,Flip flops,,20,150,Shoes,2024-06-05,2024-06-05
-2,Necklace,"Gold-plated chain necklace",25,90,Jewelry,2024-06-05,2024-06-05
-2,Earrings,"Silver hoop earrings",15,110,Jewelry,2024-06-05,2024-06-05
-2,Tote bag,"Leather tote bag with adjustable straps",60,70,Bags,2024-06-05,2024-06-05
-2,Beanie hat,"Knit beanie hat in assorted colors",10,200,Hats,2024-06-05,2024-06-05
-2,Ankle boots,"Brown leather ankle boots",70,40,Shoes,2024-06-05,2024-06-05
-2,Scarf,"Cashmere scarf in plaid pattern",35,60,Accessories,2024-06-05,2024-06-05
-2,Bangle bracelet,"Chunky metal bangle bracelet",20,80,Jewelry,2024-06-05,2024-06-05
-2,Loafers,"Suede loafers in navy blue",45,70,Shoes,2024-06-05,2024-06-05
-2,Crossbody bag,"Faux leather crossbody bag with chain strap",55,90,Bags,2024-06-05,2024-06-05
-2,Watch,"Stainless steel wristwatch with leather strap",70,100,Accessories,2024-06-05,2024-06-05
-2,Ring,"Rose gold-plated ring with cubic zirconia",20,120,Jewelry,2024-06-05,2024-06-05
-2,Sandals,"Strappy sandals with metallic accents",40,80,Shoes,2024-06-05,2024-06-05
-2,Clutch,"Sequined clutch purse in silver",25,60,Bags,2024-06-05,2024-06-05
-2,Bracelet,"Braided leather bracelet with magnetic clasp",15,110,Jewelry,2024-06-05,2024-06-05
-2,Baseball cap,"Cotton baseball cap with embroidered logo",20,150,Hats,2024-06-05,2024-06-05
-2,Oxford shoes,"Black leather oxford shoes",65,50,Shoes,2024-06-05,2024-06-05
-2,Wallet,"Slim leather wallet with card slots",30,80,Accessories,2024-06-05,2024-06-05
-2,Choker,"Velvet choker necklace with rhinestone pendant",15,100,Jewelry,2024-06-05,2024-06-05
-2,Bucket hat,"Twill bucket hat with adjustable strap",25,70,Hats,2024-06-05,2024-06-05
-2,T-shirt,"Cotton graphic t-shirt in assorted designs",20,200,Clothing,2024-06-05,2024-06-05
-2,Hoop earrings,"Gold hoop earrings with hammered texture",35,90,Jewelry,2024-06-05,2024-06-05
-2,Knapsack,"Nylon knapsack with multiple compartments",50,80,Bags,2024-06-05,2024-06-05
-2,Pendant necklace,"Dainty pendant necklace with gemstone accent",25,120,Jewelry,2024-06-05,2024-06-05
-2,Shorts,"Denim shorts with distressed detailing",30,100,Clothing,2024-06-05,2024-06-05
+3,Sneakers,"Classic white sneakers",50,100,Shoes,2024-06-05,2024-06-05
+3,High heels,"Black stiletto heels",80,50,Shoes,2024-06-05,2024-06-05
+3,Backpack,"Canvas backpack with floral print",40,80,Accessories,2024-06-05,2024-06-05
+3,Sunglasses,"Aviator sunglasses with polarized lenses",30,120,Accessories,2024-06-05,2024-06-05
+3,Flip flops,,20,150,Shoes,2024-06-05,2024-06-05
+3,Necklace,"Gold-plated chain necklace",25,90,Jewelry,2024-06-05,2024-06-05
+3,Earrings,"Silver hoop earrings",15,110,Jewelry,2024-06-05,2024-06-05
+3,Tote bag,"Leather tote bag with adjustable straps",60,70,Bags,2024-06-05,2024-06-05
+3,Beanie hat,"Knit beanie hat in assorted colors",10,200,Hats,2024-06-05,2024-06-05
+3,Ankle boots,"Brown leather ankle boots",70,40,Shoes,2024-06-05,2024-06-05
+3,Scarf,"Cashmere scarf in plaid pattern",35,60,Accessories,2024-06-05,2024-06-05
+3,Bangle bracelet,"Chunky metal bangle bracelet",20,80,Jewelry,2024-06-05,2024-06-05
+3,Loafers,"Suede loafers in navy blue",45,70,Shoes,2024-06-05,2024-06-05
+3,Crossbody bag,"Faux leather crossbody bag with chain strap",55,90,Bags,2024-06-05,2024-06-05
+3,Watch,"Stainless steel wristwatch with leather strap",70,100,Accessories,2024-06-05,2024-06-05
+3,Ring,"Rose gold-plated ring with cubic zirconia",20,120,Jewelry,2024-06-05,2024-06-05
+3,Sandals,"Strappy sandals with metallic accents",40,80,Shoes,2024-06-05,2024-06-05
+3,Clutch,"Sequined clutch purse in silver",25,60,Bags,2024-06-05,2024-06-05
+3,Bracelet,"Braided leather bracelet with magnetic clasp",15,110,Jewelry,2024-06-05,2024-06-05
+3,Baseball cap,"Cotton baseball cap with embroidered logo",20,150,Hats,2024-06-05,2024-06-05
+3,Oxford shoes,"Black leather oxford shoes",65,50,Shoes,2024-06-05,2024-06-05
+3,Wallet,"Slim leather wallet with card slots",30,80,Accessories,2024-06-05,2024-06-05
+3,Choker,"Velvet choker necklace with rhinestone pendant",15,100,Jewelry,2024-06-05,2024-06-05
+3,Bucket hat,"Twill bucket hat with adjustable strap",25,70,Hats,2024-06-05,2024-06-05
+3,T-shirt,"Cotton graphic t-shirt in assorted designs",20,200,Clothing,2024-06-05,2024-06-05
+3,Hoop earrings,"Gold hoop earrings with hammered texture",35,90,Jewelry,2024-06-05,2024-06-05
+3,Knapsack,"Nylon knapsack with multiple compartments",50,80,Bags,2024-06-05,2024-06-05
+3,Pendant necklace,"Dainty pendant necklace with gemstone accent",25,120,Jewelry,2024-06-05,2024-06-05
+3,Shorts,"Denim shorts with distressed detailing",30,100,Clothing,2024-06-05,2024-06-05
