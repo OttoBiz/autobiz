@@ -9,6 +9,7 @@ class Input(BaseModel):
     business_id: Optional[str] = ""
     customer_id: Optional[str] = ""
     logistic_id: Optional[str] = ""
+    vendor_phone_number: Optional[str] = ""
     message: str
     product_name: str
     price: Optional[str]
@@ -54,16 +55,16 @@ def get_contact(query, input_):
     if query.lower() == 'customer':
         return input_.get("customer_id")
     elif query.lower() == 'vendor':
-        return "2349027728309" # input_["vendor_id"]
+        return input_.get("vendor_phone_number")
     elif query.lower() == 'agent':
-        return input_["business_id"]
+        return input_.get("business_id")
     else:
-        return input_["logistic_id"]
+        return input_.get("logistic_id")
     
 # Function to create structured Input
 async def create_structured_input(sender: str, recipient: str, message: str, product_name: str,
                                   price: str, customer_id: str = None, business_id: Optional[str] = None, 
-                                  customer_address: str = "", bank_details: str="",  message_type: Optional[str]="", logistic_id: Optional[str] = ""):
+                                  customer_address: str = "", bank_details: str="",  message_type: Optional[str]="", logistic_id: Optional[str] = "", vendor_phone_number: Optional[str] = ""):
     structured_input = {
         "sender":sender,
         "recipient":recipient,
@@ -76,7 +77,8 @@ async def create_structured_input(sender: str, recipient: str, message: str, pro
         "message_type": message_type,
         "customer_address" : customer_address,
         "customer_bank_details": bank_details,
-        "logistic_id":logistic_id 
+        "logistic_id":logistic_id,
+        "vendor_phone_number": vendor_phone_number
     }
     return structured_input
 
