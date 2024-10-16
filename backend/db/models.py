@@ -35,6 +35,7 @@ class Business(Base):
     business_type = Column(String(50))  # Could be 'logistics' or 'vendor'
     date_created = Column(DateTime, default=datetime.now)
     logistic_partner = Column(String(100))
+    vendor_phone_number = Column(String(100))
 
     products = relationship("Product", back_populates="business")
     transactions = relationship("Transaction", back_populates="business")
@@ -63,7 +64,8 @@ class Business(Base):
             "bank_name": self.bank_name,
             "bank_account_number": self.bank_account_number,
             "bank_account_name": self.bank_account_name,
-            "logistic_id": self.logistic_partner
+            "logistic_id": self.logistic_partner,
+            "vendor_phone_number": self.vendor_phone_number
             # "date_created": self.date_created.isoformat(),  # Convert datetime to ISO format
         }
 
