@@ -1,1 +1,1 @@
-web: fastapi run main.py
+web: fastapi run main.py --host 0.0.0.0 --port $PORT
