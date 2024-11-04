@@ -159,6 +159,35 @@ class WhatsappBot:
             return sha1 == signature[5:]
         else:
             return False
+        
+    
+    def send_form_message(self, phone_number_id: str, recipient_id: str, message_object: dict, message_type: str = "text"):
+        payload = {
+                    "messaging_product": "whatsapp",
+                    "recipient_type": "individual",
+                    "to": recipient_id,
+                    "type": message_type,
+                    **message_object
+                }
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.page_access_token}",
+        }
+
+        response = requests.post(
+            f"https://graph.facebook.com/v15.0/{phone_number_id}/messages",
+            json=payload,
+            headers=headers,
+        )
+        if response.status_code != 200:
+            logging.error(response.text)
+            logging.error(f"Failed to send message: {response.status_code}")
+            return "Failed to send message:", response.status_code
+        else:
+            logging.info(f"Message sent to {recipient_id}")
+            return "Message sent to", recipient_id
+
 
 
 whatsapp = WhatsappBot(PAGE_ACCESS_TOKEN, APP_SECRET, VERIFY_TOKEN)
