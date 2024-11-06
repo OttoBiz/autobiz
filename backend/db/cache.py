@@ -18,7 +18,8 @@ class Cache:
                 host=host,
                 port=port,
                 password=password,
-                decode_responses=True
+                decode_responses=True,
+                ssl=True
             )
 
     def ping(self) -> bool:
