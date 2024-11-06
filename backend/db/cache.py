@@ -11,16 +11,16 @@ DEBUG = os.getenv("DEBUG")
 
 class Cache:
     def __init__(self, host: str, port: int, password: str, url: Optional[str] = None):
-        if url:
-            self._client = Redis.from_url(url, decode_responses=True)
-        else:
-            self._client = Redis(
-                host=host,
-                port=port,
-                password=password,
-                decode_responses=True,
-                ssl=True
-            )
+        # if url:
+        #     self._client = Redis.from_url(url, decode_responses=True)
+        # else:
+        self._client = Redis(
+            host=host,
+            port=port,
+            password=password,
+            decode_responses=True,
+            ssl=True
+        )
 
     def ping(self) -> bool:
         try:
