@@ -4,7 +4,7 @@ from fastapi import FastAPI, BackgroundTasks, Request   # , Depends
 from backend.chatbot import *
 
 from dotenv import load_dotenv
-from backend.struct import *
+from backend.models import *
 from backend.chatbot.agents.user_chat_interface import chat
 from backend.chatbot.agents.business_chat_interface import business_chat
 import logging
