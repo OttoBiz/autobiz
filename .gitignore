@@ -170,3 +170,4 @@ fast.py
 app.py
 sabiyarn.py
 tests/test_script
+actions-runner/
