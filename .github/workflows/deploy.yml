@@ -16,6 +16,7 @@ jobs:
             
             - name: Build Docker Image
               run: |
+                cd ~/app
                 docker build -t autobiz .
             
             - name: Stop and Remove Old Container
