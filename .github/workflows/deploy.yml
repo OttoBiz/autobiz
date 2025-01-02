@@ -1,36 +1,40 @@
 name: CI/CD on EC2
 
 on: 
-    push:
-        branches:
-            - main
-            - whatsapp-config
+  push:
+    branches:
+      - main
+      - whatsapp-config
 
 jobs:
-    deploy:
-        runs-on: self-hosted
-
-        steps:
-            - name: Checkout Code
-              uses: actions/checkout@v4.2.2
-            
-            - name: Build Docker Image
-              run: |
-                cd ~/app
-                docker build -t autobiz .
-            
-            - name: Stop and Remove Old Container
-              run: |
-                docker stop fastapi-container || true
-                docker rm fastapi-container || true
-
-            - name: Create .env File from GitHub Secret
-              run: |
-                printf "%s" "${{ secrets.ENV_FILE }}" > ~/app/.env
-
-            - name: Start New Container with .env File
-              run: |
-                docker run -d --name fastapi-container \
-                  -p 5000:5000 \
-                  --env-file ~/app/.env \
-                  autobiz
+  deploy:
+    runs-on: self-hosted
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4.2.2
+      
+      - name: Create .env File from GitHub Secret
+        run: |
+          echo "${{ secrets.ENV_FILE }}" > .env
+      
+      - name: Build Docker Image
+        run: |
+          docker build -t autobiz:${{ github.sha }} -t autobiz:latest .
+      
+      - name: Stop and Remove Old Container
+        run: |
+          docker stop fastapi-container || true
+          docker rm fastapi-container || true
+      
+      - name: Start New Container
+        run: |
+          docker run -d --name fastapi-container \
+            -p 5000:5000 \
+            --env-file .env \
+            --restart unless-stopped \
+            autobiz:latest
+      
+      - name: Cleanup Old Images
+        run: |
+          docker image prune -f
