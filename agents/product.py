@@ -7,9 +7,10 @@ product_agent = Agent(
     deps_type=dict  # todo: replace with db connection
 )
 
+# see: https://ai.pydantic.dev/agents/#reflection-and-self-correction
 
 @product_agent.system_prompt
-def compose_system_prompt(ctx: RunContext[dict]):
+def compose_system_prompt(ctx: RunContext[dict]): # todo: replace context with db connection
     return f"""You are a sale assistant provided with details of a details of a merchant or vendor, their available products and product categories, attributes of a product and the intent of the user you are communicating with.
 Use the information provided below:
 
