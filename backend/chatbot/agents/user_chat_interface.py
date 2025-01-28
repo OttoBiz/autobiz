@@ -37,76 +37,80 @@ agent_functions = {
     "CustomerComplaint": run_customer_complaint_agent,
 }
    
-
-#id,business name,ig page,facebook page,twitter page,email,tiktok,website,phone number,business description,business niche,Bank name,
-# Bank account number,Bank account name,type,date created
-# chat function that interfaces with chatbot
-async def chat(user_request, background_tasks: BackgroundTasks,  reset_user_state=True, debug=True):
-    ## If state between user and vendor exists in cache, fetch it:
-    user_state  = await get_user_state(user_request.user_id, user_request.vendor_id)
+async def chat(user_request, background_tasks: BackgroundTasks, reset_user_state=True, debug=True):
+    # Fetch or initialize user state
+    user_state = await get_user_state(user_request.user_id, user_request.vendor_id)
     if debug:
         print("Initial user_state: ", user_state)
+
     if not user_state:
-        # else fetch vendor's business info
         business_information = await get_business_info(user_request.vendor_id)
-        business_information = business_information
-        chat_history = []
-        user_state = {"chat_history": chat_history , "business_information": business_information}
+        user_state = {
+            "chat_history": [],
+            "business_information": business_information
+        }
         if debug:
-            print("Business informaton (user_state doesn't exist): ", business_information)
-        
+            print("Business information (user_state doesn't exist): ", business_information)
     else:
-        business_information = user_state.get("business_information")
-        chat_history  = user_state.get("chat_history",[])
-        print("Business informaton (user_state exists): ", business_information)
-        
-    # Get response from the chain  
-    response =  chain.invoke({"user_message" : user_request.message,
-                              "business_name": business_information["business_name"],
-                              "description": business_information["business_description"],
-                              "facebook_page": business_information["facebook_page"],
-                              "twitter_page": business_information["twitter_page"],
-                              "website": business_information["website"],
-                              "tiktok": business_information["tiktok"],
-                              "ig_page": business_information["ig_page"],
-                              "chat_history": chat_history})
-    
-    # print("user_state before agent calls: ", user_state)
-    if response.content == "": # If an agent was called, do the below:
+        business_information = user_state["business_information"]
+        if debug:
+            print("Business information (user_state exists): ", business_information)
+
+    # Prepare input for the chain
+    chain_input = {
+        "user_message": user_request.message,
+        "business_name": business_information["business_name"],
+        "description": business_information["business_description"],
+        "facebook_page": business_information["facebook_page"],
+        "twitter_page": business_information["twitter_page"],
+        "website": business_information["website"],
+        "tiktok": business_information["tiktok"],
+        "ig_page": business_information["ig_page"],
+        "chat_history": user_state.get("chat_history", [])
+    }
+
+    # Get response from the chain
+    response = chain.invoke(chain_input)
+
+    # Handle agent calls if response content is empty
+    if response.content == "":
         tool_called = response.additional_kwargs.get("tool_calls")[0].get("function")
         function_name = tool_called["name"]
         try:
             args = json.loads(tool_called["arguments"])
-            args = args | {"user_state": user_state,
-                         "background_tasks": background_tasks,
-                         "customer_message": user_request.message,
-                         "business_id": user_request.vendor_id, "customer_id": user_request.user_id, "logistic_id": business_information["logistic_id"], "vendor_phone_number": business_information["vendor_phone_number"]}
+            args.update({
+                "user_state": user_state,
+                "background_tasks": background_tasks,
+                "customer_message": user_request.message,
+                "business_id": user_request.vendor_id,
+                "customer_id": user_request.user_id,
+                "logistic_id": business_information["logistic_id"],
+                "vendor_phone_number": business_information["vendor_phone_number"]
+            })
         except Exception as e:
             print("Error: ", e)
-        
-        # fetch conversation stage
-        conversation_stage = args["conversation_stage"]
-        if debug:
-            print("Current conversation stage : ", conversation_stage)
+            raise
 
-        print("Arguments:", args)
-        
-        # Call agent and fetch response.
+        if debug:
+            print("Current conversation stage: ", args["conversation_stage"])
+            print("Arguments:", args)
+
+        # Call agent and fetch response
         agent_function = agent_functions[function_name]
         response, user_state = await agent_function(**args)
-        
     else:
-        # Else, just respond.
         response = str_output_parser.invoke(response)
-    
-        
+
     # Update the chat history
-    user_state["chat_history"].extend([{"role": "user" , "name": "customer", "content": user_request.message},
-                            {"role": "assistant", "name": "vendor", "content": response}])
-    
-    if reset_user_state: # For debug purposes, if reset_user_state
+    user_state["chat_history"].extend([
+        {"role": "user", "name": "customer", "content": user_request.message},
+        {"role": "assistant", "name": "vendor", "content": response}
+    ])
+
+    # Update or reset user state
+    if reset_user_state:
         await delete_user_state(user_request.user_id, user_request.vendor_id)
-    else: # Modify user state with recent update
+    else:
         await modify_user_state(user_request.user_id, user_request.vendor_id, user_state)
-        
+
     return response

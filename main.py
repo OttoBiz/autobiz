@@ -68,7 +68,7 @@ async def chat_agent(request: AgentRequest, background_tasks: BackgroundTasks):
     return {"message": response}
         
 
-app.include_router(router=router)
+# app.include_router(router=router)
 
 
 # if __name__ == "__main__":
