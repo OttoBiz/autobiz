@@ -3,59 +3,69 @@ from decimal import Decimal
 from enum import Enum
 from typing import Optional
 import uuid
-from sqlalchemy import Numeric
-from sqlalchemy.dialects.postgresql import ARRAY
-from sqlmodel import Column, Field, Relationship, SQLModel, String
 
+from sqlalchemy import Column, String, Integer, ForeignKey, Table, Numeric, DateTime, Enum as SQLAEnum
+from sqlalchemy.dialects.postgresql import UUID, ARRAY
+from sqlalchemy.orm import relationship, mapped_column, Mapped
 
-class BaseModel(SQLModel):
-    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+from backend.core.database import Base 
 
-class Business(BaseModel, table=True):
-    name: str = Field(max_length=100, index=True)
-    phone_number: str = Field(index=True, max_length=20)
-    email: str = Field(max_length=255, index=True)
-    website: Optional[str] = Field(max_length=255, default=None)
-    category: str = Field(max_length=50, index=True)
-    whatsapp_id: Optional[str] = Field(max_length=50, default=None)
-    facebook_page: Optional[str] = Field(max_length=255, default=None)
-    twitter_page: Optional[str] = Field(max_length=255, default=None)
-    tiktok: Optional[str] = Field(max_length=255, default=None)
-    instagram_page: Optional[str] = Field(max_length=255, default=None)
-    description: Optional[str] = Field(max_length=1000, default=None)
-    tags: list[str] = Field(sa_column=Column(ARRAY(String())))
-    bank_name: Optional[str] = Field(max_length=100, default=None)
-    bank_account_number: Optional[str] = Field(max_length=50, default=None)
-    bank_account_name: Optional[str] = Field(max_length=100, default=None)
-    partners: list["BusinessPartner"] = Relationship(back_populates="businesses", link_model="BusinessPartnerLink")
-    products: list["Product"] = Relationship(back_populates="business")
-    transactions: list["Transaction"] = Relationship(back_populates="business")
-
-class BusinessPartner(BaseModel, table=True):
-    name: str
-    phone_number: str
-    email: str
-    website: str
-    businesses: list["Business"] = Relationship(back_populates="partners", link_model="BusinessPartnerLink")
-
-
-class BusinessPartnerLink(SQLModel, table=True):
-    business_id: uuid.UUID = Field(foreign_key="business.id", primary_key=True)
-    partner_id: uuid.UUID = Field(foreign_key="businesspartner.id", primary_key=True)
-
-
-class Product(BaseModel, table=True):
-    name: str = Field(max_length=255, index=True)
-    price: Decimal = Field(sa_column=Column(Numeric(10, 2)))
-    currency: str = Field(max_length=3)  # ISO 4217 currency codes
-    description: Optional[str] = Field(max_length=1000, default=None)
-    items_in_stock: int = Field(ge=0)
+class AbstractModel(Base):
+    __abstract__ = True
     
-    business_id: uuid.UUID = Field(foreign_key="business.id")
-    business: Business = Relationship(back_populates="products")
-    transactions: list["Transaction"] = Relationship(back_populates="product")
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+# Association table for many-to-many relationship
+business_partner_link = Table(
+    'business_partner_link',
+    Base.metadata,
+    Column('business_id', UUID(as_uuid=True), ForeignKey('business.id'), primary_key=True),
+    Column('partner_id', UUID(as_uuid=True), ForeignKey('businesspartner.id'), primary_key=True)
+)
+
+class Business(AbstractModel):
+    __tablename__ = 'business'
+
+    name: Mapped[str] = mapped_column(String(100), index=True)
+    phone_number: Mapped[str] = mapped_column(String(20), index=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    website: Mapped[Optional[str]] = mapped_column(String(255))
+    category: Mapped[str] = mapped_column(String(50), index=True)
+    whatsapp_id: Mapped[Optional[str]] = mapped_column(String(50))
+    facebook_page: Mapped[Optional[str]] = mapped_column(String(255))
+    twitter_page: Mapped[Optional[str]] = mapped_column(String(255))
+    tiktok: Mapped[Optional[str]] = mapped_column(String(255))
+    instagram_page: Mapped[Optional[str]] = mapped_column(String(255))
+    description: Mapped[Optional[str]] = mapped_column(String(1000))
+    tags: Mapped[list[str]] = mapped_column(ARRAY(String))
+    bank_name: Mapped[Optional[str]] = mapped_column(String(100))
+    bank_account_number: Mapped[Optional[str]] = mapped_column(String(50))
+    bank_account_name: Mapped[Optional[str]] = mapped_column(String(100))
+    webhook_url: Mapped[Optional[str]] = mapped_column(String(255))
+
+    partners: Mapped[list["BusinessPartner"]] = relationship(
+        "BusinessPartner",
+        secondary=business_partner_link,
+        back_populates="businesses"
+    )
+    products: Mapped[list["Product"]] = relationship("Product", back_populates="business")
+    transactions: Mapped[list["Transaction"]] = relationship("Transaction", back_populates="business")
+
+class BusinessPartner(AbstractModel):
+    __tablename__ = 'businesspartner'
+
+    name: Mapped[str] = mapped_column(String)
+    phone_number: Mapped[str] = mapped_column(String)
+    email: Mapped[str] = mapped_column(String)
+    website: Mapped[str] = mapped_column(String)
+
+    businesses: Mapped[list["Business"]] = relationship(
+        "Business",
+        secondary=business_partner_link,
+        back_populates="partners"
+    )
 
 class TransactionStatus(str, Enum):
     PENDING = "pending"
@@ -63,14 +73,33 @@ class TransactionStatus(str, Enum):
     FAILED = "failed"
     REFUNDED = "refunded"
 
+class Product(AbstractModel):
+    __tablename__ = 'product'
 
-class Transaction(BaseModel, table=True):
-    amount: Decimal = Field(sa_column=Column(Numeric(10, 2)))
-    status: TransactionStatus
-    
-    business_id: uuid.UUID = Field(foreign_key="business.id")
-    business: Business = Relationship(back_populates="transactions")
-    
-    product_id: uuid.UUID = Field(foreign_key="product.id")
-    product: Product = Relationship(back_populates="transactions")
+    name: Mapped[str] = mapped_column(String(255), index=True)
+    price: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    currency: Mapped[str] = mapped_column(String(3))  # ISO 4217 currency codes
+    description: Mapped[Optional[str]] = mapped_column(String(1000))
+    items_in_stock: Mapped[int] = mapped_column(Integer)
 
+    business_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("business.id"))
+    business: Mapped["Business"] = relationship("Business", back_populates="products")
+    transactions: Mapped[list["Transaction"]] = relationship("Transaction", back_populates="product")
+
+class Transaction(AbstractModel):
+    __tablename__ = 'transaction'
+
+    amount: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    status: Mapped[TransactionStatus] = mapped_column(SQLAEnum(TransactionStatus))
+
+    business_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("business.id"))
+    business: Mapped["Business"] = relationship("Business", back_populates="transactions")
+
+    product_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("product.id"))
+    product: Mapped["Product"] = relationship("Product", back_populates="transactions")
+
+# Database connection setup (commented out as in original)
+# sqlite_file_name = "database.db"
+# sqlite_url = f"sqlite:///{sqlite_file_name}"
+# connect_args = {"check_same_thread": False}
+# engine = create_engine(sqlite_url, echo=True, connect_args=connect_args)
