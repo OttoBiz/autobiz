@@ -9,7 +9,7 @@ import requests
 
 from dotenv import load_dotenv
 import logging
-
+from typing import Optional
 
 load_dotenv()
 
@@ -38,8 +38,8 @@ class BusinessRequest(BaseModel):
     product_name: str
     product_price: str
     user_id: str
-    vendor_id: str
-    logistic_id: str
+    business_id: str
+    logistic_id: Optional[str]= None
     message_type: str
 
 
@@ -108,8 +108,8 @@ class WhatsappBot:
         self.send_message(recipient_id, sender_id, response)
 
     async def get_response(self, request: Union[UserRequest, BusinessRequest], background_task) -> str:
-        from backend.chatbot.agents.user_chat_interface import chat
-        from backend.chatbot.agents.business_chat_interface import business_chat
+        from backend.chatbot.agents.interface.user_chat_interface import chat
+        from backend.chatbot.agents.interface.business_chat_interface import business_chat
 
         if isinstance(request, UserRequest):
             response = await chat(request, background_task, reset_user_state=False)
