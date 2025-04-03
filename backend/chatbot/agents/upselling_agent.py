@@ -11,11 +11,11 @@ from ..prompts.upselling_agent_prompt import UPSELLING_SYSTEM_PROMPT
 
 load_dotenv()
 
-os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
+os.environ["OPENAI_API_KEY"] = os.getenv("MODEL_API_KEY")
 
 client = openai.OpenAI()
 
-MODEL = "gpt-4o-mini"
+MODEL = os.getenv("MODEL_NAME")
 
 class Product(BaseModel):
     """
@@ -120,6 +120,20 @@ async def execute_tool(tool_calls, messages):
     return messages
 
 async def run_upselling_agent(product, intent, chat_history = [], **kwargs):
+    """
+    Generates upselling or alternative product recommendations based on user intent.
+
+    Args:
+        product (str): Name of the purchased or inquired product.
+        intent (str): 'purchased' (suggest complementary items) or 'inquired' 
+                      (suggest alternatives).
+        chat_history (list, optional): Previous interactions. Defaults to an empty list.
+        **kwargs: Additional parameters.
+
+    Returns:
+        str: The final response from the upselling agent, containing recommended products 
+             and persuasive marketing content.
+    """
     
     chat_history.append( {"role": "user", "content": f"Product: {product} Instruction: {intent}"})
         
