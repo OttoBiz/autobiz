@@ -79,6 +79,7 @@ You are an AI assistant who attends to the needs of businesses and their respons
 and product enquiries.
 
 Given the below:
+business type: {business_type}
 chat_history: {chat_history}
 business_message: {business_message}
 Provide the best response (short and in a chat format).
