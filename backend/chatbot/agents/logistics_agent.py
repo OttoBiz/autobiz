@@ -1,5 +1,5 @@
 from .central_agent import run_central_agent
-from .central_agent_utils import create_structured_input
+from .utils.central_agent import create_structured_input
 from fastapi import BackgroundTasks
 
 
@@ -11,10 +11,10 @@ async def run_logistics_agent(product_name, customer_message, customer_address, 
     customer_address += (f"\nAdditional Information: {miscellaneous}" if miscellaneous else "")
     
     #Structure input in the way central agent will use it.
-    agent_input = await create_structured_input(sender="customer", recipient="vendor", message=customer_message, product_name=product_name,
+    agent_input = await create_structured_input(sender="customer", recipient="vendor +/- logistic", message=customer_message, product_name=product_name,
                                   price= kwargs.get("price", ""), customer_id= kwargs.get("customer_id"), 
-                                  business_id = kwargs.get("business_id"), customer_address=customer_address, message_type="Logistic planning")
-        
+                                  business_id = kwargs.get("business_id"), customer_address=customer_address, task_type="Logistic planning")
+  
     # response = await run_central_agent(agent_input, kwargs["user_state"])
     
     if is_first_call:
