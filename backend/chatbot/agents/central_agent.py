@@ -4,7 +4,7 @@ from .utils.central_agent import *
 from backend.whatsapp.utils import whatsapp
 from .agent_models_init import central_agent_chains as llm_chains
 from typing import Dict, Union
-from backend.db.cache_utils import get_contact
+from backend.chatbot.agents.utils.central_agent import get_contact
 
 """
 There are usually 4 types of processes handled by the central agent using 3 different system prompts:
