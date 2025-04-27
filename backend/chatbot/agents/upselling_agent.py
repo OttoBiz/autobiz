@@ -119,16 +119,15 @@ async def execute_tool(tool_calls, messages):
 
     return messages
 
-async def run_upselling_agent(product, intent, chat_history = [], **kwargs):
+async def run_upselling_agent(product: str, intent: str, chat_history: list = []):
     """
     Generates upselling or alternative product recommendations based on user intent.
 
     Args:
-        product (str): Name of the purchased or inquired product.
-        intent (str): 'purchased' (suggest complementary items) or 'inquired' 
+        product: Name of the purchased or inquired product.
+        intent: 'purchased' (suggest complementary items) or 'inquired' 
                       (suggest alternatives).
-        chat_history (list, optional): Previous interactions. Defaults to an empty list.
-        **kwargs: Additional parameters.
+        chat_history: Previous interactions. Defaults to an empty list.
 
     Returns:
         str: The final response from the upselling agent, containing recommended products 
