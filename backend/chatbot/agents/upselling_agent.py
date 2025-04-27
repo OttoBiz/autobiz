@@ -11,11 +11,11 @@ from ..prompts.upselling_agent_prompt import UPSELLING_SYSTEM_PROMPT
 
 load_dotenv()
 
-os.environ["OPENAI_API_KEY"] = os.getenv("MODEL_API_KEY")
+os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
 
 client = openai.OpenAI()
 
-MODEL = os.getenv("MODEL_NAME")
+MODEL = "gpt-4o-mini"
 
 class Product(BaseModel):
     """
