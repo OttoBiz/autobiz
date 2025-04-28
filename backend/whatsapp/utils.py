@@ -2,14 +2,13 @@ import hashlib
 import hmac
 import json
 import os
-from typing import Union
+from typing import Optional, Union
 from urllib.parse import parse_qs
 from pydantic import BaseModel
 import requests
 
 from dotenv import load_dotenv
 import logging
-from typing import Optional
 
 load_dotenv()
 
