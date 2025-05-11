@@ -1,6 +1,6 @@
 from sqlalchemy import or_
 # from sqlalchemy.orm import sessionmaker
-from .models import Product, Business, Transaction #, engine
+from .models import ProductService as Product, Business
 from .database import engine, Base, get_db 
 from typing import List
 from sqlalchemy.inspection import inspect
