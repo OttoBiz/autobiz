@@ -8,8 +8,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Make the startup script executable
+RUN chmod +x start.sh
+
 EXPOSE 8000
 
 ENV PYTHONPATH=/app
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Use the startup script instead of direct uvicorn command
+CMD ["./start.sh"]
