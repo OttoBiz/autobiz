@@ -17,12 +17,6 @@ from .models import (
     ProductService,
 )
 
-# NOTE: The following line executes schema creation upon import of this module.
-# For production systems, it's often preferable to manage schema creation/migration
-# explicitly as part of your deployment process or application startup routine
-# (e.g., in main.py or using Alembic).
-Base.metadata.create_all(bind=engine)
-
 ## POSTGRES DATABASE FUNCTIONS
 
 # --- Business Functions ---
