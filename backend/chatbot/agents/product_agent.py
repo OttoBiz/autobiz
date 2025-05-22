@@ -5,6 +5,7 @@ from langchain_core.prompts import (
     HumanMessagePromptTemplate,
 )  # PromptTemplate,
 from langchain_openai import ChatOpenAI
+from backend.chatbot.agents.business_agent import get_products
 from backend.db.cache_utils import get_user_state, modify_user_state
 from backend.db.db_utils import *
 from ..prompts.product_agent_prompt import *

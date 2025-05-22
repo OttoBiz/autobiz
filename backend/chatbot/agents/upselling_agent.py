@@ -6,7 +6,9 @@ import openai
 from typing import List
 from dotenv import load_dotenv
 
-from backend.db.db_utils import get_products
+from backend.db.db_utils import search_products_services_by_name
+from backend.db.database import get_db
+from backend.db.models import Business
 from ..prompts.upselling_agent_prompt import UPSELLING_SYSTEM_PROMPT
 
 load_dotenv()
@@ -26,11 +28,13 @@ class Product(BaseModel):
     async def execute(
         self,
     ):  # add context/intent and based on it, the prompt varies e.g customer bought, customer requested for etc.
-        search_terms = await get_products(name=self.name)
-        results = (
-            search_terms  # todo: add a function that looks up db with search terms
-        )
-        return results
+        with get_db() as db:
+            business_id = db.query(Business).first().id
+            search_terms = await search_products_services_by_name(db=db, search_term=self.name, business_id=business_id)
+            results = (
+                search_terms  # todo: add a function that looks up db with search terms
+            )
+            return results
 
 
 instructions = {
@@ -73,7 +77,9 @@ class GetRelatedProducts(BaseModel):
         )
         results = ProductLists.model_validate_json(completion)
         print(results, "\n\n")
-        search_terms = [await get_products(name=p.name) for p in results.products]
+        with get_db() as db:
+            business_id = db.query(Business).first().id
+            search_terms = [await search_products_services_by_name(db=db, search_term=p.name, business_id=business_id) for p in results.products]
         results = (
             search_terms  # todo: add a function that looks up db with search terms
         )
