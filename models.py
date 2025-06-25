@@ -2,6 +2,7 @@
 
 from typing import Optional, List
 from sqlmodel import SQLModel, Field, Relationship
+from pydantic import BaseModel
 import datetime as dt
 
 
@@ -113,3 +114,127 @@ class Delivery(SQLModel, table=True):
 
     # Relationships
     order: Optional[Order] = Relationship(back_populates="delivery")
+
+
+# ============================================================================
+# Session/State Models (Pydantic - for Redis storage)
+# ============================================================================
+
+class ProductItem(BaseModel):
+    """Product item in customer's cart/order."""
+
+    product_id: int
+    name: str
+    price: float
+    quantity: int
+    currency: str = "NGN"
+
+
+class PaymentInfo(BaseModel):
+    """Payment information for the current session."""
+
+    provider: str
+    status: str
+    amount: float
+    transaction_ref: Optional[str] = None
+    payment_link: Optional[str] = None
+    created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc))
+
+
+class DeliveryInfo(BaseModel):
+    """Delivery information for the current session."""
+
+    address: str
+    scheduled_date: Optional[dt.datetime] = None
+    status: str = "pending"
+    tracking_info: Optional[str] = None
+    created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc))
+
+
+class Message(BaseModel):
+    """Chat message in the conversation history."""
+
+    role: str  # "user" or "assistant"
+    content: str
+    timestamp: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc))
+
+
+class AgentHistory(BaseModel):
+    """History of agent interactions for debugging/tracking."""
+
+    agent_name: str
+    action: str
+    input_data: Optional[dict] = None
+    output_data: Optional[dict] = None
+    timestamp: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc))
+
+
+class CentralMemory(BaseModel):
+    """Central memory model for session state management in Redis."""
+
+    user_id: str  # WhatsApp number or unique identifier
+    current_state: str  # Current FSM state
+    pending_state: Optional[str] = None  # For multi-step flows
+    session_id: str  # Unique session identifier
+    business_id: Optional[int] = None  # Associated business
+
+    # Order/cart data
+    order: List[ProductItem] = Field(default_factory=list)
+
+    # Payment and delivery info
+    payment_info: Optional[PaymentInfo] = None
+    delivery_info: Optional[DeliveryInfo] = None
+
+    # Conversation tracking
+    agent_history: List[AgentHistory] = Field(default_factory=list)
+    chat_history: List[Message] = Field(default_factory=list)
+
+    # Session metadata
+    created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc))
+    updated_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.timezone.utc))
+
+    def add_message(self, role: str, content: str) -> None:
+        """Add a message to chat history."""
+        self.chat_history.append(Message(role=role, content=content))
+        self.updated_at = dt.datetime.now(dt.timezone.utc)
+
+    def add_agent_action(self, agent_name: str, action: str,
+                        input_data: Optional[dict] = None,
+                        output_data: Optional[dict] = None) -> None:
+        """Add an agent action to history."""
+        self.agent_history.append(AgentHistory(
+            agent_name=agent_name,
+            action=action,
+            input_data=input_data,
+            output_data=output_data
+        ))
+        self.updated_at = dt.datetime.now(dt.timezone.utc)
+
+    def add_product_item(self, product_id: int, name: str, price: float,
+                        quantity: int = 1, currency: str = "NGN") -> None:
+        """Add a product item to the order."""
+        # Check if product already exists in order
+        for item in self.order:
+            if item.product_id == product_id:
+                item.quantity += quantity
+                self.updated_at = dt.datetime.now(dt.timezone.utc)
+                return
+
+        # Add new item
+        self.order.append(ProductItem(
+            product_id=product_id,
+            name=name,
+            price=price,
+            quantity=quantity,
+            currency=currency
+        ))
+        self.updated_at = dt.datetime.now(dt.timezone.utc)
+
+    def get_total_amount(self) -> float:
+        """Calculate total amount for the order."""
+        return sum(item.price * item.quantity for item in self.order)
+
+    def clear_order(self) -> None:
+        """Clear the current order."""
+        self.order.clear()
+        self.updated_at = dt.datetime.now(dt.timezone.utc)
