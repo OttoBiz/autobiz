@@ -120,6 +120,35 @@ class OrderStateMachine:
         # Timeout and error handling
         StateTransition(OrderState.PAYMENT_PENDING, OrderState.TIMEOUT, "payment_timeout"),
         StateTransition(OrderState.TIMEOUT, OrderState.PAYMENT_PENDING, "resume_payment"),
+
+        # Flexible customer flow - allow going back to shopping/cart from payment states
+        StateTransition(OrderState.PAYMENT_PENDING, OrderState.CART_REVIEW, "modify_order"),
+        StateTransition(OrderState.PAYMENT_PENDING, OrderState.BROWSING, "continue_shopping"),
+        StateTransition(OrderState.PAYMENT_FAILED, OrderState.CART_REVIEW, "modify_order"),
+        StateTransition(OrderState.PAYMENT_FAILED, OrderState.BROWSING, "continue_shopping"),
+
+        # Allow continuing shopping from checkout states
+        StateTransition(OrderState.CHECKOUT, OrderState.BROWSING, "continue_shopping"),
+        StateTransition(OrderState.COLLECTING_ADDRESS, OrderState.CART_REVIEW, "modify_order"),
+        StateTransition(OrderState.COLLECTING_ADDRESS, OrderState.BROWSING, "continue_shopping"),
+        StateTransition(OrderState.CONFIRMING_ORDER, OrderState.CART_REVIEW, "modify_order"),
+        StateTransition(OrderState.CONFIRMING_ORDER, OrderState.BROWSING, "continue_shopping"),
+
+        # Cancel order - restart from various states
+        StateTransition(OrderState.CHECKOUT, OrderState.GREETING, "cancel_order"),
+        StateTransition(OrderState.COLLECTING_ADDRESS, OrderState.GREETING, "cancel_order"),
+        StateTransition(OrderState.CONFIRMING_ORDER, OrderState.GREETING, "cancel_order"),
+        StateTransition(OrderState.PAYMENT_PENDING, OrderState.GREETING, "cancel_order"),
+        StateTransition(OrderState.PAYMENT_FAILED, OrderState.GREETING, "cancel_order"),
+
+        # Allow adding products from checkout states (common customer behavior)
+        StateTransition(OrderState.CHECKOUT, OrderState.VIEWING_PRODUCT, "view_product"),
+        StateTransition(OrderState.COLLECTING_ADDRESS, OrderState.VIEWING_PRODUCT, "view_product"),
+
+        # Direct navigation improvements
+        StateTransition(OrderState.BROWSING, OrderState.CART_REVIEW, "view_cart"),
+        StateTransition(OrderState.VIEWING_PRODUCT, OrderState.CART_REVIEW, "view_cart"),
+        StateTransition(OrderState.ADDING_TO_CART, OrderState.VIEWING_PRODUCT, "view_product"),
     ]
 
     def __init__(self):
@@ -305,6 +334,33 @@ class FSMHelper:
             OrderState.TIMEOUT: ConversationState.PAUSED
         }
         return mapping.get(order_state, ConversationState.ACTIVE)
+
+    @staticmethod
+    def can_return_to_shopping(state: OrderState) -> bool:
+        """Check if customer can return to shopping/browsing from current state."""
+        returnable_states = {
+            OrderState.PAYMENT_PENDING,
+            OrderState.PAYMENT_FAILED,
+            OrderState.CHECKOUT,
+            OrderState.COLLECTING_ADDRESS,
+            OrderState.CONFIRMING_ORDER,
+            OrderState.CART_REVIEW,
+            OrderState.VIEWING_PRODUCT,
+            OrderState.ADDING_TO_CART
+        }
+        return state in returnable_states
+
+    @staticmethod
+    def can_cancel_order(state: OrderState) -> bool:
+        """Check if customer can cancel order and restart from current state."""
+        cancellable_states = {
+            OrderState.CHECKOUT,
+            OrderState.COLLECTING_ADDRESS,
+            OrderState.CONFIRMING_ORDER,
+            OrderState.PAYMENT_PENDING,
+            OrderState.PAYMENT_FAILED
+        }
+        return state in cancellable_states
 
 
 # Global instances for easy access
