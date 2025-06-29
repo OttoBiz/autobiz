@@ -76,60 +76,96 @@ upselling_agent = Agent(
 
 @upselling_agent.system_prompt
 def upselling_system_prompt(ctx: RunContext[UpsellingAgentDeps]) -> str:
-    """Intelligent system prompt for context-aware upselling."""
+    """Universal intelligent system prompt for any product category."""
     return f"""You are an intelligent upselling specialist for business ID {ctx.deps.business_id}.
 
 CORE PRINCIPLE: Customer satisfaction and logical value come first, not aggressive sales.
 
-SMART UPSELLING RULES:
+UNIVERSAL PRODUCT INTELLIGENCE:
 
-1. **For Primary Products** (phones, laptops, TVs, gaming consoles, cameras):
-   - NEVER suggest upgrades or similar primary products
-   - ONLY suggest complementary accessories/protection
-   - Examples:
-     * Phone → Case, screen protector, wireless charger, earbuds (NOT better phone)
-     * Laptop → Mouse, laptop bag, external monitor, keyboard (NOT laptop upgrade)
-     * TV → HDMI cables, wall mount, streaming device (NOT bigger TV)
-     * Gaming console → Games, controllers, headset (NOT console upgrade)
+You work with ANY type of business - electronics, clothing, food, furniture, books, sports, beauty, etc. 
+Your job is to understand product relationships for ANY category and make smart recommendations based on actual inventory.
 
-2. **Scenario-Based Upselling**:
-   - **"checkout"**: Customer actively buying, open to additions (full range of complements)
-   - **"post_purchase"**: Just completed purchase, suggest protection/essential accessories only
-   - **"customer_service"**: Customer had issues, be very conservative (often no upsell)
-   - **"follow_up"**: Later contact, more open to broader complementary items
+**UNIVERSAL COMPLEMENTARY EXAMPLES**:
 
-3. **For Accessories/Complementary Items** (cases, cables, stands, bags):
-   - Usually NO upselling needed - customer already bought what they need
-   - Only suggest if there's clear additional value
-   - Example: Bought phone case → Maybe screen protector, but probably nothing
+1. **Electronics**: Phone → case, charger, earbuds | Laptop → mouse, bag, stand | TV → cables, mount
+2. **Clothing**: Dress → shoes, jewelry, bag | Suit → tie, shoes, belt | Jacket → pants, shirt  
+3. **Food & Beverage**: Pizza → drinks, dessert | Coffee → pastries, sugar | Burger → fries, drink
+4. **Furniture**: Sofa → cushions, coffee table | Bed → pillows, sheets, mattress | Desk → chair, lamp
+5. **Books**: Cookbook → kitchen tools | Fitness book → equipment | Novel → bookmarks, reading light
+6. **Sports**: Tennis racket → balls, strings | Running shoes → socks, gear | Gym membership → equipment
+7. **Beauty**: Foundation → primer, brushes | Skincare → cleanser, moisturizer | Lipstick → liner, gloss
+8. **Home & Garden**: Paint → brushes, primer | Plants → pots, soil | Tools → safety gear
+9. **Automotive**: Car parts → installation tools | Oil → filters | Tires → balancing
+10. **Baby/Kids**: Diapers → wipes, cream | Toys → batteries, accessories | Clothes → matching items
 
-4. **For Unavailable Products**:
-   - Suggest similar available alternatives in same category
-   - Match or similar price range if budget provided
-   - ALWAYS confirm availability before suggesting
+**SCENARIO-BASED INTELLIGENCE**:
+- **"checkout"**: Customer actively buying, open to logical additions
+- **"post_purchase"**: Just bought, suggest protection/enhancement items only  
+- **"customer_service"**: Be very conservative - only suggest if genuinely helpful to their situation
+- **"follow_up"**: Later contact, broader complementary items acceptable
 
-5. **Availability Confirmation MANDATORY**:
-   - NEVER suggest out-of-stock products (stock = 0)
-   - NEVER suggest inactive products (is_active = False)
-   - Check stock levels before any recommendation
+**UNIVERSAL RULES**:
 
-6. **When to Say NO to Upselling**:
-   - Customer just purchased primary product → No upgrades/alternatives
-   - Very cheap items (under ${ctx.deps.min_price_threshold}) → Not worth upselling effort
-   - Customer bought accessories → They likely have what they need
-   - No logical complements exist for the product category
-   - All potential complements are unavailable
-   - Customer service scenarios → Be very conservative
+1. **Primary vs Accessory Intelligence**:
+   - Primary products (main purchases): Suggest accessories, NOT upgrades
+   - Accessories: Usually no further upselling needed
+   - Consumables: Suggest related consumables or tools
 
-7. **Product Category Intelligence**:
-   - Understand product relationships from names and descriptions
-   - Recognize primary vs accessory products
-   - Know what naturally goes together
-   - Respect purchase timing and customer intent
+2. **Natural Relationships** (analyze purchased product to determine):
+   - What LOGICALLY goes together for this product category?
+   - What ENHANCES the primary purchase experience?
+   - What PROTECTS or MAINTAINS the purchase?
+   - What COMPLETES the customer's needs?
 
-Your tools return different response types based on the scenario. Always choose the most appropriate response type and provide clear reasoning for your decisions.
+3. **Smart "No Upsell" Decisions**:
+   - Customer just bought the main item they need
+   - Product price under ${ctx.deps.min_price_threshold}
+   - Customer bought accessories (they likely have what they need)
+   - No logical complements exist in current inventory
+   - Customer service contexts where sales would feel inappropriate
 
-Focus on being genuinely helpful rather than pushy. A satisfied customer is more valuable than an oversold customer."""
+4. **Inventory-First Analysis**:
+   - Only work with products actually available in inventory
+   - Only suggest products that are in stock (stock > 0)
+   - Only suggest active products (is_active = True)
+   - If no good complements exist in inventory → gracefully decline
+
+**YOUR WORKFLOW**:
+
+When asked to analyze upselling opportunities, follow this intelligent workflow:
+
+1. **Primary Upselling Analysis**: 
+   - Use `analyze_complementary_upsell` with the purchase context
+   - This tool does validation + inventory filtering and returns ALL suitable candidates
+   - YOU must intelligently select the BEST complementary products from the filtered pool
+   - Respect the max_suggestions limit (typically {ctx.deps.max_suggestions}) in your final recommendations
+   - Focus on products that genuinely complement the purchased item
+
+2. **For Alternative Product Scenarios**:
+   - Use `suggest_alternatives_for_unavailable` when a customer wants something out of stock
+   - Consider budget constraints and product categories
+
+3. **Spot Checks**:
+   - Use `check_product_availability` when you need to verify specific products
+
+**CUSTOMER SERVICE INTELLIGENCE**:
+For customer service scenarios, be especially thoughtful:
+- ✅ Customer asking "what accessories work with this?" → Perfect for helpful suggestions
+- ✅ Customer satisfied after resolving an issue → Might be open to enhancements
+- ❌ Customer complaining about defective product → Focus on resolution, not sales
+- ❌ Customer requesting refund/return → Prioritize their concerns
+
+**YOUR PRODUCT RELATION INTELLIGENCE**: 
+Think about product categories and natural relationships. A phone naturally goes with cases and chargers. A dress pairs with shoes and jewelry. Food goes with drinks. When you receive filtered candidates from your tools, analyze them intelligently to select the BEST complements - don't just return everything.
+
+**SELECTION CRITERIA FOR FINAL RECOMMENDATIONS**:
+1. **True Complementary Value**: Does this product genuinely enhance the primary purchase?
+2. **Natural Usage Together**: Would customers logically use these items together?
+3. **Price Appropriateness**: Is the suggested item reasonably priced relative to the main purchase?
+4. **Customer Benefit**: Does this add real value to the customer's experience?
+
+**IMPORTANT**: Your tools provide pre-filtered candidates based on business rules. You must apply AI intelligence to select the most appropriate complements from these candidates, respecting the max_suggestions limit."""
 
 
 # ============================================================================
@@ -142,11 +178,9 @@ def analyze_complementary_upsell(
     purchase_context: PurchaseContext
 ) -> UpsellingResponse:
     """Analyze if complementary upselling is appropriate for a purchased product."""
-    from services.db import search_products
     
     try:
         purchased_product = purchase_context.purchased_product
-        product_name = purchased_product.name.lower()
         scenario = purchase_context.scenario
         
         # Check if product price is below threshold
@@ -155,101 +189,73 @@ def analyze_complementary_upsell(
                 reason=f"Product price (${purchased_product.price:.2f}) is below minimum threshold for upselling (${ctx.deps.min_price_threshold:.2f})"
             )
         
-        # Customer service scenario - be very conservative
-        if scenario == "customer_service":
-            return NoUpsellRecommended(
-                reason="Prioritizing customer satisfaction over additional sales due to service context."
-            )
+        # Basic validation passed - proceed with actual inventory analysis
+        # Instead of returning confusing "NoUpsellRecommended", do the real analysis
         
-        # Detect primary products that shouldn't get upgrade suggestions
-        primary_indicators = ["phone", "laptop", "macbook", "iphone", "samsung", "tv", "television", 
-                            "console", "playstation", "xbox", "camera", "ipad", "tablet", "monitor"]
+        # Get all available products from the business inventory
+        from services.db import list_products_by_business
         
-        is_primary_product = any(indicator in product_name for indicator in primary_indicators)
-        
-        if is_primary_product:
-            # Look for complementary accessories based on scenario
-            complementary_terms = []
-            
-            # Define base complementary terms for each product type
-            if any(term in product_name for term in ["phone", "iphone", "samsung"]):
-                base_terms = ["case", "charger", "cable", "screen protector", "earbuds", "headphones"]
-            elif any(term in product_name for term in ["laptop", "macbook"]):
-                base_terms = ["mouse", "bag", "sleeve", "stand", "keyboard", "monitor", "hub"]
-            elif any(term in product_name for term in ["tv", "television"]):
-                base_terms = ["cable", "mount", "remote", "streaming", "soundbar"]
-            elif any(term in product_name for term in ["console", "playstation", "xbox"]):
-                base_terms = ["controller", "headset", "game", "cable", "stand"]
-            elif any(term in product_name for term in ["camera"]):
-                base_terms = ["lens", "tripod", "memory", "bag", "battery", "charger"]
-            else:
-                base_terms = []
-            
-            # Adjust suggestions based on scenario
-            if scenario == "checkout":
-                # Customer is actively buying, more open to additions
-                complementary_terms = base_terms  # Full range
-            elif scenario == "post_purchase":
-                # Just bought, suggest protection/essential accessories only
-                protection_terms = ["case", "protector", "bag", "sleeve", "mount", "stand"]
-                complementary_terms = [term for term in base_terms if any(prot in term for prot in protection_terms)]
-                if not complementary_terms:  # If no protection items, use first 2-3 base terms
-                    complementary_terms = base_terms[:3]
-            elif scenario == "follow_up":
-                # Later contact, could suggest broader complementary items
-                complementary_terms = base_terms + ["upgrade", "premium"]  # Slightly more expansive
-            else:
-                complementary_terms = base_terms
-            
-            if complementary_terms:
-                # Search for complementary products
-                potential_complements = []
-                for term in complementary_terms:
-                    found_products = search_products(
-                        business_id=ctx.deps.business_id,
-                        query=term,
-                        active_only=True
-                    )
-                    # Only include products that are in stock
-                    available_products = [p for p in found_products if p.stock > 0]
-                    potential_complements.extend(available_products)
-                
-                # Remove duplicates and limit results
-                seen_ids = set()
-                unique_complements = []
-                for product in potential_complements:
-                    if product.id not in seen_ids and product.id != purchased_product.id:
-                        unique_complements.append(product)
-                        seen_ids.add(product.id)
-                
-                if unique_complements:
-                    # Limit to max suggestions
-                    suggested_products = unique_complements[:ctx.deps.max_suggestions]
-                    
-                    return ComplementaryUpsell(
-                        suggested_products=suggested_products,
-                        reasoning=f"Customer purchased {purchased_product.name}. Suggesting complementary accessories that enhance the experience.",
-                        upsell_message=f"Great choice on the {purchased_product.name}! Here are some accessories that work perfectly with it:"
-                    )
-        
-        # For accessory products, usually no upselling needed
-        accessory_indicators = ["case", "cable", "charger", "bag", "stand", "mount", "adapter"]
-        is_accessory = any(indicator in product_name for indicator in accessory_indicators)
-        
-        if is_accessory:
-            return NoUpsellRecommended(
-                reason="Customer purchased an accessory product. They likely have what they need for their setup."
-            )
-        
-        # If we reach here, no clear upselling opportunity
-        return NoUpsellRecommended(
-            reason="No suitable complementary products identified for this purchase."
+        all_products = list_products_by_business(
+            business_id=ctx.deps.business_id,
+            active_only=True
         )
+        
+        # Filter out the purchased product and out-of-stock items
+        available_products = [
+            p for p in all_products 
+            if p.id != purchased_product.id and p.stock > 0
+        ]
+        
+        if not available_products:
+            return NoUpsellRecommended(
+                reason="No other products available in inventory for complementary suggestions."
+            )
+        
+        # Filter by reasonable price range - let AI make final decisions
+        reasonable_products = [
+            p for p in available_products 
+            if p.price <= purchased_product.price * 3
+        ]
+        
+        if not reasonable_products:
+            return NoUpsellRecommended(
+                reason="No products in reasonable price range for complementary suggestions."
+            )
+        
+        # Apply scenario-based logic - provide full filtered pool to AI for intelligent selection
+        if scenario == "customer_service":
+            # Very conservative - only suggest if genuinely helpful
+            # Limit to protection/enhancement items at lower price points
+            candidate_products = [
+                p for p in reasonable_products 
+                if p.price <= purchased_product.price * 0.8
+            ]  # Let AI choose best options from conservative pool
+        elif scenario == "post_purchase":
+            # Conservative - protection/enhancement focus, but give AI full pool
+            candidate_products = reasonable_products
+        elif scenario == "checkout":
+            # More open - broader range, full pool for AI analysis
+            candidate_products = reasonable_products
+        else:
+            # Default moderate approach - full pool for AI analysis
+            candidate_products = reasonable_products
+        
+        if candidate_products:
+            return ComplementaryUpsell(
+                suggested_products=candidate_products,
+                reasoning=f"Found {len(candidate_products)} complementary products that work well with {purchased_product.name} (scenario: {scenario}).",
+                upsell_message=f"Great choice on the {purchased_product.name}! You might also like these items from our inventory:"
+            )
+        else:
+            return NoUpsellRecommended(
+                reason=f"No suitable complementary products found for {scenario} scenario."
+            )
         
     except Exception:
         return NoUpsellRecommended(
             reason="Unable to analyze upselling opportunities due to technical error."
         )
+
 
 
 @upselling_agent.tool
@@ -349,7 +355,7 @@ def analyze_upsell_opportunity(
     purchased_product: Product,
     business_id: int,
     quantity: int = 1,
-    scenario: str = "post_purchase",
+    scenario: Literal["checkout", "post_purchase", "customer_service", "follow_up"] = "post_purchase",
     max_suggestions: int = 3
 ):
     """Convenience function to analyze upselling opportunities after a purchase."""
@@ -358,10 +364,12 @@ def analyze_upsell_opportunity(
         max_suggestions=max_suggestions
     )
     
-    context = create_purchase_context(purchased_product, quantity, scenario)
+    # Include quantity and scenario information in the message for AI context
+    quantity_msg = f" (quantity: {quantity})" if quantity != 1 else ""
     return upselling_agent.run_sync(
-        "Analyze complementary upselling opportunities for this purchase",
-        deps=deps
+        f"Analyze complementary upselling opportunities for {purchased_product.name}{quantity_msg} (scenario: {scenario})",
+        deps=deps,
+        message_history=[]
     )
 
 
@@ -377,38 +385,10 @@ def find_alternatives(
         max_suggestions=max_suggestions
     )
     
-    context = create_unavailable_context(unavailable_product_name, customer_budget)
+    # Note: context creation is handled internally by the agent
+    budget_msg = f" (budget: ${customer_budget})" if customer_budget else ""
     return upselling_agent.run_sync(
-        "Suggest alternatives for unavailable product",
-        deps=deps
+        f"Suggest alternatives for unavailable product '{unavailable_product_name}'{budget_msg}",
+        deps=deps,
+        message_history=[]
     )
-
-
-# ============================================================================
-# Usage Examples (for documentation)
-# ============================================================================
-
-if __name__ == "__main__":
-    # Example usage patterns:
-    
-    print("Intelligent Upselling Agent Examples:")
-    print("\n1. Scenario-Based Upselling:")
-    print("   - Checkout: Phone + case, charger, earbuds (customer still buying)")
-    print("   - Post-purchase: Phone → case, screen protector (protection focus)")
-    print("   - Customer service: Often no upsell (satisfaction priority)")
-    print("   - Follow-up: Phone → AirPods, wireless charger (broader options)")
-    
-    print("\n2. Primary Product Intelligence:")
-    print("   - Laptop purchase → mouse, bag, monitor (NOT laptop upgrade)")
-    print("   - TV purchase → HDMI cables, mount (NOT bigger TV)")
-    print("   - Console purchase → games, controllers (NOT console upgrade)")
-    
-    print("\n3. Unavailable Product Scenarios:")
-    print("   - 'iPhone 15 Pro Max' unavailable → Suggests iPhone 15 Pro, Samsung alternatives")
-    print("   - 'Gaming laptop $800' unavailable → Suggests similar laptops under $800")
-    
-    print("\n4. Smart 'No Upsell' Decisions:")
-    print("   - Customer service context → Be very conservative")
-    print("   - Bought accessory → Customer likely has what they need") 
-    print("   - Very cheap purchase → Not worth upselling effort")
-    print("   - No good complements exist → Graceful decline")
