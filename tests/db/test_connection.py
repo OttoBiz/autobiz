@@ -1,4 +1,5 @@
 """Unit tests for db/connection.py using pytest-asyncio"""
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
@@ -32,6 +33,7 @@ def mock_asyncpg_pool():
 def reset_pool():
     """Fixture to reset the global pool state before and after each test."""
     import db.connection
+
     original_pool = db.connection._pool
     db.connection._pool = None
     yield
@@ -95,6 +97,7 @@ async def test_close_db_pool_closes_successfully(reset_pool):
 async def test_close_db_pool_when_not_initialized(reset_pool):
     """Test that close_db_pool handles None pool gracefully."""
     import db.connection
+
     db.connection._pool = None
 
     # Should not raise an error
@@ -125,6 +128,7 @@ async def test_get_pool_returns_initialized_pool(reset_pool):
 async def test_get_db_connection_acquires_and_yields_connection(reset_pool, mock_asyncpg_pool):
     """Test that get_db_connection acquires a connection from the pool."""
     import db.connection
+
     db.connection._pool = mock_asyncpg_pool
 
     async with get_db_connection() as conn:
@@ -139,6 +143,7 @@ async def test_get_db_connection_acquires_and_yields_connection(reset_pool, mock
 async def test_get_db_connection_releases_on_exit(reset_pool, mock_asyncpg_pool):
     """Test that connection is properly released back to the pool."""
     import db.connection
+
     db.connection._pool = mock_asyncpg_pool
 
     async with get_db_connection() as conn:
@@ -161,6 +166,7 @@ async def test_get_db_connection_raises_when_pool_not_initialized(reset_pool):
 async def test_get_db_transaction_starts_transaction(reset_pool, mock_asyncpg_pool):
     """Test that get_db_transaction starts a transaction."""
     import db.connection
+
     db.connection._pool = mock_asyncpg_pool
 
     # Get the mock connection from the pool
@@ -193,6 +199,7 @@ async def test_get_db_transaction_raises_when_pool_not_initialized(reset_pool):
 async def test_connection_context_manager_cleanup_on_error(reset_pool, mock_asyncpg_pool):
     """Test that connection is released even when an error occurs."""
     import db.connection
+
     db.connection._pool = mock_asyncpg_pool
 
     with pytest.raises(ValueError):
@@ -208,6 +215,7 @@ async def test_connection_context_manager_cleanup_on_error(reset_pool, mock_asyn
 async def test_transaction_context_manager_cleanup_on_error(reset_pool, mock_asyncpg_pool):
     """Test that transaction is properly handled even when an error occurs."""
     import db.connection
+
     db.connection._pool = mock_asyncpg_pool
 
     # Get the mock connection from the pool
@@ -231,6 +239,7 @@ async def test_transaction_context_manager_cleanup_on_error(reset_pool, mock_asy
 async def test_multiple_sequential_connections(reset_pool, mock_asyncpg_pool):
     """Test that multiple connections can be acquired sequentially."""
     import db.connection
+
     db.connection._pool = mock_asyncpg_pool
 
     # First connection

@@ -1,4 +1,5 @@
 """Functional tests for config/settings.py"""
+
 import pytest
 from pydantic import ValidationError
 from config.settings import Settings
