@@ -35,7 +35,7 @@ Examples:
 
 AI-powered customer service platform (mini CRM) where businesses get dedicated agents to handle customer interactions, orders, payments, and shipping. Built with FastAPI, Pydantic AI, and PostgreSQL.
 
-**Tech Stack:** FastAPI, Pydantic AI, PostgreSQL, Alembic (migrations)
+**Tech Stack:** FastAPI, Pydantic AI, PostgreSQL
 
 ## Architecture
 
@@ -54,15 +54,14 @@ Customer message → Webhook → AI Agent → Tools (DB access) → Response
 uv sync
 ```
 
+**Setup database:**
+```bash
+make db-setup
+```
+
 **Run development server:**
 ```bash
 uv run uvicorn api.main:app --reload
-```
-
-**Database migrations:**
-```bash
-uv run alembic revision --autogenerate -m "description"
-uv run alembic upgrade head
 ```
 
 **Run tests:**
@@ -93,17 +92,10 @@ uv run pytest
   - [customers.py](agents/tools/customers.py) - Customer data access
 
 **[db/](db/)** - Database layer
-- [db/connection.py](db/connection.py) - PostgreSQL connection setup
+- [db/connection.py](db/connection.py) - PostgreSQL connection with asyncpg
 - [db/queries.py](db/queries.py) - Shared query functions (used by agent tools and API)
-- [db/models/](db/models/) - SQLAlchemy models (one file per table):
-  - [subscription.py](db/models/subscription.py) - Subscription/Plans
-  - [business.py](db/models/business.py) - Businesses
-  - [agent.py](db/models/agent.py) - Agent configurations
-  - [channel.py](db/models/channel.py) - Communication channels (WhatsApp, etc.)
-  - [product.py](db/models/product.py) - Products
-  - [customer.py](db/models/customer.py) - Customers
-  - [conversation.py](db/models/conversation.py) - Conversations
-  - [message.py](db/models/message.py) - Messages
+- [db/models/](db/models/) - Pydantic models for type hints (one file per table)
+- [db/schema/](db/schema/) - SQL schema files with version tracking
 
 **[schemas/](schemas/)** - Pydantic schemas for request/response validation
 
@@ -115,16 +107,44 @@ uv run pytest
 **[config/](config/)** - Configuration and settings
 - [config/settings.py](config/settings.py) - Environment variables
 
-**[migrations/](migrations/)** - Alembic database migrations
+## Database Management
+
+**Schema changes:**
+1. Create new numbered SQL file in `db/schema/` (e.g., `004_add_column.sql`)
+2. Include version tracking logic:
+```sql
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_versions WHERE version = '004') THEN
+        -- Your schema changes here
+        ALTER TABLE users ADD COLUMN phone VARCHAR(50);
+
+        INSERT INTO schema_versions (version, description)
+        VALUES ('004', 'Add phone to users');
+
+        RAISE NOTICE '✓ Schema 004 applied';
+    ELSE
+        RAISE NOTICE 'Schema 004 already applied, skipping...';
+    END IF;
+END $$;
+```
+3. Run `make db-setup` (automatically runs all `.sql` files in order)
+
+**Tech notes:**
+- Uses asyncpg (not SQLAlchemy ORM) - work with raw SQL queries
+- Pydantic models in `db/models/` provide type hints for query results
+- Each schema file is idempotent (safe to rerun)
+- Python script (`db/schema/run_migrations.py`) runs all `.sql` files - no psql required
 
 ## Database Schema
 
-Each business gets a unique agent and customer base. Core tables:
-1. Subscription/Plans - Platform subscription tiers
-2. Businesses - Registered businesses
-3. Agent - Per-business agent configurations
-4. Channels - Communication channel settings (WhatsApp, Telegram, etc.)
-5. Products - Business product catalog
-6. Customers - End customers per business
-7. Conversation - Customer conversation threads
-8. Messages - Individual messages in conversations
+Core tables:
+1. Users - Platform users (can own multiple businesses, invite team members)
+2. SubscriptionPlans - Subscription tiers with pricing and feature flags
+3. Businesses - Registered businesses with subscription, settings, branding
+4. Agent - Per-business agent configurations
+5. Channels - Communication channel settings (WhatsApp, Telegram, etc.)
+6. Products - Business product catalog
+7. Customers - End customers per business
+8. Conversations - Customer conversation threads
+9. Messages - Individual messages in conversations
