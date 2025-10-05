@@ -40,10 +40,14 @@ AI-powered customer service platform (mini CRM) where businesses get dedicated a
 ## Architecture
 
 ### Request Flow
-Customer message → Webhook → AI Agent → Tools (DB access) → Response
+Customer message → Webhook → Agent Executor → Dynamic Agent + Tools → Response
 
 ### Key Principles
-- **Agent-centric**: Most business logic handled by AI agents using tools
+- **Multi-agent system**: Businesses can deploy multiple specialized AI agents (sales, support, legal intake, etc.)
+- **Pydantic AI toolsets**: Tools organized in composable FunctionToolsets with prefixes (catalog_, customers_, etc.)
+- **Simple composition**: ToolsetManager combines toolsets - no business logic, just composition
+- **Conversation-centric state**: State lives in conversations, agents are stateless executors
+- **Agent collaboration**: Agents can handoff (transfer control) or consult (ask for info) with each other
 - **Minimal API surface**: Routes mainly for webhooks and business owner dashboard
 - **Clear separation**: DB models, AI agents, and integrations are isolated
 
@@ -80,20 +84,31 @@ uv run pytest
 - [api/routes/admin.py](api/routes/admin.py) - Subscription/plan management
 - Note: Webhooks also handle payment provider and shipping partner callbacks
 
-**[agents/](agents/)** - AI agents with direct DB access via tools
-- [agents/base.py](agents/base.py) - Base agent configuration (Pydantic AI)
-- [agents/customer_agent.py](agents/customer_agent.py) - Main customer-facing agent
-- [agents/tools/](agents/tools/) - Agent tools that perform DB operations:
-  - [products.py](agents/tools/products.py) - Product search/information
-  - [orders.py](agents/tools/orders.py) - Order creation/management
-  - [payments.py](agents/tools/payments.py) - Payment request triggers
-  - [shipping.py](agents/tools/shipping.py) - Shipping partner coordination
-  - [inventory.py](agents/tools/inventory.py) - Inventory checks/updates
-  - [customers.py](agents/tools/customers.py) - Customer data access
+**[agents/](agents/)** - Multi-agent system with Pydantic AI toolsets
+- [agents/executor.py](agents/executor.py) - Multi-agent executor (loads agents from DB, composes toolsets)
+- [agents/registry.py](agents/registry.py) - ToolsetManager (simple toolset composition)
+- [agents/deps.py](agents/deps.py) - Agent dependencies (business_id, conversation_id, etc.)
+- [agents/customer_agent.py](agents/customer_agent.py) - Legacy single-agent (for migration reference)
+- [agents/state/](agents/state/) - Conversation state management:
+  - [manager.py](agents/state/manager.py) - State persistence following Pydantic AI patterns
+  - [snapshots.py](agents/state/snapshots.py) - State snapshots for pause/resume workflows
+  - [redis.py](agents/state/redis.py) - Optional Redis caching
+- [agents/toolsets/](agents/toolsets/) - Pydantic AI FunctionToolsets (prefixed):
+  - [catalog.py](agents/toolsets/catalog.py) - catalog_* tools (product search, inventory)
+  - [customers.py](agents/toolsets/customers.py) - customers_* tools (lookup, management)
+  - [conversations.py](agents/toolsets/conversations.py) - conversations_* tools (messaging, escalation)
+  - [collaboration.py](agents/toolsets/collaboration.py) - collab_* tools (handoff, consult)
+  - [__init__.py](agents/toolsets/__init__.py) - ALL_TOOLS master toolset
 
 **[db/](db/)** - Database layer
 - [db/connection.py](db/connection.py) - PostgreSQL connection with asyncpg
-- [db/queries.py](db/queries.py) - Shared query functions (used by agent tools and API)
+- [db/queries/](db/queries/) - Domain-organized query functions (used by agent tools and API):
+  - [agent.py](db/queries/agent.py) - Agent configuration queries
+  - [business.py](db/queries/business.py) - Business queries
+  - [customer.py](db/queries/customer.py) - Customer queries
+  - [product.py](db/queries/product.py) - Product queries
+  - [conversation.py](db/queries/conversation.py) - Conversation queries
+  - [message.py](db/queries/message.py) - Message queries
 - [db/models/](db/models/) - Pydantic models for type hints (one file per table)
 - [db/schema/](db/schema/) - SQL schema files with version tracking
 
@@ -142,9 +157,126 @@ Core tables:
 1. Users - Platform users (can own multiple businesses, invite team members)
 2. SubscriptionPlans - Subscription tiers with pricing and feature flags
 3. Businesses - Registered businesses with subscription, settings, branding
-4. Agent - Per-business agent configurations
+4. **Agent** - Multi-agent configurations (business can have multiple agents with different roles)
 5. Channels - Communication channel settings (WhatsApp, Telegram, etc.)
 6. Products - Business product catalog
 7. Customers - End customers per business
 8. Conversations - Customer conversation threads
 9. Messages - Individual messages in conversations
+10. **ConversationState** (planned) - Conversation state snapshots for pause/resume
+11. **ConversationStateSnapshots** (planned) - Historical state snapshots
+
+### Multi-Agent Schema Notes
+- **Agent table**: Changed from 1:1 (business:agent) to 1:many (business can have multiple agents)
+- Each agent has a `role` field (e.g., "sales", "support", "legal_intake")
+- Agent configurations stored in JSONB following Claude Code subagent pattern
+- Tools are defined per-agent in the config (list of tool names from registry)
+
+## Multi-Agent System & Toolsets
+
+### How It Works
+
+1. **Toolset Organization**: Tools are organized into Pydantic AI FunctionToolsets by domain
+   - Each toolset file (catalog.py, customers.py, etc.) creates a FunctionToolset
+   - Tools are registered using `@toolset.tool` decorator
+   - All tools in a toolset share a common prefix (catalog_, customers_, etc.)
+
+2. **Agent Configuration**: Agent configs stored in DB specify `tool_groups` (not individual tools)
+   ```json
+   {
+     "role": "sales",
+     "tool_groups": ["catalog", "customers", "collab"]
+   }
+   ```
+
+3. **Toolset Composition**: When an agent is created, ToolsetManager combines the requested toolsets
+   ```python
+   toolset = manager.combine(["catalog", "customers", "collab"])
+   agent = Agent(model, tools=toolset, ...)
+   ```
+
+4. **Execution**: Agent runs with the composed toolset
+
+### Toolset Prefixing
+
+All tools use prefixes to prevent naming collisions and provide context:
+
+```python
+# agents/toolsets/catalog.py
+catalog_toolset = FunctionToolset()
+
+@catalog_toolset.tool
+async def product_search(...):  # Will be called catalog_product_search
+    pass
+
+@catalog_toolset.tool
+async def inventory_check(...):  # Will be called catalog_inventory_check
+    pass
+
+# Export with prefix
+catalog_toolset = catalog_toolset.prefix("catalog_")
+```
+
+**Benefits**:
+- No naming collisions (orders.create vs conversations.create)
+- Agent knows which domain a tool belongs to
+- Easier to filter and organize tools
+- Better context for the LLM
+
+### ToolsetManager (Simple Composition)
+
+The ToolsetManager is intentionally simple - no business logic, just composition:
+
+```python
+class ToolsetManager:
+    def __init__(self):
+        self.catalog = catalog_toolset
+        self.customers = customers_toolset
+        self.conversations = conversations_toolset
+        self.collab = collaboration_toolset
+        self.all_tools = ALL_TOOLS
+
+    def get(self, name: str) -> AbstractToolset:
+        """Get a single toolset by name"""
+        return getattr(self, name, FunctionToolset())
+
+    def combine(self, tool_groups: list[str]) -> AbstractToolset:
+        """Combine multiple toolsets"""
+        result = FunctionToolset()
+        for group in tool_groups:
+            result = result + self.get(group)
+        return result
+```
+
+**No filtering, no business rules** - that happens elsewhere. This keeps the registry clean and focused.
+
+### Agent Collaboration
+
+**Handoff Pattern** (Transfer control):
+- Used for: WRITE operations or complex GET operations
+- Example: Sales agent hands off to legal intake agent for contract review
+- Control transfers completely to the new agent
+- Recorded in conversation state
+
+**Consult Pattern** (Get information):
+- Used for: Simple GET operations
+- Example: Support agent consults pricing agent for product info
+- Original agent maintains control
+- Response is returned to the requesting agent
+
+### Tool Organization
+
+Tools are organized by business domain:
+- **catalog/**: Product and inventory management
+- **customers/**: Customer lookup and management
+- **conversations/**: Messaging and escalation
+- **orders/**: Order creation and payment processing
+- **collaboration/**: Agent handoff and consult
+- **internal/**: Platform tools (tagging, escalation)
+
+### State Management
+
+- **Conversation-centric**: State lives in conversations, not agents
+- **Agents are stateless**: Agents are executors that operate on conversation state
+- **Snapshots**: State can be snapshotted for pause/resume workflows
+- **Follows Pydantic AI patterns**: Uses Pydantic AI's state persistence model
