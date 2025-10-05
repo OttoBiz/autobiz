@@ -4,12 +4,13 @@ from uuid import UUID
 
 from pydantic_ai import RunContext
 
-from agents.customer_agent import customer_agent
 from agents.deps import AgentDeps
-from db.queries import create_message, escalate_conversation
+from agents.registry import ToolCategory, register_tool
+from db.queries.conversation import escalate_conversation
+from db.queries.message import create_message
 
 
-@customer_agent.tool
+@register_tool(ToolCategory.ESCALATE_TO_HUMAN)
 async def conversation_escalate(
     ctx: RunContext[AgentDeps],
     reason: str,
@@ -76,7 +77,7 @@ Please inform the customer:
 """
 
 
-@customer_agent.tool
+@register_tool("conversations.add_note")
 async def conversation_add_note(
     ctx: RunContext[AgentDeps],
     note: str,

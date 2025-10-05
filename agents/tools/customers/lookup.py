@@ -2,12 +2,12 @@
 
 from pydantic_ai import RunContext
 
-from agents.customer_agent import customer_agent
 from agents.deps import AgentDeps
-from db.queries import find_customer_by_contact
+from agents.registry import ToolCategory, register_tool
+from db.queries.customer import find_customer_by_contact
 
 
-@customer_agent.tool
+@register_tool(ToolCategory.CUSTOMER_LOOKUP)
 async def customer_lookup(
     ctx: RunContext[AgentDeps],
     email: str | None = None,

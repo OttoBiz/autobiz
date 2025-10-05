@@ -2,12 +2,12 @@
 
 from pydantic_ai import RunContext
 
-from agents.customer_agent import customer_agent
 from agents.deps import AgentDeps
-from db.queries import get_product_by_sku, search_products
+from agents.registry import ToolCategory, register_tool
+from db.queries.product import get_product_by_sku, search_products
 
 
-@customer_agent.tool
+@register_tool(ToolCategory.PRODUCT_SEARCH)
 async def product_search(
     ctx: RunContext[AgentDeps],
     query: str,
@@ -80,7 +80,7 @@ async def product_search(
     return "\n".join(result_lines)
 
 
-@customer_agent.tool
+@register_tool(ToolCategory.PRODUCT_INVENTORY_CHECK)
 async def product_check_inventory(
     ctx: RunContext[AgentDeps],
     sku: str,
