@@ -2,6 +2,24 @@
 
 This directory contains examples demonstrating how to use the multi-agent system with Pydantic AI toolsets.
 
+## Quick Start
+
+**Before running examples**, seed the database with test data:
+
+```bash
+# 1. Setup database schema
+make db-setup
+
+# 2. Seed with test data
+make seed-db
+```
+
+This creates:
+- A sample business "Tech Store Demo"
+- 7 products (laptops, monitors, accessories)
+- 4 test customers with different profiles
+- Sample conversation thread
+
 ## Available Examples
 
 ### 1. Simple Agent (`simple_agent.py`)

@@ -2,6 +2,11 @@
 
 This example shows how to create a customer service agent using our FunctionToolsets.
 
+Prerequisites:
+    1. Setup database: make db-setup
+    2. Seed test data: make seed-db
+    3. Set OPENAI_API_KEY environment variable
+
 Run with:
     uv run python -m examples.simple_agent
 """
