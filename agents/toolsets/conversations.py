@@ -131,7 +131,3 @@ async def add_internal_note(
     )
 
     return "✅ Internal note added successfully. This information is now visible to your team but not to the customer."
-
-
-# Export with prefix
-conversations_toolset = conversations_toolset.prefix("conversations_")

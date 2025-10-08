@@ -75,7 +75,3 @@ Segments: {", ".join(customer.segments) if customer.segments else "None"}
 Notes: {customer.notes or "No notes on file"}
 
 Use this information to provide personalized service."""
-
-
-# Export with prefix
-customers_toolset = customers_toolset.prefix("customers_")

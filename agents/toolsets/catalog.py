@@ -144,7 +144,3 @@ Inventory Status: {stock_status}
 {availability_msg}
 
 {product.description or "No additional product details available."}"""
-
-
-# Export with prefix
-catalog_toolset = catalog_toolset.prefix("catalog_")

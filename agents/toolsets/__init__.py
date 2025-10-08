@@ -31,12 +31,14 @@ from agents.toolsets.customers import customers_toolset
 
 # Master toolset combining all available tools
 # This represents the complete tool inventory (stable for KV-cache optimization)
-ALL_TOOLS = (
-    catalog_toolset +
-    customers_toolset +
-    conversations_toolset +
-    collaboration_toolset
-)
+# Note: We combine toolsets in ToolsetManager.combine() instead of at module level
+# to avoid issues with FunctionToolset composition
+ALL_TOOLS = [
+    catalog_toolset,
+    customers_toolset,
+    conversations_toolset,
+    collaboration_toolset,
+]
 
 __all__ = [
     "catalog_toolset",

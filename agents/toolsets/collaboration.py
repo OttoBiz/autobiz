@@ -154,6 +154,3 @@ Secondary question: "Does this change system state?"
   - Simple GET → Use consult
   - Complex GET (multi-turn) → Use handoff
 """
-
-# Export with prefix
-collaboration_toolset = collaboration_toolset.prefix("collab_")
