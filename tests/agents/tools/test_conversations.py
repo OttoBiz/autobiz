@@ -9,7 +9,6 @@ from pydantic_ai import RunContext
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
-from agents import customer_agent
 from agents.deps import AgentDeps
 from db.models.conversation import Conversation, ConversationChannel, ConversationStatus
 
@@ -57,21 +56,20 @@ def agent_deps():
 @pytest.mark.asyncio
 async def test_conversation_escalate_creates_internal_note(escalated_conversation, agent_deps):
     """Test that escalation creates an internal note."""
-    from agents.tools.conversations import conversation_escalate
-    from pydantic_ai import RunContext
+    from agents.toolsets.conversations import escalate_to_human
 
     user_id = str(uuid4())
     reason = "Customer is frustrated with shipping delays"
 
     with (
-        patch("agents.tools.conversations.escalate_conversation") as mock_escalate,
-        patch("agents.tools.conversations.create_message") as mock_create_msg,
+        patch("agents.toolsets.conversations.escalate_conversation") as mock_escalate,
+        patch("agents.toolsets.conversations.create_message") as mock_create_msg,
     ):
         mock_escalate.return_value = escalated_conversation
         mock_create_msg.return_value = AsyncMock()
 
         ctx = RunContext(deps=agent_deps, retry=0, messages=[], model=TestModel(), usage=RunUsage())
-        result = await conversation_escalate(ctx, reason=reason, user_id=user_id)
+        result = await escalate_to_human(ctx, reason=reason, user_id=user_id)
 
         # Verify escalation was called with the conversation_id and the converted UUID
         mock_escalate.assert_called_once()
@@ -88,22 +86,21 @@ async def test_conversation_escalate_creates_internal_note(escalated_conversatio
 
 @pytest.mark.asyncio
 async def test_conversation_escalate_formats_success_message(escalated_conversation, agent_deps):
-    """Test conversation_escalate returns proper success message."""
-    from agents.tools.conversations import conversation_escalate
-    from pydantic_ai import RunContext
+    """Test escalate_to_human returns proper success message."""
+    from agents.toolsets.conversations import escalate_to_human
 
     user_id = str(uuid4())
     reason = "Complex technical issue"
 
     with (
-        patch("agents.tools.conversations.escalate_conversation") as mock_escalate,
-        patch("agents.tools.conversations.create_message") as mock_create_msg,
+        patch("agents.toolsets.conversations.escalate_conversation") as mock_escalate,
+        patch("agents.toolsets.conversations.create_message") as mock_create_msg,
     ):
         mock_escalate.return_value = escalated_conversation
         mock_create_msg.return_value = AsyncMock()
 
         ctx = RunContext(deps=agent_deps, retry=0, messages=[], model=TestModel(), usage=RunUsage())
-        result = await conversation_escalate(ctx, reason=reason, user_id=user_id)
+        result = await escalate_to_human(ctx, reason=reason, user_id=user_id)
 
         assert "successfully escalated" in result.lower()
         assert "team member" in result.lower()
@@ -112,9 +109,8 @@ async def test_conversation_escalate_formats_success_message(escalated_conversat
 
 @pytest.mark.asyncio
 async def test_conversation_escalate_requires_conversation_id(agent_deps):
-    """Test conversation_escalate requires active conversation."""
-    from agents.tools.conversations import conversation_escalate
-    from pydantic_ai import RunContext
+    """Test escalate_to_human requires active conversation."""
+    from agents.toolsets.conversations import escalate_to_human
 
     # No conversation_id in deps
     deps_no_conversation = AgentDeps(business_id=uuid4())
@@ -122,7 +118,7 @@ async def test_conversation_escalate_requires_conversation_id(agent_deps):
     ctx = RunContext(
         deps=deps_no_conversation, retry=0, messages=[], model=TestModel(), usage=RunUsage()
     )
-    result = await conversation_escalate(ctx, reason="Test reason", user_id=str(uuid4()))
+    result = await escalate_to_human(ctx, reason="Test reason", user_id=str(uuid4()))
 
     assert "Error" in result
     assert "no active conversation" in result.lower()
@@ -130,14 +126,13 @@ async def test_conversation_escalate_requires_conversation_id(agent_deps):
 
 @pytest.mark.asyncio
 async def test_conversation_escalate_validates_reason(agent_deps):
-    """Test conversation_escalate requires detailed reason."""
-    from agents.tools.conversations import conversation_escalate
-    from pydantic_ai import RunContext
+    """Test escalate_to_human requires detailed reason."""
+    from agents.toolsets.conversations import escalate_to_human
 
     ctx = RunContext(deps=agent_deps, retry=0, messages=[], model=TestModel(), usage=RunUsage())
 
     # Too short reason
-    result = await conversation_escalate(ctx, reason="short", user_id=str(uuid4()))
+    result = await escalate_to_human(ctx, reason="short", user_id=str(uuid4()))
 
     assert "Error" in result
     assert "detailed reason" in result.lower()
@@ -145,14 +140,13 @@ async def test_conversation_escalate_validates_reason(agent_deps):
 
 @pytest.mark.asyncio
 async def test_conversation_escalate_validates_user_id(agent_deps):
-    """Test conversation_escalate validates user_id format."""
-    from agents.tools.conversations import conversation_escalate
-    from pydantic_ai import RunContext
+    """Test escalate_to_human validates user_id format."""
+    from agents.toolsets.conversations import escalate_to_human
 
     ctx = RunContext(deps=agent_deps, retry=0, messages=[], model=TestModel(), usage=RunUsage())
 
     # Invalid UUID format
-    result = await conversation_escalate(
+    result = await escalate_to_human(
         ctx, reason="This is a valid detailed reason", user_id="not-a-uuid"
     )
 
@@ -162,15 +156,14 @@ async def test_conversation_escalate_validates_user_id(agent_deps):
 
 @pytest.mark.asyncio
 async def test_conversation_escalate_handles_failed_escalation(agent_deps):
-    """Test conversation_escalate handles when escalation fails."""
-    from agents.tools.conversations import conversation_escalate
-    from pydantic_ai import RunContext
+    """Test escalate_to_human handles when escalation fails."""
+    from agents.toolsets.conversations import escalate_to_human
 
-    with patch("agents.tools.conversations.escalate_conversation") as mock_escalate:
+    with patch("agents.toolsets.conversations.escalate_conversation") as mock_escalate:
         mock_escalate.return_value = None  # Escalation failed
 
         ctx = RunContext(deps=agent_deps, retry=0, messages=[], model=TestModel(), usage=RunUsage())
-        result = await conversation_escalate(
+        result = await escalate_to_human(
             ctx, reason="Valid reason for escalation", user_id=str(uuid4())
         )
 
@@ -180,15 +173,14 @@ async def test_conversation_escalate_handles_failed_escalation(agent_deps):
 
 @pytest.mark.asyncio
 async def test_conversation_add_note_success(agent_deps):
-    """Test conversation_add_note successfully adds internal note."""
-    from agents.tools.conversations import conversation_add_note
-    from pydantic_ai import RunContext
+    """Test add_internal_note successfully adds internal note."""
+    from agents.toolsets.conversations import add_internal_note
 
-    with patch("agents.tools.conversations.create_message") as mock_create_msg:
+    with patch("agents.toolsets.conversations.create_message") as mock_create_msg:
         mock_create_msg.return_value = AsyncMock()
 
         ctx = RunContext(deps=agent_deps, retry=0, messages=[], model=TestModel(), usage=RunUsage())
-        result = await conversation_add_note(
+        result = await add_internal_note(
             ctx, note="Customer mentioned they're interested in premium features"
         )
 
@@ -204,9 +196,8 @@ async def test_conversation_add_note_success(agent_deps):
 
 @pytest.mark.asyncio
 async def test_conversation_add_note_requires_conversation_id(agent_deps):
-    """Test conversation_add_note requires active conversation."""
-    from agents.tools.conversations import conversation_add_note
-    from pydantic_ai import RunContext
+    """Test add_internal_note requires active conversation."""
+    from agents.toolsets.conversations import add_internal_note
 
     # No conversation_id in deps
     deps_no_conversation = AgentDeps(business_id=uuid4())
@@ -214,7 +205,7 @@ async def test_conversation_add_note_requires_conversation_id(agent_deps):
     ctx = RunContext(
         deps=deps_no_conversation, retry=0, messages=[], model=TestModel(), usage=RunUsage()
     )
-    result = await conversation_add_note(ctx, note="Test note")
+    result = await add_internal_note(ctx, note="Test note")
 
     assert "Error" in result
     assert "no active conversation" in result.lower()
@@ -222,14 +213,13 @@ async def test_conversation_add_note_requires_conversation_id(agent_deps):
 
 @pytest.mark.asyncio
 async def test_conversation_add_note_validates_note_length(agent_deps):
-    """Test conversation_add_note requires meaningful note."""
-    from agents.tools.conversations import conversation_add_note
-    from pydantic_ai import RunContext
+    """Test add_internal_note requires meaningful note."""
+    from agents.toolsets.conversations import add_internal_note
 
     ctx = RunContext(deps=agent_deps, retry=0, messages=[], model=TestModel(), usage=RunUsage())
 
     # Too short note
-    result = await conversation_add_note(ctx, note="hi")
+    result = await add_internal_note(ctx, note="hi")
 
     assert "Error" in result
     assert "meaningful" in result.lower() or "5 characters" in result
@@ -237,16 +227,15 @@ async def test_conversation_add_note_validates_note_length(agent_deps):
 
 @pytest.mark.asyncio
 async def test_conversation_add_note_formats_with_prefix(agent_deps):
-    """Test conversation_add_note adds INTERNAL NOTE prefix."""
-    from agents.tools.conversations import conversation_add_note
-    from pydantic_ai import RunContext
+    """Test add_internal_note adds INTERNAL NOTE prefix."""
+    from agents.toolsets.conversations import add_internal_note
 
-    with patch("agents.tools.conversations.create_message") as mock_create_msg:
+    with patch("agents.toolsets.conversations.create_message") as mock_create_msg:
         mock_create_msg.return_value = AsyncMock()
 
         ctx = RunContext(deps=agent_deps, retry=0, messages=[], model=TestModel(), usage=RunUsage())
         note_content = "Customer is a high-value prospect"
-        result = await conversation_add_note(ctx, note=note_content)
+        result = await add_internal_note(ctx, note=note_content)
 
         # Verify note has internal prefix
         call_args = mock_create_msg.call_args
@@ -256,14 +245,13 @@ async def test_conversation_add_note_formats_with_prefix(agent_deps):
 
 @pytest.mark.asyncio
 async def test_conversation_add_note_confirms_invisibility_to_customer(agent_deps):
-    """Test conversation_add_note confirms note is invisible to customer."""
-    from agents.tools.conversations import conversation_add_note
-    from pydantic_ai import RunContext
+    """Test add_internal_note confirms note is invisible to customer."""
+    from agents.toolsets.conversations import add_internal_note
 
-    with patch("agents.tools.conversations.create_message") as mock_create_msg:
+    with patch("agents.toolsets.conversations.create_message") as mock_create_msg:
         mock_create_msg.return_value = AsyncMock()
 
         ctx = RunContext(deps=agent_deps, retry=0, messages=[], model=TestModel(), usage=RunUsage())
-        result = await conversation_add_note(ctx, note="Important context note")
+        result = await add_internal_note(ctx, note="Important context note")
 
         assert "not to the customer" in result.lower() or "visible to your team" in result.lower()

@@ -9,7 +9,6 @@ from pydantic_ai import RunContext
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
-from agents import customer_agent
 from agents.deps import AgentDeps
 from db.models.customer import Customer
 
@@ -47,10 +46,10 @@ def agent_deps():
 
 @pytest.mark.asyncio
 async def test_customer_lookup_by_email_found(mock_customer, agent_deps):
-    """Test customer_lookup when customer is found by email."""
-    from agents.tools.customers import customer_lookup
+    """Test lookup when customer is found by email."""
+    from agents.toolsets.customers import lookup
 
-    with patch("agents.tools.customers.find_customer_by_contact") as mock_find:
+    with patch("agents.toolsets.customers.find_customer_by_contact") as mock_find:
         mock_find.return_value = mock_customer
 
         ctx = RunContext(
@@ -60,7 +59,7 @@ async def test_customer_lookup_by_email_found(mock_customer, agent_deps):
             model=TestModel(),
             usage=RunUsage(),
         )
-        result = await customer_lookup(ctx, email="john@example.com")
+        result = await lookup(ctx, email="john@example.com")
 
         # Verify the tool was called and returned customer info
         mock_find.assert_called_once()
@@ -70,10 +69,10 @@ async def test_customer_lookup_by_email_found(mock_customer, agent_deps):
 
 @pytest.mark.asyncio
 async def test_customer_lookup_by_phone_found(mock_customer, agent_deps):
-    """Test customer_lookup when customer is found by phone."""
-    from agents.tools.customers import customer_lookup
+    """Test lookup when customer is found by phone."""
+    from agents.toolsets.customers import lookup
 
-    with patch("agents.tools.customers.find_customer_by_contact") as mock_find:
+    with patch("agents.toolsets.customers.find_customer_by_contact") as mock_find:
         mock_find.return_value = mock_customer
 
         ctx = RunContext(
@@ -83,7 +82,7 @@ async def test_customer_lookup_by_phone_found(mock_customer, agent_deps):
             model=TestModel(),
             usage=RunUsage(),
         )
-        result = await customer_lookup(ctx, phone="+1234567890")
+        result = await lookup(ctx, phone="+1234567890")
 
         mock_find.assert_called_once()
         assert "John Doe" in result
@@ -91,10 +90,10 @@ async def test_customer_lookup_by_phone_found(mock_customer, agent_deps):
 
 @pytest.mark.asyncio
 async def test_customer_lookup_not_found(agent_deps):
-    """Test customer_lookup when customer is not found."""
-    from agents.tools.customers import customer_lookup
+    """Test lookup when customer is not found."""
+    from agents.toolsets.customers import lookup
 
-    with patch("agents.tools.customers.find_customer_by_contact") as mock_find:
+    with patch("agents.toolsets.customers.find_customer_by_contact") as mock_find:
         mock_find.return_value = None
 
         ctx = RunContext(
@@ -104,7 +103,7 @@ async def test_customer_lookup_not_found(agent_deps):
             model=TestModel(),
             usage=RunUsage(),
         )
-        result = await customer_lookup(ctx, email="unknown@example.com")
+        result = await lookup(ctx, email="unknown@example.com")
 
         mock_find.assert_called_once()
         assert "not found" in result.lower()
@@ -112,10 +111,10 @@ async def test_customer_lookup_not_found(agent_deps):
 
 @pytest.mark.asyncio
 async def test_customer_lookup_formats_response_correctly(mock_customer, agent_deps):
-    """Test that customer_lookup returns properly formatted natural language response."""
-    from agents.tools.customers import customer_lookup
+    """Test that lookup returns properly formatted natural language response."""
+    from agents.toolsets.customers import lookup
 
-    with patch("agents.tools.customers.find_customer_by_contact") as mock_find:
+    with patch("agents.toolsets.customers.find_customer_by_contact") as mock_find:
         mock_find.return_value = mock_customer
 
         ctx = RunContext(
@@ -125,7 +124,7 @@ async def test_customer_lookup_formats_response_correctly(mock_customer, agent_d
             model=TestModel(),
             usage=RunUsage(),
         )
-        result = await customer_lookup(ctx, email="john@example.com")
+        result = await lookup(ctx, email="john@example.com")
 
         # Verify response contains key information in natural language
         assert "John Doe" in result
@@ -138,10 +137,10 @@ async def test_customer_lookup_formats_response_correctly(mock_customer, agent_d
 
 @pytest.mark.asyncio
 async def test_customer_lookup_new_customer_message(agent_deps):
-    """Test that customer_lookup returns appropriate message for new customers."""
-    from agents.tools.customers import customer_lookup
+    """Test that lookup returns appropriate message for new customers."""
+    from agents.toolsets.customers import lookup
 
-    with patch("agents.tools.customers.find_customer_by_contact") as mock_find:
+    with patch("agents.toolsets.customers.find_customer_by_contact") as mock_find:
         mock_find.return_value = None
 
         ctx = RunContext(
@@ -151,7 +150,7 @@ async def test_customer_lookup_new_customer_message(agent_deps):
             model=TestModel(),
             usage=RunUsage(),
         )
-        result = await customer_lookup(ctx, email="newcustomer@example.com")
+        result = await lookup(ctx, email="newcustomer@example.com")
 
         assert "not found" in result.lower()
         assert "new customer" in result.lower()
@@ -159,8 +158,8 @@ async def test_customer_lookup_new_customer_message(agent_deps):
 
 @pytest.mark.asyncio
 async def test_customer_lookup_requires_contact_info(agent_deps):
-    """Test that customer_lookup requires email or phone."""
-    from agents.tools.customers import customer_lookup
+    """Test that lookup requires email or phone."""
+    from agents.toolsets.customers import lookup
 
     ctx = RunContext(
         deps=agent_deps,
@@ -169,7 +168,7 @@ async def test_customer_lookup_requires_contact_info(agent_deps):
         model=TestModel(),
         usage=RunUsage(),
     )
-    result = await customer_lookup(ctx)
+    result = await lookup(ctx)
 
     assert "Error" in result
     assert "email" in result.lower() or "phone" in result.lower()
@@ -177,7 +176,7 @@ async def test_customer_lookup_requires_contact_info(agent_deps):
 
 @pytest.mark.asyncio
 async def test_customer_lookup_handles_missing_optional_fields(agent_deps):
-    """Test customer_lookup handles customers with minimal information."""
+    """Test lookup handles customers with minimal information."""
     minimal_customer = Customer(
         id=uuid4(),
         business_id=agent_deps.business_id,
@@ -195,9 +194,9 @@ async def test_customer_lookup_handles_missing_optional_fields(agent_deps):
         updated_at=datetime.now(),
     )
 
-    from agents.tools.customers import customer_lookup
+    from agents.toolsets.customers import lookup
 
-    with patch("agents.tools.customers.find_customer_by_contact") as mock_find:
+    with patch("agents.toolsets.customers.find_customer_by_contact") as mock_find:
         mock_find.return_value = minimal_customer
 
         ctx = RunContext(
@@ -207,7 +206,7 @@ async def test_customer_lookup_handles_missing_optional_fields(agent_deps):
             model=TestModel(),
             usage=RunUsage(),
         )
-        result = await customer_lookup(ctx, email="minimal@example.com")
+        result = await lookup(ctx, email="minimal@example.com")
 
         # Should not crash and should handle None values gracefully
         assert "minimal@example.com" in result

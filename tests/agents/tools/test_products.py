@@ -10,7 +10,6 @@ from pydantic_ai import RunContext
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
-from agents import customer_agent
 from agents.deps import AgentDeps
 from db.models.product import Product
 
@@ -95,10 +94,9 @@ def agent_deps():
 @pytest.mark.asyncio
 async def test_product_search_formats_response(mock_products, agent_deps):
     """Test product_search formats response in natural language."""
-    from agents.tools.products import product_search
-    from pydantic_ai import RunContext
+    from agents.toolsets.catalog import product_search
 
-    with patch("agents.tools.products.search_products") as mock_search:
+    with patch("agents.toolsets.catalog.search_products") as mock_search:
         mock_search.return_value = mock_products
 
         ctx = RunContext(deps=agent_deps, retry=0, messages=[], model=TestModel(), usage=RunUsage())
@@ -115,10 +113,9 @@ async def test_product_search_formats_response(mock_products, agent_deps):
 @pytest.mark.asyncio
 async def test_product_search_no_results(agent_deps):
     """Test product_search when no products match."""
-    from agents.tools.products import product_search
-    from pydantic_ai import RunContext
+    from agents.toolsets.catalog import product_search
 
-    with patch("agents.tools.products.search_products") as mock_search:
+    with patch("agents.toolsets.catalog.search_products") as mock_search:
         mock_search.return_value = []
 
         ctx = RunContext(deps=agent_deps, retry=0, messages=[], model=TestModel(), usage=RunUsage())
@@ -131,8 +128,7 @@ async def test_product_search_no_results(agent_deps):
 @pytest.mark.asyncio
 async def test_product_search_validates_query(agent_deps):
     """Test product_search requires valid query."""
-    from agents.tools.products import product_search
-    from pydantic_ai import RunContext
+    from agents.toolsets.catalog import product_search
 
     ctx = RunContext(deps=agent_deps, retry=0, messages=[], model=TestModel(), usage=RunUsage())
 
@@ -148,10 +144,9 @@ async def test_product_search_validates_query(agent_deps):
 @pytest.mark.asyncio
 async def test_product_search_respects_limit(mock_products, agent_deps):
     """Test product_search respects limit parameter."""
-    from agents.tools.products import product_search
-    from pydantic_ai import RunContext
+    from agents.toolsets.catalog import product_search
 
-    with patch("agents.tools.products.search_products") as mock_search:
+    with patch("agents.toolsets.catalog.search_products") as mock_search:
         mock_search.return_value = mock_products
 
         ctx = RunContext(deps=agent_deps, retry=0, messages=[], model=TestModel(), usage=RunUsage())
@@ -165,10 +160,9 @@ async def test_product_search_respects_limit(mock_products, agent_deps):
 @pytest.mark.asyncio
 async def test_product_search_caps_limit_at_20(mock_products, agent_deps):
     """Test product_search caps limit at 20."""
-    from agents.tools.products import product_search
-    from pydantic_ai import RunContext
+    from agents.toolsets.catalog import product_search
 
-    with patch("agents.tools.products.search_products") as mock_search:
+    with patch("agents.toolsets.catalog.search_products") as mock_search:
         mock_search.return_value = mock_products
 
         ctx = RunContext(deps=agent_deps, retry=0, messages=[], model=TestModel(), usage=RunUsage())
@@ -181,15 +175,14 @@ async def test_product_search_caps_limit_at_20(mock_products, agent_deps):
 
 @pytest.mark.asyncio
 async def test_product_check_inventory_formats_in_stock(mock_products, agent_deps):
-    """Test product_check_inventory shows in-stock status correctly."""
-    from agents.tools.products import product_check_inventory
-    from pydantic_ai import RunContext
+    """Test inventory_check shows in-stock status correctly."""
+    from agents.toolsets.catalog import inventory_check
 
-    with patch("agents.tools.products.get_product_by_sku") as mock_get:
+    with patch("agents.toolsets.catalog.get_product_by_sku") as mock_get:
         mock_get.return_value = mock_products[0]  # 50 units in stock
 
         ctx = RunContext(deps=agent_deps, retry=0, messages=[], model=TestModel(), usage=RunUsage())
-        result = await product_check_inventory(ctx, sku="PROD-001")
+        result = await inventory_check(ctx, sku="PROD-001")
 
         assert "Test Product 1" in result
         assert "✅" in result or "In stock" in result
@@ -198,15 +191,14 @@ async def test_product_check_inventory_formats_in_stock(mock_products, agent_dep
 
 @pytest.mark.asyncio
 async def test_product_check_inventory_formats_low_stock(mock_products, agent_deps):
-    """Test product_check_inventory shows low-stock warning."""
-    from agents.tools.products import product_check_inventory
-    from pydantic_ai import RunContext
+    """Test inventory_check shows low-stock warning."""
+    from agents.toolsets.catalog import inventory_check
 
-    with patch("agents.tools.products.get_product_by_sku") as mock_get:
+    with patch("agents.toolsets.catalog.get_product_by_sku") as mock_get:
         mock_get.return_value = mock_products[1]  # 5 units, threshold 10
 
         ctx = RunContext(deps=agent_deps, retry=0, messages=[], model=TestModel(), usage=RunUsage())
-        result = await product_check_inventory(ctx, sku="PROD-002")
+        result = await inventory_check(ctx, sku="PROD-002")
 
         assert "⚠️" in result or "Low stock" in result
         assert "5" in result
@@ -214,15 +206,14 @@ async def test_product_check_inventory_formats_low_stock(mock_products, agent_de
 
 @pytest.mark.asyncio
 async def test_product_check_inventory_formats_out_of_stock(out_of_stock_product, agent_deps):
-    """Test product_check_inventory shows out-of-stock status."""
-    from agents.tools.products import product_check_inventory
-    from pydantic_ai import RunContext
+    """Test inventory_check shows out-of-stock status."""
+    from agents.toolsets.catalog import inventory_check
 
-    with patch("agents.tools.products.get_product_by_sku") as mock_get:
+    with patch("agents.toolsets.catalog.get_product_by_sku") as mock_get:
         mock_get.return_value = out_of_stock_product
 
         ctx = RunContext(deps=agent_deps, retry=0, messages=[], model=TestModel(), usage=RunUsage())
-        result = await product_check_inventory(ctx, sku="PROD-OUT")
+        result = await inventory_check(ctx, sku="PROD-OUT")
 
         assert "❌" in result or "Out of stock" in result
         assert "unavailable" in result.lower()
@@ -230,15 +221,14 @@ async def test_product_check_inventory_formats_out_of_stock(out_of_stock_product
 
 @pytest.mark.asyncio
 async def test_product_check_inventory_not_found(agent_deps):
-    """Test product_check_inventory when SKU doesn't exist."""
-    from agents.tools.products import product_check_inventory
-    from pydantic_ai import RunContext
+    """Test inventory_check when SKU doesn't exist."""
+    from agents.toolsets.catalog import inventory_check
 
-    with patch("agents.tools.products.get_product_by_sku") as mock_get:
+    with patch("agents.toolsets.catalog.get_product_by_sku") as mock_get:
         mock_get.return_value = None
 
         ctx = RunContext(deps=agent_deps, retry=0, messages=[], model=TestModel(), usage=RunUsage())
-        result = await product_check_inventory(ctx, sku="INVALID-SKU")
+        result = await inventory_check(ctx, sku="INVALID-SKU")
 
         assert "not found" in result.lower()
         assert "INVALID-SKU" in result
@@ -246,29 +236,27 @@ async def test_product_check_inventory_not_found(agent_deps):
 
 @pytest.mark.asyncio
 async def test_product_check_inventory_validates_sku(agent_deps):
-    """Test product_check_inventory requires valid SKU."""
-    from agents.tools.products import product_check_inventory
-    from pydantic_ai import RunContext
+    """Test inventory_check requires valid SKU."""
+    from agents.toolsets.catalog import inventory_check
 
     ctx = RunContext(deps=agent_deps, retry=0, messages=[], model=TestModel(), usage=RunUsage())
-    result = await product_check_inventory(ctx, sku="")
+    result = await inventory_check(ctx, sku="")
 
     assert "Error" in result
 
 
 @pytest.mark.asyncio
 async def test_product_check_inventory_handles_inactive_product(mock_products, agent_deps):
-    """Test product_check_inventory handles inactive products."""
-    from agents.tools.products import product_check_inventory
-    from pydantic_ai import RunContext
+    """Test inventory_check handles inactive products."""
+    from agents.toolsets.catalog import inventory_check
 
     inactive_product = mock_products[0]
     inactive_product.status = "inactive"
 
-    with patch("agents.tools.products.get_product_by_sku") as mock_get:
+    with patch("agents.toolsets.catalog.get_product_by_sku") as mock_get:
         mock_get.return_value = inactive_product
 
         ctx = RunContext(deps=agent_deps, retry=0, messages=[], model=TestModel(), usage=RunUsage())
-        result = await product_check_inventory(ctx, sku="PROD-001")
+        result = await inventory_check(ctx, sku="PROD-001")
 
         assert "unavailable" in result.lower()
