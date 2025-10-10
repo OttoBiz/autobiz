@@ -1,12 +1,9 @@
-"""AI agents for customer service."""
+"""
+Multi-agent system with Pydantic AI toolsets.
+See docs/architecture/AGENTS.md for agent configuration.
+"""
 
-# Import agent first
-from agents.customer_agent import customer_agent
+# Multi-agent executor
+from agents.executor import AgentExecutor
 
-# Import tools to register them via decorators
-# This must happen after agent import but before export
-import agents.tools.conversations  # noqa: F401
-import agents.tools.customers  # noqa: F401
-import agents.tools.products  # noqa: F401
-
-__all__ = ["customer_agent"]
+__all__ = ["AgentExecutor"]

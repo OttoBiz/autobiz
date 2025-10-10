@@ -1,6 +1,7 @@
 """Agent dependencies (context passed to tools)."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 from uuid import UUID
 
 
@@ -16,3 +17,6 @@ class AgentDeps:
     business_id: UUID
     conversation_id: UUID | None = None
     customer_id: UUID | None = None
+    channel: str | None = None  # "whatsapp", "sms", "email" etc.
+    current_agent_id: UUID | None = None
+    context_variables: dict[str, Any] = field(default_factory=dict)
