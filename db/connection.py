@@ -1,4 +1,5 @@
 import asyncpg
+import json
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -6,6 +7,17 @@ from config.settings import settings
 
 # Global connection pool
 _pool: asyncpg.Pool | None = None
+
+
+async def _init_connection(conn: asyncpg.Connection) -> None:
+    """Initialize connection with custom type codecs for JSONB."""
+    # Set JSONB codec to automatically parse JSON to Python objects
+    await conn.set_type_codec(
+        "jsonb",
+        encoder=json.dumps,
+        decoder=json.loads,
+        schema="pg_catalog",
+    )
 
 
 async def init_db_pool() -> None:
@@ -19,6 +31,7 @@ async def init_db_pool() -> None:
         max_queries=settings.db_pool_max_queries,
         max_inactive_connection_lifetime=settings.db_pool_max_inactive_connection_lifetime,
         command_timeout=settings.db_command_timeout,
+        init=_init_connection,
     )
 
 
@@ -34,6 +47,19 @@ def get_pool() -> asyncpg.Pool:
     """Get the database connection pool."""
     if _pool is None:
         raise RuntimeError("Database pool not initialized")
+    return _pool
+
+
+# Alias for compatibility
+async def get_db_pool() -> asyncpg.Pool:
+    """Get the database connection pool (async alias).
+
+    Note: This is an async version for consistency with initialization pattern.
+    If pool is not initialized, it will initialize it first.
+    """
+    global _pool
+    if _pool is None:
+        await init_db_pool()
     return _pool
 
 

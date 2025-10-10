@@ -20,38 +20,141 @@ from uuid import UUID, uuid4
 from db.connection import get_pool, init_db_pool
 
 
-async def seed_business(conn) -> UUID:
+async def seed_user(conn) -> UUID:
+    """Create a test user."""
+    user_id = uuid4()
+
+    await conn.execute(
+        """
+        INSERT INTO users (
+            id, email, name, created_at, updated_at
+        ) VALUES (
+            $1, $2, $3, $4, $5
+        )
+        ON CONFLICT (id) DO NOTHING
+        """,
+        user_id,
+        "owner@techstore.example.com",
+        "Tech Store Owner",
+        datetime.now(),
+        datetime.now(),
+    )
+
+    print(f"✅ Created user: Tech Store Owner ({user_id})")
+    return user_id
+
+
+async def seed_subscription_plan(conn) -> UUID:
+    """Create a test subscription plan."""
+    plan_id = uuid4()
+
+    await conn.execute(
+        """
+        INSERT INTO subscription_plans (
+            id, name, tier, price_monthly, price_yearly, features,
+            created_at, updated_at
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8
+        )
+        ON CONFLICT (tier) DO NOTHING
+        RETURNING id
+        """,
+        plan_id,
+        "Starter Plan",
+        "starter",
+        Decimal("29.00"),
+        Decimal("290.00"),
+        '{"max_agents": 1, "max_products": 100, "channels": ["webchat"]}',
+        datetime.now(),
+        datetime.now(),
+    )
+
+    # Get the actual ID if conflict occurred
+    row = await conn.fetchrow(
+        "SELECT id FROM subscription_plans WHERE tier = $1",
+        "starter",
+    )
+    actual_plan_id = row["id"] if row else plan_id
+
+    print(f"✅ Created subscription plan: Starter Plan ({actual_plan_id})")
+    return actual_plan_id
+
+
+async def seed_business(conn, owner_user_id: UUID, subscription_plan_id: UUID) -> UUID:
     """Create a test business."""
     business_id = uuid4()
 
     await conn.execute(
         """
-        INSERT INTO business (
-            id, name, email, phone, address, business_type,
-            website, logo_url, timezone, currency, status,
+        INSERT INTO businesses (
+            id, name, slug, owner_user_id, subscription_plan_id,
+            subscription_status, description, industry, contact_email,
+            phone, address, website, logo_url, timezone, currency,
             created_at, updated_at
         ) VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
         )
         ON CONFLICT (id) DO NOTHING
         """,
         business_id,
         "Tech Store Demo",
+        "tech-store-demo",
+        owner_user_id,
+        subscription_plan_id,
+        "active",
+        "A demo e-commerce tech store for testing AI agents",
+        "e-commerce",
         "demo@techstore.example.com",
         "+1-555-0100",
         "123 Tech Street, San Francisco, CA 94102",
-        "e-commerce",
         "https://techstore.example.com",
         "https://via.placeholder.com/150",
         "America/Los_Angeles",
         "USD",
-        "active",
         datetime.now(),
         datetime.now(),
     )
 
     print(f"✅ Created business: Tech Store Demo ({business_id})")
     return business_id
+
+
+async def seed_agent(conn, business_id: UUID) -> UUID:
+    """Create a test agent."""
+    agent_id = uuid4()
+
+    await conn.execute(
+        """
+        INSERT INTO agent (
+            id, business_id, name, personality, tone, system_prompt,
+            greeting_message, status, created_at, updated_at
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+        )
+        ON CONFLICT (business_id) DO NOTHING
+        """,
+        agent_id,
+        business_id,
+        "Tech Support Agent",
+        "Helpful, knowledgeable, and friendly tech expert",
+        "professional-friendly",
+        """You are a helpful customer service agent for Tech Store Demo, an e-commerce business selling laptops, monitors, and accessories.
+
+You can:
+- Search for products and check inventory
+- Look up customer information
+- Provide product recommendations
+- Help with order inquiries
+
+Be professional, friendly, and helpful!""",
+        "Hi! Welcome to Tech Store Demo. How can I help you today?",
+        "active",
+        datetime.now(),
+        datetime.now(),
+    )
+
+    print(f"✅ Created agent: Tech Support Agent ({agent_id})")
+    return agent_id
 
 
 async def seed_products(conn, business_id: UUID) -> list[dict]:
@@ -254,7 +357,7 @@ async def seed_conversation(conn, business_id: UUID, customer_id: UUID) -> UUID:
         conversation_id,
         customer_id,
         business_id,
-        "web_chat",
+        "webchat",
         "active",
         datetime.now(),
         datetime.now(),
@@ -279,7 +382,7 @@ async def seed_conversation(conn, business_id: UUID, customer_id: UUID) -> UUID:
             """
             INSERT INTO message (
                 id, conversation_id, sender_type, content, is_internal,
-                created_at
+                timestamp
             )
             VALUES ($1, $2, $3, $4, $5, $6)
             """,
@@ -308,7 +411,10 @@ async def main():
 
         async with pool.acquire() as conn:
             # Seed in order of dependencies
-            business_id = await seed_business(conn)
+            user_id = await seed_user(conn)
+            subscription_plan_id = await seed_subscription_plan(conn)
+            business_id = await seed_business(conn, user_id, subscription_plan_id)
+            agent_id = await seed_agent(conn, business_id)
             products = await seed_products(conn, business_id)
             customers = await seed_customers(conn, business_id)
 
