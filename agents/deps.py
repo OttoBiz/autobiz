@@ -19,4 +19,5 @@ class AgentDeps:
     customer_id: UUID | None = None
     channel: str | None = None  # "whatsapp", "sms", "email" etc.
     current_agent_id: UUID | None = None
+    current_agent_role: str | None = None
     context_variables: dict[str, Any] = field(default_factory=dict)
