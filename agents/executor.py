@@ -5,9 +5,18 @@ This module handles:
 - Composing toolsets based on agent definition
 - Executing agent workflows with proper state management
 - Handling agent collaboration (handoff and consult)
+
+Agent outputs are structured using the union type AgentOutput:
+- MessageResponse: Standard response to customer
+- HandoffResponse: Transfer control to another agent (recursive execution)
+- PauseResponse: Pause conversation until external event
+- MultiMessageResponse: Send multiple messages sequentially
+
+See docs/architecture/STRUCTURED_OUTPUT.md for detailed pattern explanation.
 """
 
-from datetime import datetime
+import asyncio
+from dataclasses import replace
 from typing import Any
 from uuid import UUID
 
@@ -15,8 +24,14 @@ from pydantic import BaseModel
 from pydantic_ai import Agent
 
 from agents.deps import AgentDeps
+from agents.models import (
+    AgentOutput,
+    HandoffResponse,
+    MessageResponse,
+    MultiMessageResponse,
+    PauseResponse,
+)
 from agents.registry import ToolsetManager, get_toolset_manager
-from agents.state.manager import ConversationState, StateManager
 
 
 class AgentConfig(BaseModel):
@@ -60,23 +75,18 @@ class AgentExecutor:
     def __init__(
         self,
         toolset_manager: ToolsetManager | None = None,
-        state_manager: StateManager | None = None,
         model: str = "openai:gpt-4o",
     ):
         """Initialize the agent executor.
 
         Args:
             toolset_manager: Manager for composing toolsets (uses global if None)
-            state_manager: Manager for conversation state
             model: AI model to use (default: GPT-4o)
         """
         self.toolset_manager = toolset_manager or get_toolset_manager()
-        self.state_manager = state_manager
         self.model = model
 
-    async def load_agent_config(
-        self, business_id: UUID, agent_role: str
-    ) -> AgentConfig | None:
+    async def load_agent_config(self, business_id: UUID, agent_role: str) -> AgentConfig | None:
         """Load agent configuration from database.
 
         Args:
@@ -90,7 +100,7 @@ class AgentExecutor:
         # SELECT * FROM agent WHERE business_id = $1 AND role = $2
         raise NotImplementedError("Agent config loading not yet implemented")
 
-    def create_agent(self, config: AgentConfig) -> Agent:
+    def create_agent(self, config: AgentConfig) -> Agent[AgentDeps, AgentOutput]:
         """Create a Pydantic AI agent from configuration.
 
         Composes toolsets based on the agent's tool_groups.
@@ -104,43 +114,46 @@ class AgentExecutor:
         # Combine toolsets based on agent configuration
         toolset = self.toolset_manager.combine(config.tool_groups)
 
-        # Build system prompt with collaboration guidance
-        system_prompt = f"""{config.system_prompt}
+        # Build system prompt - only add collaboration guidance if agent has collab tools
+        has_collab = "collab" in config.tool_groups
+
+        if has_collab:
+            system_prompt = f"""{config.system_prompt}
 
 ## Collaboration Guidelines
 
-When working with other agents:
+**CONSULT** another agent (use `consult` tool):
+- Simple GET: You need specific information
+- Tool returns answer to you, you continue conversation
 
-**CONSULT** another agent when:
-- Simple GET: You need specific information (inventory count, policy, approval)
-- One question → one answer
-- You continue handling conversation after getting the answer
-- Customer doesn't see the consultation
+**HANDOFF** to another agent (return HandoffResponse):
+- WRITE operation or Complex GET
+- Customer needs specialist
+- Return structured response (NOT a tool call)
 
-Example: "What's inventory count for SKU-123?" → Simple data lookup
-
-**HANDOFF** to another agent when:
-- WRITE operation: Create order, process refund, update data
-- Complex GET: Customer needs multi-turn interaction with specialist
-- Customer explicitly requests different service
-- You lack the tools or authority to continue
-
-Example (WRITE): "Process this refund" → Changes order state
-Example (Complex GET): "Design enterprise solution" → Multi-turn with specialist
+To handoff, return this exact structure:
+{{{{
+    "type": "handoff",
+    "target_agent_role": "legal",
+    "reason": "Customer needs contract review",
+    "context_summary": "Brief context",
+    "priority": "medium"
+}}}}
 
 **Golden Rule**: Will the OTHER agent need to talk to the customer?
-- YES → Use collab_handoff
-- NO → Use collab_consult
-
-Remember: CONSULT = Simple GET, HANDOFF = WRITE + Complex GET
+- YES → Return HandoffResponse
+- NO → Use consult tool
 """
+        else:
+            system_prompt = config.system_prompt
 
         # Create agent with toolset
         agent = Agent(
             self.model,
             deps_type=AgentDeps,
             system_prompt=system_prompt,
-            tools=toolset,
+            toolsets=toolset,
+            output_type=AgentOutput,
         )
 
         return agent
@@ -152,8 +165,15 @@ Remember: CONSULT = Simple GET, HANDOFF = WRITE + Complex GET
         agent_role: str,
         user_message: str,
         deps: AgentDeps,
+        message_history: list | None = None,
     ) -> str:
         """Execute an agent to handle a user message.
+
+        Supports structured output pattern with pattern matching on output types:
+        - MessageResponse: Send to customer via channel
+        - HandoffResponse: Transfer to another agent (recursive)
+        - PauseResponse: Pause conversation until external event
+        - MultiMessageResponse: Send multiple messages sequentially
 
         Args:
             business_id: ID of the business
@@ -161,97 +181,167 @@ Remember: CONSULT = Simple GET, HANDOFF = WRITE + Complex GET
             agent_role: Role of the agent to run
             user_message: Message from the user
             deps: Agent dependencies
+            message_history: Previous messages to maintain conversation context
 
         Returns:
-            Agent's response
+            Agent's response content (what was sent to customer)
         """
         # Load agent configuration
         config = await self.load_agent_config(business_id, agent_role)
         if not config:
             raise ValueError(f"Agent '{agent_role}' not found for business {business_id}")
 
+        # Update deps with current agent info
+        deps = replace(
+            deps,
+            current_agent_id=config.id,
+            current_agent_role=agent_role,
+        )
+
         # Create agent with tools
         agent = self.create_agent(config)
 
-        # Update conversation state (if state manager is available)
-        if self.state_manager:
-            await self.state_manager.save_state(
-                ConversationState(
+        # Run agent with structured output
+        # Pass message_history to maintain conversation context across handoffs
+        result = await agent.run(
+            user_message,
+            deps=deps,
+            message_history=message_history or [],
+        )
+
+        # Pattern match on output type
+        match result.output:
+            case MessageResponse(content=content, metadata=metadata):
+                # Standard response - send to channel
+                await self._send_to_channel(deps.channel, content, metadata)
+                return content
+
+            case HandoffResponse(
+                target_agent_role=target_role,
+                reason=reason,
+                context_summary=summary,
+                priority=priority,
+            ):
+                # Handoff requested - record and continue with new agent
+                await self._record_handoff(
                     conversation_id=conversation_id,
-                    business_id=business_id,
-                    current_agent_id=config.id,
-                    created_at=datetime.now(),
-                    updated_at=datetime.now(),
+                    from_agent_id=config.id,
+                    from_agent_role=agent_role,
+                    to_agent_role=target_role,
+                    reason=reason,
                 )
-            )
 
-        # Run agent
-        result = await agent.run(user_message, deps=deps)
+                # Update context variables with handoff info
+                new_context = {
+                    **deps.context_variables,
+                    "handoff_reason": reason,
+                    "handoff_from": agent_role,
+                    "handoff_priority": priority,
+                }
 
-        return result.data
+                new_deps = replace(deps, context_variables=new_context)
 
-    async def handoff(
+                # Build handoff message for the new agent
+                # The new agent starts a fresh conversation but has context
+                handoff_message = f"""[HANDOFF CONTEXT]
+You are receiving this customer via handoff from the {agent_role} agent.
+
+Reason for handoff: {reason}
+Priority: {priority}
+Context summary: {summary}
+
+Please introduce yourself and help the customer with their request.
+"""
+
+                # Start a fresh conversation (no message_history)
+                # The context summary provides what the new agent needs to know
+                return await self.run(
+                    business_id=business_id,
+                    conversation_id=conversation_id,
+                    agent_role=target_role,
+                    user_message=handoff_message,
+                    deps=new_deps,
+                    message_history=None,  # Fresh conversation for new agent
+                )
+
+            case PauseResponse(content=content):
+                # Pause conversation - send message
+                # TODO: Implement state persistence for pause/resume
+                await self._send_to_channel(deps.channel, content)
+                return content
+
+            case MultiMessageResponse(messages=messages, delay_between_ms=delay):
+                # Multiple messages - send sequentially with delay
+                for i, msg in enumerate(messages):
+                    await self._send_to_channel(
+                        deps.channel,
+                        msg.content,
+                        media_url=msg.media_url,
+                        media_type=msg.media_type,
+                    )
+                    if i < len(messages) - 1:  # Don't delay after last message
+                        await asyncio.sleep(delay / 1000)
+
+                # Return combined content for logging
+                return "\n".join(msg.content for msg in messages)
+
+    # Helper methods for structured output pattern
+
+    async def _send_to_channel(
+        self,
+        channel: str | None,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+        media_url: str | None = None,
+        media_type: str | None = None,
+    ) -> None:
+        """Send message to appropriate channel (WhatsApp, SMS, email, etc.).
+
+        Args:
+            channel: Channel identifier (e.g., "whatsapp", "sms", "email")
+            content: Message content to send
+            metadata: Optional metadata for the message
+            media_url: Optional media URL to attach
+            media_type: Type of media (image, video, document)
+        """
+        # TODO: Implement channel-specific message sending
+        # For now, just log the message
+        # In production, this would:
+        # 1. Load channel integration (WhatsApp, SMS, etc.)
+        # 2. Format message for channel (some channels support rich formatting)
+        # 3. Send via channel API
+        # 4. Track delivery status
+        pass
+
+    async def _record_handoff(
         self,
         conversation_id: UUID,
+        from_agent_id: UUID,
         from_agent_role: str,
         to_agent_role: str,
         reason: str,
-        context: str,
-        deps: AgentDeps,
-    ) -> str:
-        """Execute an agent handoff.
+    ) -> None:
+        """Record handoff in database for audit/analytics.
 
-        Transfers conversation control from one agent to another.
-        Used for WRITE operations or complex GET operations that require
-        specialized expertise.
+        This is NOT used for runtime logic - just for tracking and analytics.
 
         Args:
             conversation_id: ID of the conversation
+            from_agent_id: ID of agent initiating handoff
             from_agent_role: Role of agent initiating handoff
             to_agent_role: Role of agent receiving handoff
             reason: Why the handoff is happening
-            context: Context to pass to the new agent
-            deps: Agent dependencies
-
-        Returns:
-            Response from the receiving agent
         """
-        # TODO: Implement handoff logic
-        # 1. Verify handoff is allowed (from_agent can handoff to to_agent)
-        # 2. Load receiving agent config
-        # 3. Record handoff in state
-        # 4. Execute receiving agent with context
-        raise NotImplementedError("Agent handoff not yet implemented")
-
-    async def consult(
-        self,
-        conversation_id: UUID,
-        requesting_agent_role: str,
-        consulted_agent_role: str,
-        query: str,
-        deps: AgentDeps,
-    ) -> str:
-        """Execute an agent consultation.
-
-        Temporarily consults another agent for information, then returns control
-        to the requesting agent. Used for simple GET operations.
-
-        Args:
-            conversation_id: ID of the conversation
-            requesting_agent_role: Role of agent requesting consultation
-            consulted_agent_role: Role of agent being consulted
-            query: Question to ask the consulted agent
-            deps: Agent dependencies
-
-        Returns:
-            Response from the consulted agent
-        """
-        # TODO: Implement consult logic
-        # 1. Verify consult is allowed
-        # 2. Load consulted agent config
-        # 3. Record consult in state
-        # 4. Execute consulted agent with query
-        # 5. Return response (control stays with requesting agent)
-        raise NotImplementedError("Agent consultation not yet implemented")
-
-
+        # TODO: Implement database recording
+        # Simple INSERT - no complex logic needed
+        # Example:
+        # await self.db.execute(
+        #     """
+        #     INSERT INTO agent_collaborations (
+        #         conversation_id, from_agent_id, to_agent_role,
+        #         collaboration_type, reason, created_at
+        #     ) VALUES ($1, $2, $3, 'handoff', $4, NOW())
+        #     """,
+        #     conversation_id, from_agent_id, to_agent_role, reason
+        # )
+        pass
