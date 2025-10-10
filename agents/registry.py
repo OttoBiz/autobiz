@@ -44,7 +44,7 @@ class ToolsetManager:
         self.conversations = conversations_toolset
         self.collab = collaboration_toolset
 
-        # Master toolset (all tools combined)
+        # Master toolset (list of all toolsets - compose with Agent(..., tools=[...]))
         self.all_tools = ALL_TOOLS
 
     def get(self, name: str) -> AbstractToolset:
@@ -58,27 +58,25 @@ class ToolsetManager:
         """
         return getattr(self, name, FunctionToolset())
 
-    def combine(self, tool_groups: list[str]) -> AbstractToolset:
-        """Combine multiple domain toolsets into one.
+    def combine(self, tool_groups: list[str]) -> list[AbstractToolset]:
+        """Combine multiple domain toolsets into a list.
 
         Args:
             tool_groups: List of toolset names to combine
                         (e.g., ["catalog", "customers", "collab"])
 
         Returns:
-            Combined toolset with all requested tools
+            List of toolsets to pass to Agent(tools=[...])
 
         Example:
             # Sales agent gets catalog, customers, and collaboration tools
-            toolset = manager.combine(["catalog", "customers", "collab"])
+            toolsets = manager.combine(["catalog", "customers", "collab"])
+            agent = Agent(model, tools=toolsets, ...)
 
             # Support agent gets all conversation tools
-            toolset = manager.combine(["conversations", "customers"])
+            toolsets = manager.combine(["conversations", "customers"])
         """
-        result = FunctionToolset()
-        for group in tool_groups:
-            result = result + self.get(group)
-        return result
+        return [self.get(group) for group in tool_groups]
 
 
 # Global instance for convenience
