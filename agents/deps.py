@@ -1,8 +1,11 @@
 """Agent dependencies (context passed to tools)."""
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
+
+if TYPE_CHECKING:
+    from agents.executor import AgentExecutor
 
 
 @dataclass
@@ -14,7 +17,8 @@ class AgentDeps:
     business and conversation.
     """
 
-    business_id: UUID
+    executor: "AgentExecutor | None" = None
+    business_id: UUID | None = None
     conversation_id: UUID | None = None
     customer_id: UUID | None = None
     channel: str | None = None  # "whatsapp", "sms", "email" etc.

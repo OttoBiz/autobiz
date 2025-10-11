@@ -58,14 +58,40 @@ async def consult(
     - Consultation happens behind the scenes
     - You receive answer and continue with customer
     """
-    # TODO: Implement consultation logic
-    # 1. Validate target agent exists and consultation is allowed
-    # 2. Create internal consultation request
-    # 3. Invoke consulting agent asynchronously
-    # 4. Wait for response (may raise ConsultRequiredException to pause execution)
-    # 5. Return answer to requesting agent
+    # Get current agent info for validation
+    current_agent_role = ctx.deps.current_agent_role
 
-    raise NotImplementedError(
-        "Consult tool not yet implemented. "
-        "This will be implemented in Phase 3: Collaboration System."
+    # TODO: Add safeguards from COLLABORATION.md
+    # - Check target agent exists
+    # - Check allowlist (can_consult)
+    # - Check loop detection
+    # - Track consultation in agent_collaborations table
+
+    # Build consultation context for the target agent
+    # Following Anthropic's pattern: clear task boundaries, explicit context
+    consultation_message = f"""[INTERNAL CONSULTATION from {current_agent_role}]
+
+You are being consulted by the {current_agent_role} agent.
+Please answer this specific question and return your findings.
+
+QUESTION:
+{question}
+
+Provide a clear, concise answer. The requesting agent will use your response to continue their customer conversation.
+"""
+
+    # Reuse executor to spawn the target agent (Anthropic orchestrator-worker pattern)
+    # The target agent is loaded with its own:
+    # - system_prompt and personality
+    # - tool_groups (different tools than the orchestrator)
+    # - No collaboration tools (subagents can't spawn more agents)
+    answer = await ctx.deps.executor.run(
+        business_id=ctx.deps.business_id,
+        conversation_id=ctx.deps.conversation_id,
+        agent_role=target_agent_role,
+        user_message=consultation_message,
+        deps=ctx.deps,
+        message_history=[],  # Fresh context - just the question, no conversation history
     )
+
+    return answer

@@ -261,7 +261,7 @@ Please introduce yourself and help the customer with their request.
                     agent_role=target_role,
                     user_message=handoff_message,
                     deps=new_deps,
-                    message_history=None,  # Fresh conversation for new agent
+                    message_history=message_history,  # Fresh conversation for new agent
                 )
 
             case PauseResponse(content=content):
