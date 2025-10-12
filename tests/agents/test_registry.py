@@ -7,13 +7,6 @@ This tests that the ToolsetManager correctly:
 4. Works with the global instance
 """
 
-import sys
-from pathlib import Path
-
-# Add project root to path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-
 from agents.registry import ToolsetManager, get_toolset_manager
 from pydantic_ai import FunctionToolset
 
@@ -130,69 +123,3 @@ def test_global_instance():
     # Should be the same instance
     assert manager1 is manager2
     print("✅ Global instance is singleton\n")
-
-
-def test_real_world_scenarios():
-    """Test real-world agent toolset configurations."""
-    print("Test 6: Real-World Agent Scenarios")
-    print("-" * 50)
-
-    manager = ToolsetManager()
-
-    # Sales agent: needs catalog, customers, and collaboration
-    print("Sales Agent:")
-    sales_tools = manager.combine(["catalog", "customers", "collab"])
-    print(f"  ✓ {len(sales_tools)} toolsets: catalog, customers, collab")
-
-    # Support agent: needs conversations and customers
-    print("Support Agent:")
-    support_tools = manager.combine(["conversations", "customers"])
-    print(f"  ✓ {len(support_tools)} toolsets: conversations, customers")
-
-    # Inventory specialist: only needs catalog (no collab)
-    print("Inventory Specialist:")
-    inventory_tools = manager.combine(["catalog"])
-    print(f"  ✓ {len(inventory_tools)} toolset: catalog only")
-
-    # Legal agent: minimal tools (just customers for context)
-    print("Legal Agent:")
-    legal_tools = manager.combine(["customers"])
-    print(f"  ✓ {len(legal_tools)} toolset: customers only")
-
-    print("\n✅ All real-world scenarios configured correctly\n")
-
-
-def run_all_tests():
-    """Run all registry tests."""
-    print("=" * 50)
-    print("TOOLSET REGISTRY TESTS")
-    print("=" * 50)
-    print()
-
-    try:
-        test_individual_toolset_retrieval()
-        test_invalid_toolset_name()
-        test_toolset_combination()
-        test_all_tools_master_list()
-        test_global_instance()
-        test_real_world_scenarios()
-
-        print("=" * 50)
-        print("✅ ALL TESTS PASSED")
-        print("=" * 50)
-        return True
-
-    except AssertionError as e:
-        print(f"\n❌ TEST FAILED: {e}")
-        return False
-    except Exception as e:
-        print(f"\n❌ ERROR: {e}")
-        import traceback
-
-        traceback.print_exc()
-        return False
-
-
-if __name__ == "__main__":
-    success = run_all_tests()
-    sys.exit(0 if success else 1)
