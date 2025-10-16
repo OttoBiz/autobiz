@@ -3,7 +3,10 @@
 No business logic - just composing and retrieving toolsets.
 """
 
+from pathlib import Path
+from typing import Any
 from pydantic_ai import AbstractToolset, FunctionToolset
+from pydantic_ai.mcp import load_mcp_servers
 
 from agents.toolsets import (
     ALL_TOOLS,
@@ -36,7 +39,7 @@ class ToolsetManager:
         all_tools = manager.all_tools
     """
 
-    def __init__(self):
+    def __init__(self, mcp_config_path: Path | str | None = None):
         """Initialize toolset manager with all available toolsets."""
         # Individual domain toolsets
         self.catalog = catalog_toolset
@@ -46,6 +49,7 @@ class ToolsetManager:
 
         # Master toolset (list of all toolsets - compose with Agent(..., tools=[...]))
         self.all_tools = ALL_TOOLS
+        self._mcp_config_path = mcp_config_path
 
     def get(self, name: str) -> AbstractToolset:
         """Get a domain toolset by name.
@@ -58,7 +62,12 @@ class ToolsetManager:
         """
         return getattr(self, name, FunctionToolset())
 
-    def combine(self, tool_groups: list[str]) -> list[AbstractToolset]:
+    def combine(
+        self,
+        tool_groups: list[str],
+        mcp_servers: list[str] | None = None,
+        mcp_credentials: dict[str, str] | Any | None = None,
+    ) -> list[AbstractToolset]:
         """Combine multiple domain toolsets into a list.
 
         Args:
@@ -76,7 +85,19 @@ class ToolsetManager:
             # Support agent gets all conversation tools
             toolsets = manager.combine(["conversations", "customers"])
         """
-        return [self.get(group) for group in tool_groups]
+        toolsets = [self.get(group) for group in tool_groups]
+        if mcp_servers:
+            if self._mcp_config_path:
+                mcp_config = load_mcp_servers(self._mcp_config_path)
+                mcp_by_label = {server.label: server for server in mcp_config}
+
+                for server_name in mcp_servers:
+                    if server_name in mcp_by_label:
+                        toolsets.append(mcp_by_label[server_name].env(mcp_credentials))
+                    else:
+                        raise ValueError(f"MCP server {server_name} not found in registry.")
+
+        return toolsets
 
 
 # Global instance for convenience

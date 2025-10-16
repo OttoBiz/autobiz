@@ -7,8 +7,28 @@ This tests that the ToolsetManager correctly:
 4. Works with the global instance
 """
 
+from pathlib import Path
+
+import pytest
 from agents.registry import ToolsetManager, get_toolset_manager
 from pydantic_ai import FunctionToolset
+from unittest.mock import MagicMock, patch
+
+
+@pytest.fixture
+def mcp_config_path(tmp_path: Path):
+    sub_dir = tmp_path / "config"
+    sub_dir.mkdir()
+    file_path = sub_dir / "mcp_servers.json"
+    file_path.write_text("""
+    {
+        "github": {
+            "label": "github",
+            "url": "https://api.github.com"
+        }
+    }
+    """)
+    return file_path
 
 
 def test_individual_toolset_retrieval():
@@ -123,3 +143,14 @@ def test_global_instance():
     # Should be the same instance
     assert manager1 is manager2
     print("✅ Global instance is singleton\n")
+
+
+@patch("agents.registry.load_mcp_servers")
+async def test_combine_with_mcp_servers(mock_load_mcp, mcp_config_path: Path):
+    mock_server = MagicMock()
+    mock_server.label = "github"
+    mock_load_mcp.return_value = [mock_server]
+
+    manager = ToolsetManager(mcp_config_path)
+    manager.combine(["catalog"], mcp_servers=["github"])
+    mock_load_mcp.assert_called_once_with(mcp_config_path)
