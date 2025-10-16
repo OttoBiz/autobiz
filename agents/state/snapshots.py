@@ -82,9 +82,7 @@ class SnapshotManager:
         # TODO: Implement snapshot retrieval
         raise NotImplementedError("Snapshot retrieval not yet implemented")
 
-    async def get_latest_for_conversation(
-        self, conversation_id: UUID
-    ) -> StateSnapshot | None:
+    async def get_latest_for_conversation(self, conversation_id: UUID) -> StateSnapshot | None:
         """Get the most recent snapshot for a conversation.
 
         Args:
@@ -100,9 +98,7 @@ class SnapshotManager:
         # LIMIT 1
         raise NotImplementedError("Latest snapshot retrieval not yet implemented")
 
-    async def mark_resumed(
-        self, snapshot_id: UUID, resumed_by: str = "user"
-    ) -> None:
+    async def mark_resumed(self, snapshot_id: UUID, resumed_by: str = "user") -> None:
         """Mark a snapshot as resumed.
 
         Args:

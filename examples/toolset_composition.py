@@ -71,7 +71,9 @@ def main():
     support_toolsets = manager.combine(["customers", "conversations"])
     print(f"   Toolsets: {[type(t).__name__ for t in support_toolsets]}")
     print(f"   Usage: Agent(model, tools=manager.combine(['customers', 'conversations']))")
-    print(f"   Tools: customers_lookup, conversations_escalate_to_human, conversations_add_internal_note")
+    print(
+        f"   Tools: customers_lookup, conversations_escalate_to_human, conversations_add_internal_note"
+    )
     print()
 
     # Example 3: Orchestrator Agent Tools
