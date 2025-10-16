@@ -2,8 +2,6 @@
 
 from uuid import UUID
 
-import asyncpg
-
 from db.connection import get_db_connection
 from db.models.agent import Agent
 
@@ -11,34 +9,44 @@ from db.models.agent import Agent
 async def create_agent(
     business_id: UUID,
     name: str,
+    key: str,
     system_prompt: str,
-    avatar_url: str | None = None,
-    personality: str | None = None,
-    tone: str | None = None,
-    greeting_message: str | None = None,
-    conversation_rules: dict | None = None,
+    tool_groups: list[str] | None = None,
+    can_handoff_to: list[str] | None = None,
+    metadata: dict | None = None,
     channels: dict | None = None,
     status: str = "active",
 ) -> Agent:
-    """Create a new agent for a business."""
+    """Create a new agent for a business.
+
+    Args:
+        business_id: ID of the business
+        name: Display name (e.g., "Legal Assistant Sarah")
+        key: System identifier/routing key (e.g., "legal", "support")
+        system_prompt: Agent's behavioral instructions
+        tool_groups: List of toolset names (e.g., ["catalog", "customers"])
+        can_handoff_to: List of agent keys this agent can transfer to
+        metadata: Optional fields (personality, tone, greeting_message, avatar_url, etc.)
+        channels: Channel configuration
+        status: Agent status (default: "active")
+    """
     async with get_db_connection() as conn:
         row = await conn.fetchrow(
             """
             INSERT INTO agent (
-                business_id, name, system_prompt, avatar_url, personality, tone,
-                greeting_message, conversation_rules, channels, status
+                business_id, name, key, system_prompt, tool_groups, can_handoff_to,
+                metadata, channels, status
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING *
             """,
             business_id,
             name,
+            key,
             system_prompt,
-            avatar_url,
-            personality,
-            tone,
-            greeting_message,
-            conversation_rules or {},
+            tool_groups or ["catalog", "customers", "conversations"],
+            can_handoff_to or [],
+            metadata or {},
             channels
             or {
                 "whatsapp": {"enabled": False, "credentials": {}, "config": {}},
@@ -59,10 +67,60 @@ async def get_agent_by_id(agent_id: UUID) -> Agent | None:
 
 
 async def get_agent_by_business_id(business_id: UUID) -> Agent | None:
-    """Get an agent by business ID (one agent per business)."""
+    """Get the first active agent for a business.
+
+    Note: This returns the first active agent. For multi-agent scenarios,
+    use get_agent_by_key() instead.
+    """
     async with get_db_connection() as conn:
-        row = await conn.fetchrow("SELECT * FROM agent WHERE business_id = $1", business_id)
+        row = await conn.fetchrow(
+            """
+            SELECT * FROM agent
+            WHERE business_id = $1 AND status = 'active'
+            ORDER BY created_at
+            LIMIT 1
+            """,
+            business_id,
+        )
         return Agent(**dict(row)) if row else None
+
+
+async def get_agent_by_key(business_id: UUID, key: str) -> Agent | None:
+    """Get an agent by business ID and key."""
+    async with get_db_connection() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT * FROM agent
+            WHERE business_id = $1 AND key = $2 AND status = 'active'
+            """,
+            business_id,
+            key,
+        )
+        return Agent(**dict(row)) if row else None
+
+
+async def get_business_agents(business_id: UUID, active_only: bool = True) -> list[Agent]:
+    """Get all agents for a business."""
+    async with get_db_connection() as conn:
+        if active_only:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM agent
+                WHERE business_id = $1 AND status = 'active'
+                ORDER BY created_at
+                """,
+                business_id,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM agent
+                WHERE business_id = $1
+                ORDER BY created_at
+                """,
+                business_id,
+            )
+        return [Agent(**dict(row)) for row in rows]
 
 
 async def update_agent(agent_id: UUID, **updates) -> Agent | None:

@@ -9,20 +9,24 @@ class Agent(BaseModel):
     business_id: UUID
 
     # Profile
-    name: str
-    avatar_url: str | None = None
-    personality: str | None = None
-    tone: str | None = None
+    name: str  # Display name: "Legal Assistant Sarah"
+    key: str  # System identifier/routing key: "legal"
 
     # System Prompt & Behavior
     system_prompt: str
-    greeting_message: str | None = None
-    conversation_rules: dict
+
+    # Multi-agent configuration
+    tool_groups: list[str]  # ["catalog", "customers", "conversations", "collab"]
+    can_handoff_to: list[str]  # ["legal", "support"] - agent keys this agent can transfer to
 
     # Channels
     channels: dict
 
-    # Metadata
+    # Metadata (optional fields for prompt building)
+    # personality, tone, greeting_message, avatar_url, conversation_rules
+    metadata: dict
+
+    # Status
     status: str
     version: int
     created_at: datetime
