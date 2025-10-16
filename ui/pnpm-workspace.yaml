@@ -1,0 +1,10 @@
+packages:
+  - apps/*
+  - packages/*
+catalog:
+  zod: ^4.1.12
+  "@prisma/client": ^6.17.1
+  better-auth: ^1.3.27
+  "@polar-sh/better-auth": ^1.1.9
+  dotenv: ^17.2.3
+  tsdown: ^0.15.7

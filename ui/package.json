@@ -1,0 +1,30 @@
+{
+  "name": "ui",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "check-types": "turbo check-types",
+    "dev:native": "turbo -F native dev",
+    "dev:web": "turbo -F web dev",
+    "db:push": "turbo -F @ui/db db:push",
+    "db:studio": "turbo -F @ui/db db:studio",
+    "db:generate": "turbo -F @ui/db db:generate",
+    "db:migrate": "turbo -F @ui/db db:migrate"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.10",
+    "tsdown": "^0.15.7",
+    "turbo": "^2.5.8"
+  },
+  "packageManager": "pnpm@10.18.3"
+}
