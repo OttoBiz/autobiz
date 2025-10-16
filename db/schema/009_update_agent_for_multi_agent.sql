@@ -1,4 +1,4 @@
--- Schema version 010: Update agent table for multi-agent system
+-- Schema version 009: Update agent table for multi-agent system
 --
 -- Changes:
 -- 1. Remove UNIQUE constraint on business_id (allow multiple agents per business)
@@ -10,7 +10,7 @@
 
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM schema_versions WHERE version = '010') THEN
+    IF NOT EXISTS (SELECT 1 FROM schema_versions WHERE version = '009') THEN
 
         -- Step 1: Drop the UNIQUE constraint on business_id
         ALTER TABLE agent DROP CONSTRAINT IF EXISTS agent_business_id_key;
@@ -67,10 +67,10 @@ BEGIN
 
         -- Record schema version
         INSERT INTO schema_versions (version, description)
-        VALUES ('010', 'Update agent table for multi-agent system');
+        VALUES ('009', 'Update agent table for multi-agent system');
 
-        RAISE NOTICE '✓ Schema 010 applied: agent table updated for multi-agent system';
+        RAISE NOTICE '✓ Schema 009 applied: agent table updated for multi-agent system';
     ELSE
-        RAISE NOTICE 'Schema 010 already applied, skipping...';
+        RAISE NOTICE 'Schema 009 already applied, skipping...';
     END IF;
 END $$;

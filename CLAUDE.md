@@ -88,11 +88,7 @@ uv run pytest
 - [agents/executor.py](agents/executor.py) - Multi-agent executor (loads agents from DB, composes toolsets)
 - [agents/registry.py](agents/registry.py) - ToolsetManager (simple toolset composition)
 - [agents/deps.py](agents/deps.py) - Agent dependencies (business_id, conversation_id, etc.)
-- [agents/customer_agent.py](agents/customer_agent.py) - Legacy single-agent (for migration reference)
-- [agents/state/](agents/state/) - Conversation state management:
-  - [manager.py](agents/state/manager.py) - State persistence following Pydantic AI patterns
-  - [snapshots.py](agents/state/snapshots.py) - State snapshots for pause/resume workflows
-  - [redis.py](agents/state/redis.py) - Optional Redis caching
+- [agents/models.py](agents/models.py) - Structured output types (MessageResponse, HandoffResponse, etc.)
 - [agents/toolsets/](agents/toolsets/) - Pydantic AI FunctionToolsets (prefixed):
   - [catalog.py](agents/toolsets/catalog.py) - catalog_* tools (product search, inventory)
   - [customers.py](agents/toolsets/customers.py) - customers_* tools (lookup, management)
@@ -157,20 +153,19 @@ Core tables:
 1. Users - Platform users (can own multiple businesses, invite team members)
 2. SubscriptionPlans - Subscription tiers with pricing and feature flags
 3. Businesses - Registered businesses with subscription, settings, branding
-4. **Agent** - Multi-agent configurations (business can have multiple agents with different roles)
-5. Channels - Communication channel settings (WhatsApp, Telegram, etc.)
-6. Products - Business product catalog
-7. Customers - End customers per business
-8. Conversations - Customer conversation threads
-9. Messages - Individual messages in conversations
-10. **ConversationState** (planned) - Conversation state snapshots for pause/resume
-11. **ConversationStateSnapshots** (planned) - Historical state snapshots
+4. **Agent** - Multi-agent configurations (business can have multiple agents with different keys)
+5. Products - Business product catalog
+6. Customers - End customers per business
+7. Conversations - Customer conversation threads
+8. Messages - Individual messages in conversations (serves as conversation history)
 
 ### Multi-Agent Schema Notes
 - **Agent table**: Changed from 1:1 (business:agent) to 1:many (business can have multiple agents)
-- Each agent has a `role` field (e.g., "sales", "support", "legal_intake")
-- Agent configurations stored in JSONB following Claude Code subagent pattern
-- Tools are defined per-agent in the config (list of tool names from registry)
+- Each agent has a `key` field for routing (e.g., "sales", "support", "legal")
+- Each agent has a `name` field for display (e.g., "Legal Assistant Sarah")
+- `tool_groups` JSONB field specifies which toolsets the agent can use
+- `can_handoff_to` JSONB field lists agent keys this agent can transfer to
+- Optional fields (personality, tone, greeting_message) stored in `metadata` JSONB
 
 ## Multi-Agent System & Toolsets
 
@@ -184,8 +179,10 @@ Core tables:
 2. **Agent Configuration**: Agent configs stored in DB specify `tool_groups` (not individual tools)
    ```json
    {
-     "role": "sales",
-     "tool_groups": ["catalog", "customers", "collab"]
+     "key": "sales",
+     "name": "Sales Assistant Sarah",
+     "tool_groups": ["catalog", "customers", "collab"],
+     "can_handoff_to": ["legal", "support"]
    }
    ```
 
