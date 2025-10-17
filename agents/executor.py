@@ -16,7 +16,9 @@ See docs/architecture/STRUCTURED_OUTPUT.md for detailed pattern explanation.
 """
 
 import asyncio
+import yaml
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -41,8 +43,8 @@ class AgentConfig(BaseModel):
     Follows Claude Code subagent YAML pattern stored in JSONB.
     """
 
-    id: UUID
-    business_id: UUID
+    id: UUID | None = None
+    business_id: UUID | None = None
     name: str
     key: str  # e.g., "sales", "legal_intake", "customer_support"
     system_prompt: str
@@ -81,8 +83,11 @@ class AgentExecutor:
         """
         self.toolset_manager = toolset_manager or get_toolset_manager()
         self.model = model
+        self._cached_configs: dict[str, AgentConfig] = {}
 
-    async def load_agent_config(self, business_id: UUID, agent_key: str) -> AgentConfig | None:
+    async def load_agent_config(
+        self, business_id: UUID | None, agent_key: str
+    ) -> AgentConfig | None:
         """Load agent configuration from database.
 
         Args:
@@ -92,9 +97,44 @@ class AgentExecutor:
         Returns:
             Agent configuration or None if not found
         """
-        # TODO: Implement database query
-        # SELECT * FROM agent WHERE business_id = $1 AND role = $2
-        raise NotImplementedError("Agent config loading not yet implemented")
+        if agent_key in self._cached_configs:
+            return self._cached_configs[agent_key]
+        # TODO: Try database if business_id provided
+        # if business_id:
+        #     config = await get_agent_by_key(business_id, agent_key)
+        #     if config:
+        #         return config
+        return None
+
+    async def load_agents_from_yaml(self, path: str | Path) -> list[AgentConfig]:
+        """Load agent configuration from YAML file."""
+        try:
+            with open(path, "r") as f:
+                agent_configs = yaml.safe_load(f)
+
+                agents_data = agent_configs.get("agents", [])
+
+                agent_keys = {agent["key"] for agent in agents_data}
+
+                configs = []
+
+                for agent_dict in agents_data:
+                    subagents = agent_dict.get("subagents", [])
+                    for subagent_key in subagents:
+                        if subagent_key not in agent_keys:
+                            raise ValueError(
+                                f"Agent {agent_dict['key']} references unknown subagent '{subagent_key}'"
+                            )
+                    agent_config = AgentConfig(**agent_dict)
+                    configs.append(agent_config)
+
+                    # Cache the config by key
+                    self._cached_configs[agent_config.key] = agent_config
+
+                return configs
+
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Agent config file not found: {path}")
 
     def create_agent(self, config: AgentConfig) -> Agent[AgentDeps, AgentOutput]:
         """Create a Pydantic AI agent from configuration.
@@ -156,11 +196,11 @@ To handoff, return this exact structure:
 
     async def run(
         self,
-        business_id: UUID,
-        conversation_id: UUID,
         agent_key: str,
         user_message: str,
         deps: AgentDeps,
+        business_id: UUID | None = None,
+        conversation_id: UUID | None = None,
         message_history: list | None = None,
     ) -> str:
         """Execute an agent to handle a user message.
@@ -185,7 +225,7 @@ To handoff, return this exact structure:
         # Load agent configuration
         config = await self.load_agent_config(business_id, agent_key)
         if not config:
-            raise ValueError(f"Agent '{agent_key}' not found for business {business_id}")
+            raise ValueError(f"Agent '{agent_key}' not found")
 
         # Update deps with current agent info
         deps = replace(
@@ -311,20 +351,24 @@ Please introduce yourself and help the customer with their request.
 
     async def _record_handoff(
         self,
-        conversation_id: UUID,
-        from_agent_id: UUID,
-        from_agent_key: str,
-        to_agent_key: str,
-        reason: str,
+        business_id: UUID | None = None,
+        conversation_id: UUID | None = None,
+        from_agent_id: UUID | None = None,
+        from_agent_key: str | None = None,
+        to_agent_id: UUID | None = None,
+        to_agent_key: str | None = None,
+        reason: str | None = None,
     ) -> None:
         """Record handoff in database for audit/analytics.
 
         This is NOT used for runtime logic - just for tracking and analytics.
 
         Args:
+            business_id: ID of the business
             conversation_id: ID of the conversation
             from_agent_id: ID of agent initiating handoff
             from_agent_key: Key of agent initiating handoff
+            to_agent_id: ID of agent receiving handoff
             to_agent_key: Key of agent receiving handoff
             reason: Why the handoff is happening
         """
@@ -334,10 +378,10 @@ Please introduce yourself and help the customer with their request.
         # await self.db.execute(
         #     """
         #     INSERT INTO agent_collaborations (
-        #         conversation_id, from_agent_id, to_agent_key,
+        #         conversation_id, from_agent_id, to_agent_id,
         #         collaboration_type, reason, created_at
         #     ) VALUES ($1, $2, $3, 'handoff', $4, NOW())
         #     """,
-        #     conversation_id, from_agent_id, to_agent_key, reason
+        #     conversation_id, from_agent_id, to_agent_id, reason
         # )
         pass

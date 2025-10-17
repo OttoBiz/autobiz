@@ -50,6 +50,7 @@ class ToolsetManager:
         # Master toolset (list of all toolsets - compose with Agent(..., tools=[...]))
         self.all_tools = ALL_TOOLS
         self._mcp_config_path = mcp_config_path
+        self._mcp_servers_cache: list[Any] | None = None  # Cache loaded MCP servers
 
     def get(self, name: str) -> AbstractToolset:
         """Get a domain toolset by name.
@@ -87,18 +88,27 @@ class ToolsetManager:
             toolsets = manager.combine(["conversations", "customers"])
         """
         toolsets = []
+
+        # Check if any MCP servers are requested
+        mcp_requested = any(group.startswith("mcp:") for group in tool_groups)
+
+        if mcp_requested and self._mcp_config_path:
+            # Load all MCP servers once and cache them
+            if self._mcp_servers_cache is None:
+                self._mcp_servers_cache = load_mcp_servers(self._mcp_config_path)
+
+            # Add all MCP servers (since we can't differentiate them by name easily)
+            for server in self._mcp_servers_cache:
+                if mcp_credentials:
+                    toolsets.append(server.env(mcp_credentials))
+                else:
+                    toolsets.append(server)
+
+        # Add non-MCP toolsets
         for group in tool_groups:
-            if group.startswith("mcp:"):
-                mcp_server_name = group.split(":")[1]
-                if self._mcp_config_path:
-                    mcp_config = load_mcp_servers(self._mcp_config_path)
-                    mcp_by_label = {server.label: server for server in mcp_config}
-                    if mcp_server_name in mcp_by_label:
-                        toolsets.append(mcp_by_label[mcp_server_name].env(mcp_credentials))
-                    else:
-                        raise ValueError(f"MCP server {mcp_server_name} not found in registry.")
-            else:
+            if not group.startswith("mcp:"):
                 toolsets.append(self.get(group))
+
         return toolsets
 
 
