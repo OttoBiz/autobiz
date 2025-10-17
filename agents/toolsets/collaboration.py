@@ -17,7 +17,7 @@ collaboration_toolset = FunctionToolset()
 @collaboration_toolset.tool
 async def consult(
     ctx: RunContext[AgentDeps],
-    target_agent_role: str,
+    target_agent_key: str,
     question: str,
 ) -> str:
     """Ask another agent a quick question (Simple GET operation).
@@ -46,7 +46,7 @@ async def consult(
     - Cases where customer needs to interact with specialist (use handoff)
 
     Args:
-        target_agent_role: Role of the agent to consult (e.g., "inventory", "legal", "pricing")
+        target_agent_key: Key of the agent to consult (e.g., "inventory", "legal", "pricing")
         question: Specific question to ask (be clear and concise)
 
     Returns:
@@ -59,7 +59,7 @@ async def consult(
     - You receive answer and continue with customer
     """
     # Get current agent info for validation
-    current_agent_role = ctx.deps.current_agent_role
+    current_agent_key = ctx.deps.current_agent_key
 
     # TODO: Add safeguards from COLLABORATION.md
     # - Check target agent exists
@@ -69,9 +69,9 @@ async def consult(
 
     # Build consultation context for the target agent
     # Following Anthropic's pattern: clear task boundaries, explicit context
-    consultation_message = f"""[INTERNAL CONSULTATION from {current_agent_role}]
+    consultation_message = f"""[INTERNAL CONSULTATION from {current_agent_key}]
 
-You are being consulted by the {current_agent_role} agent.
+You are being consulted by the {current_agent_key} agent.
 Please answer this specific question and return your findings.
 
 QUESTION:
@@ -88,7 +88,7 @@ Provide a clear, concise answer. The requesting agent will use your response to 
     answer = await ctx.deps.executor.run(
         business_id=ctx.deps.business_id,
         conversation_id=ctx.deps.conversation_id,
-        agent_role=target_agent_role,
+        agent_key=target_agent_key,
         user_message=consultation_message,
         deps=ctx.deps,
         message_history=[],  # Fresh context - just the question, no conversation history

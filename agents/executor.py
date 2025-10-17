@@ -44,22 +44,18 @@ class AgentConfig(BaseModel):
     id: UUID
     business_id: UUID
     name: str
-    role: str  # e.g., "sales", "legal_intake", "customer_support"
+    key: str  # e.g., "sales", "legal_intake", "customer_support"
     system_prompt: str
-    personality: str | None = None
-    tone: str | None = None
 
     # Tool groups this agent has access to
     tool_groups: list[str]  # List of toolset names (e.g., ["catalog", "customers", "collab"])
 
     # Collaboration settings
-    can_handoff_to: list[str] = []  # List of agent roles this agent can hand off to
-    can_consult: list[str] = []  # List of agent roles this agent can consult
+    can_handoff_to: list[str] = []  # List of agent keys this agent can hand off to
 
     # Optional configurations
-    greeting_message: str | None = None
-    conversation_rules: dict[str, Any] = {}
     channels: dict[str, Any] = {}
+    metadata: dict[str, Any] = {}
 
     # Metadata
     status: str = "active"
@@ -86,12 +82,12 @@ class AgentExecutor:
         self.toolset_manager = toolset_manager or get_toolset_manager()
         self.model = model
 
-    async def load_agent_config(self, business_id: UUID, agent_role: str) -> AgentConfig | None:
+    async def load_agent_config(self, business_id: UUID, agent_key: str) -> AgentConfig | None:
         """Load agent configuration from database.
 
         Args:
             business_id: ID of the business
-            agent_role: Role of the agent (e.g., "sales", "legal_intake")
+            agent_key: Key of the agent (e.g., "sales", "legal_intake")
 
         Returns:
             Agent configuration or None if not found
@@ -134,7 +130,7 @@ class AgentExecutor:
 To handoff, return this exact structure:
 {{{{
     "type": "handoff",
-    "target_agent_role": "legal",
+    "target_agent_key": "legal",
     "reason": "Customer needs contract review",
     "context_summary": "Brief context",
     "priority": "medium"
@@ -162,7 +158,7 @@ To handoff, return this exact structure:
         self,
         business_id: UUID,
         conversation_id: UUID,
-        agent_role: str,
+        agent_key: str,
         user_message: str,
         deps: AgentDeps,
         message_history: list | None = None,
@@ -178,7 +174,7 @@ To handoff, return this exact structure:
         Args:
             business_id: ID of the business
             conversation_id: ID of the conversation
-            agent_role: Role of the agent to run
+            agent_key: Key of the agent to run
             user_message: Message from the user
             deps: Agent dependencies
             message_history: Previous messages to maintain conversation context
@@ -187,15 +183,15 @@ To handoff, return this exact structure:
             Agent's response content (what was sent to customer)
         """
         # Load agent configuration
-        config = await self.load_agent_config(business_id, agent_role)
+        config = await self.load_agent_config(business_id, agent_key)
         if not config:
-            raise ValueError(f"Agent '{agent_role}' not found for business {business_id}")
+            raise ValueError(f"Agent '{agent_key}' not found for business {business_id}")
 
         # Update deps with current agent info
         deps = replace(
             deps,
             current_agent_id=config.id,
-            current_agent_role=agent_role,
+            current_agent_key=agent_key,
         )
 
         # Create agent with tools
@@ -217,7 +213,7 @@ To handoff, return this exact structure:
                 return content
 
             case HandoffResponse(
-                target_agent_role=target_role,
+                target_agent_key=target_key,
                 reason=reason,
                 context_summary=summary,
                 priority=priority,
@@ -226,8 +222,8 @@ To handoff, return this exact structure:
                 await self._record_handoff(
                     conversation_id=conversation_id,
                     from_agent_id=config.id,
-                    from_agent_role=agent_role,
-                    to_agent_role=target_role,
+                    from_agent_key=agent_key,
+                    to_agent_key=target_key,
                     reason=reason,
                 )
 
@@ -235,7 +231,7 @@ To handoff, return this exact structure:
                 new_context = {
                     **deps.context_variables,
                     "handoff_reason": reason,
-                    "handoff_from": agent_role,
+                    "handoff_from": agent_key,
                     "handoff_priority": priority,
                 }
 
@@ -244,7 +240,7 @@ To handoff, return this exact structure:
                 # Build handoff message for the new agent
                 # The new agent starts a fresh conversation but has context
                 handoff_message = f"""[HANDOFF CONTEXT]
-You are receiving this customer via handoff from the {agent_role} agent.
+You are receiving this customer via handoff from the {agent_key} agent.
 
 Reason for handoff: {reason}
 Priority: {priority}
@@ -258,7 +254,7 @@ Please introduce yourself and help the customer with their request.
                 return await self.run(
                     business_id=business_id,
                     conversation_id=conversation_id,
-                    agent_role=target_role,
+                    agent_key=target_key,
                     user_message=handoff_message,
                     deps=new_deps,
                     message_history=message_history,  # Fresh conversation for new agent
@@ -317,8 +313,8 @@ Please introduce yourself and help the customer with their request.
         self,
         conversation_id: UUID,
         from_agent_id: UUID,
-        from_agent_role: str,
-        to_agent_role: str,
+        from_agent_key: str,
+        to_agent_key: str,
         reason: str,
     ) -> None:
         """Record handoff in database for audit/analytics.
@@ -328,8 +324,8 @@ Please introduce yourself and help the customer with their request.
         Args:
             conversation_id: ID of the conversation
             from_agent_id: ID of agent initiating handoff
-            from_agent_role: Role of agent initiating handoff
-            to_agent_role: Role of agent receiving handoff
+            from_agent_key: Key of agent initiating handoff
+            to_agent_key: Key of agent receiving handoff
             reason: Why the handoff is happening
         """
         # TODO: Implement database recording
@@ -338,10 +334,10 @@ Please introduce yourself and help the customer with their request.
         # await self.db.execute(
         #     """
         #     INSERT INTO agent_collaborations (
-        #         conversation_id, from_agent_id, to_agent_role,
+        #         conversation_id, from_agent_id, to_agent_key,
         #         collaboration_type, reason, created_at
         #     ) VALUES ($1, $2, $3, 'handoff', $4, NOW())
         #     """,
-        #     conversation_id, from_agent_id, to_agent_role, reason
+        #     conversation_id, from_agent_id, to_agent_key, reason
         # )
         pass

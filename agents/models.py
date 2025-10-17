@@ -36,7 +36,7 @@ class HandoffResponse(BaseModel):
     """
 
     type: Literal["handoff"] = "handoff"
-    target_agent_role: str
+    target_agent_key: str
     reason: str
     context_summary: str
     priority: Literal["low", "medium", "high"] = "medium"

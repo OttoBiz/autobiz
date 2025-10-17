@@ -20,7 +20,7 @@ def agent_config():
         id=uuid4(),
         business_id=uuid4(),
         name="legal",
-        role="legal",
+        key="legal",
         system_prompt="You are a legal agent",
         tool_groups=["catalog", "customers"],
     )
@@ -37,7 +37,7 @@ def agent_deps():
         business_id=uuid4(),
         conversation_id=uuid4(),
         current_agent_id=uuid4(),
-        current_agent_role="agent",
+        current_agent_key="agent",
     )
 
 
@@ -66,7 +66,7 @@ async def test_run_handles_message_response(executor, agent_config, agent_deps):
                 result = await executor.run(
                     business_id=agent_deps.business_id,
                     conversation_id=agent_deps.conversation_id,
-                    agent_role="agent",
+                    agent_key="agent",
                     user_message="Hi",
                     deps=agent_deps,
                 )
@@ -89,7 +89,7 @@ async def test_run_handles_pause_response(executor, agent_config, agent_deps):
                 result = await executor.run(
                     business_id=agent_deps.business_id,
                     conversation_id=agent_deps.conversation_id,
-                    agent_role="agent",
+                    agent_key="agent",
                     user_message="Hi",
                     deps=agent_deps,
                 )
@@ -117,7 +117,7 @@ async def test_run_handles_multi_message_response(executor, agent_config, agent_
                     result = await executor.run(
                         business_id=agent_deps.business_id,
                         conversation_id=agent_deps.conversation_id,
-                        agent_role="agent",
+                        agent_key="agent",
                         user_message="Hi",
                         deps=agent_deps,
                     )
@@ -143,7 +143,7 @@ async def test_run_handles_handoff_response(executor, agent_config, agent_deps):
     mock_agent = AsyncMock()
     mock_agent.run.return_value = MagicMock(
         output=HandoffResponse(
-            target_agent_role="legal",
+            target_agent_key="legal",
             reason="Customer needs contract review",
             context_summary="Contract question",
         )
@@ -157,16 +157,16 @@ async def test_run_handles_handoff_response(executor, agent_config, agent_deps):
                 initial_run = executor.run
 
                 async def mock_recursive_run(*args, **kwargs):
-                    if kwargs.get("agent_role") == "legal":
+                    if kwargs.get("agent_key") == "legal":
                         return "Legal agent response"
 
                     return await initial_run(*args, **kwargs)
 
                 with patch.object(executor, "run", side_effect=mock_recursive_run):
-                    result = await executor.run(
+                    await executor.run(
                         business_id=agent_deps.business_id,
                         conversation_id=agent_deps.conversation_id,
-                        agent_role="sales",
+                        agent_key="sales",
                         user_message="Hi",
                         deps=agent_deps,
                     )

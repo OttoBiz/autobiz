@@ -19,7 +19,7 @@ def agent_deps():
         business_id=uuid4(),
         conversation_id=uuid4(),
         customer_id=uuid4(),
-        current_agent_role="sales",
+        current_agent_key="sales",
     )
 
 
@@ -35,7 +35,7 @@ async def test_consult_calls_executor_with_correct_params(agent_deps):
     ctx = RunContext(deps=agent_deps, model=TestModel(), usage=RunUsage())
 
     result = await consult(
-        ctx, target_agent_role="inventory", question="What's the stock count for SKU-123?"
+        ctx, target_agent_key="inventory", question="What's the stock count for SKU-123?"
     )
 
     mock_executor.run.assert_called_once()
@@ -52,10 +52,10 @@ async def test_consult_passes_correct_params_to_executor(agent_deps):
 
     ctx = RunContext(deps=agent_deps, model=TestModel(), usage=RunUsage())
 
-    await consult(ctx, target_agent_role="pricing", question="What's the price?")
+    await consult(ctx, target_agent_key="pricing", question="What's the price?")
 
     call_args = mock_executor.run.call_args
-    assert call_args.kwargs["agent_role"] == "pricing"
+    assert call_args.kwargs["agent_key"] == "pricing"
     assert "What's the price?" in call_args.kwargs["user_message"]
     assert call_args.kwargs["business_id"] == agent_deps.business_id
     assert call_args.kwargs["conversation_id"] == agent_deps.conversation_id
@@ -70,7 +70,7 @@ async def test_consult_includes_consultation_context(agent_deps):
 
     ctx = RunContext(deps=agent_deps, model=TestModel(), usage=RunUsage())
 
-    await consult(ctx, target_agent_role="legal", question="Can we offer net-30?")
+    await consult(ctx, target_agent_key="legal", question="Can we offer net-30?")
 
     # Verify the message includes consultation context
     call_args = mock_executor.run.call_args
