@@ -152,5 +152,10 @@ async def test_combine_with_mcp_servers(mock_load_mcp, mcp_config_path: Path):
     mock_load_mcp.return_value = [mock_server]
 
     manager = ToolsetManager(mcp_config_path)
-    manager.combine(["catalog"], mcp_servers=["github"])
+    toolsets = manager.combine(["catalog", "mcp:github"])
+    assert len(toolsets) == 2
+    assert toolsets[0] is manager.catalog
     mock_load_mcp.assert_called_once_with(mcp_config_path)
+
+    with pytest.raises(ValueError):
+        manager.combine(["catalog", "mcp:nonexistent"])

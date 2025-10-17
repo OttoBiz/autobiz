@@ -65,15 +65,16 @@ class ToolsetManager:
     def combine(
         self,
         tool_groups: list[str],
-        mcp_servers: list[str] | None = None,
         mcp_credentials: dict[str, str] | Any | None = None,
     ) -> list[AbstractToolset]:
         """Combine multiple domain toolsets into a list.
 
         Args:
             tool_groups: List of toolset names to combine
-                        (e.g., ["catalog", "customers", "collab"])
-
+                        (e.g., ["catalog", "customers", "collab", "mcp:github"])
+            mcp_credentials: MCP credentials to pass to the MCP server
+                        (e.g., {"token": "1234567890"})
+                        optional
         Returns:
             List of toolsets to pass to Agent(tools=[...])
 
@@ -85,18 +86,19 @@ class ToolsetManager:
             # Support agent gets all conversation tools
             toolsets = manager.combine(["conversations", "customers"])
         """
-        toolsets = [self.get(group) for group in tool_groups]
-        if mcp_servers:
-            if self._mcp_config_path:
-                mcp_config = load_mcp_servers(self._mcp_config_path)
-                mcp_by_label = {server.label: server for server in mcp_config}
-
-                for server_name in mcp_servers:
-                    if server_name in mcp_by_label:
-                        toolsets.append(mcp_by_label[server_name].env(mcp_credentials))
+        toolsets = []
+        for group in tool_groups:
+            if group.startswith("mcp:"):
+                mcp_server_name = group.split(":")[1]
+                if self._mcp_config_path:
+                    mcp_config = load_mcp_servers(self._mcp_config_path)
+                    mcp_by_label = {server.label: server for server in mcp_config}
+                    if mcp_server_name in mcp_by_label:
+                        toolsets.append(mcp_by_label[mcp_server_name].env(mcp_credentials))
                     else:
-                        raise ValueError(f"MCP server {server_name} not found in registry.")
-
+                        raise ValueError(f"MCP server {mcp_server_name} not found in registry.")
+            else:
+                toolsets.append(self.get(group))
         return toolsets
 
 
