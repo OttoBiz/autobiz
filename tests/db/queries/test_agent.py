@@ -23,12 +23,16 @@ def mock_agent_data():
         "id": uuid4(),
         "business_id": uuid4(),
         "name": "Test Agent",
-        "avatar_url": "https://example.com/avatar.png",
-        "personality": "Friendly and helpful",
-        "tone": "Professional",
+        "key": "test_agent",
         "system_prompt": "You are a helpful assistant",
-        "greeting_message": "Hello! How can I help you?",
-        "conversation_rules": {"max_turns": 10},
+        "tool_groups": ["catalog", "customers"],
+        "subagents": [],
+        "metadata": {
+            "avatar_url": "https://example.com/avatar.png",
+            "personality": "Friendly and helpful",
+            "tone": "Professional",
+            "greeting_message": "Hello! How can I help you?",
+        },
         "channels": {
             "whatsapp": {"enabled": True, "credentials": {}, "config": {}},
             "webchat": {"enabled": False, "config": {}},
@@ -61,6 +65,7 @@ async def test_create_agent(mock_connection, mock_agent_data):
         agent = await create_agent(
             business_id=mock_agent_data["business_id"],
             name=mock_agent_data["name"],
+            key=mock_agent_data["key"],
             system_prompt=mock_agent_data["system_prompt"],
         )
 

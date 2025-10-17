@@ -89,24 +89,27 @@ class ToolsetManager:
         """
         toolsets = []
 
-        # Check if any MCP servers are requested
-        mcp_requested = any(group.startswith("mcp:") for group in tool_groups)
-
-        if mcp_requested and self._mcp_config_path:
-            # Load all MCP servers once and cache them
-            if self._mcp_servers_cache is None:
-                self._mcp_servers_cache = load_mcp_servers(self._mcp_config_path)
-
-            # Add all MCP servers (since we can't differentiate them by name easily)
-            for server in self._mcp_servers_cache:
-                if mcp_credentials:
-                    toolsets.append(server.env(mcp_credentials))
-                else:
-                    toolsets.append(server)
-
-        # Add non-MCP toolsets
+        # Process toolsets in the order they appear in tool_groups
         for group in tool_groups:
-            if not group.startswith("mcp:"):
+            if group.startswith("mcp:"):
+                # MCP server request - extract server name and load if not cached
+                mcp_server_name = group.split(":", 1)[1]
+                if self._mcp_config_path:
+                    if self._mcp_servers_cache is None:
+                        self._mcp_servers_cache = load_mcp_servers(self._mcp_config_path)
+
+                    # Find the requested MCP server by label
+                    mcp_by_label = {server.label: server for server in self._mcp_servers_cache}
+                    if mcp_server_name not in mcp_by_label:
+                        raise ValueError(f"MCP server '{mcp_server_name}' not found in configuration")
+
+                    server = mcp_by_label[mcp_server_name]
+                    if mcp_credentials:
+                        toolsets.append(server.env(mcp_credentials))
+                    else:
+                        toolsets.append(server)
+            else:
+                # Regular toolset
                 toolsets.append(self.get(group))
 
         return toolsets

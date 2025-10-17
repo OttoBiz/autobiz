@@ -58,7 +58,7 @@ async def test_consult_passes_correct_params_to_executor(agent_deps):
     assert call_args.kwargs["agent_key"] == "pricing"
     assert "What's the price?" in call_args.kwargs["user_message"]
     assert call_args.kwargs["business_id"] == agent_deps.business_id
-    assert call_args.kwargs["conversation_id"] == agent_deps.conversation_id
+    assert call_args.kwargs["conversation"] == []  # Fresh context for consultation
 
 
 async def test_consult_includes_consultation_context(agent_deps):

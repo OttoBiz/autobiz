@@ -86,12 +86,11 @@ Provide a clear, concise answer. The requesting agent will use your response to 
     # - tool_groups (different tools than the orchestrator)
     # - No collaboration tools (subagents can't spawn more agents)
     answer = await ctx.deps.executor.run(
-        business_id=ctx.deps.business_id,
-        conversation_id=ctx.deps.conversation_id,
         agent_key=target_agent_key,
         user_message=consultation_message,
         deps=ctx.deps,
-        message_history=[],  # Fresh context - just the question, no conversation history
+        business_id=ctx.deps.business_id,
+        conversation=[],  # Fresh context - just the question, no conversation history
     )
 
     return answer

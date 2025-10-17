@@ -59,16 +59,20 @@ def test_create_agent_executor_with_collab_tools(executor, agent_config):
 @pytest.mark.asyncio
 async def test_run_handles_message_response(executor, agent_config, agent_deps):
     mock_agent = AsyncMock()
-    mock_agent.run.return_value = MagicMock(output=MessageResponse(content="Hello customer"))
+    mock_result = MagicMock(
+        output=MessageResponse(content="Hello customer"),
+        all_messages=MagicMock(return_value=[])
+    )
+    mock_agent.run.return_value = mock_result
     with patch.object(executor, "load_agent_config", return_value=agent_config):
         with patch.object(executor, "create_agent", return_value=mock_agent):
             with patch.object(executor, "_send_to_channel", new_callable=AsyncMock) as mock_send:
                 result = await executor.run(
-                    business_id=agent_deps.business_id,
-                    conversation_id=agent_deps.conversation_id,
                     agent_key="agent",
                     user_message="Hi",
                     deps=agent_deps,
+                    business_id=agent_deps.business_id,
+                    conversation=agent_deps.conversation_id,
                 )
 
                 mock_send.assert_called_once_with(agent_deps.channel, "Hello customer", {})
@@ -78,20 +82,22 @@ async def test_run_handles_message_response(executor, agent_config, agent_deps):
 @pytest.mark.asyncio
 async def test_run_handles_pause_response(executor, agent_config, agent_deps):
     mock_agent = AsyncMock()
-    mock_agent.run.return_value = MagicMock(
+    mock_result = MagicMock(
         output=PauseResponse(
             content="I need more info", reason="Awaiting webhook action", resume_trigger="webhook"
-        )
+        ),
+        all_messages=MagicMock(return_value=[])
     )
+    mock_agent.run.return_value = mock_result
     with patch.object(executor, "load_agent_config", return_value=agent_config):
         with patch.object(executor, "create_agent", return_value=mock_agent):
             with patch.object(executor, "_send_to_channel", new_callable=AsyncMock) as mock_send:
                 result = await executor.run(
-                    business_id=agent_deps.business_id,
-                    conversation_id=agent_deps.conversation_id,
                     agent_key="agent",
                     user_message="Hi",
                     deps=agent_deps,
+                    business_id=agent_deps.business_id,
+                    conversation=agent_deps.conversation_id,
                 )
 
                 mock_send.assert_called_once_with(agent_deps.channel, "I need more info")
@@ -101,25 +107,27 @@ async def test_run_handles_pause_response(executor, agent_config, agent_deps):
 @pytest.mark.asyncio
 async def test_run_handles_multi_message_response(executor, agent_config, agent_deps):
     mock_agent = AsyncMock()
-    mock_agent.run.return_value = MagicMock(
+    mock_result = MagicMock(
         output=MultiMessageResponse(
             messages=[
                 MessageContent(content="This is a message"),
                 MessageContent(content="This is another message"),
             ]
-        )
+        ),
+        all_messages=MagicMock(return_value=[])
     )
+    mock_agent.run.return_value = mock_result
 
     with patch.object(executor, "load_agent_config", return_value=agent_config):
         with patch.object(executor, "create_agent", return_value=mock_agent):
             with patch.object(executor, "_send_to_channel", new_callable=AsyncMock) as mock_send:
                 with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
                     result = await executor.run(
-                        business_id=agent_deps.business_id,
-                        conversation_id=agent_deps.conversation_id,
                         agent_key="agent",
                         user_message="Hi",
                         deps=agent_deps,
+                        business_id=agent_deps.business_id,
+                        conversation=agent_deps.conversation_id,
                     )
 
                     assert mock_send.call_count == 2
@@ -141,13 +149,15 @@ async def test_run_handles_multi_message_response(executor, agent_config, agent_
 @pytest.mark.asyncio
 async def test_run_handles_handoff_response(executor, agent_config, agent_deps):
     mock_agent = AsyncMock()
-    mock_agent.run.return_value = MagicMock(
+    mock_result = MagicMock(
         output=HandoffResponse(
             target_agent_key="legal",
             reason="Customer needs contract review",
             context_summary="Contract question",
-        )
+        ),
+        all_messages=MagicMock(return_value=[])
     )
+    mock_agent.run.return_value = mock_result
 
     with patch.object(executor, "load_agent_config", return_value=agent_config):
         with patch.object(executor, "create_agent", return_value=mock_agent):
@@ -164,11 +174,11 @@ async def test_run_handles_handoff_response(executor, agent_config, agent_deps):
 
                 with patch.object(executor, "run", side_effect=mock_recursive_run):
                     await executor.run(
-                        business_id=agent_deps.business_id,
-                        conversation_id=agent_deps.conversation_id,
                         agent_key="sales",
                         user_message="Hi",
                         deps=agent_deps,
+                        business_id=agent_deps.business_id,
+                        conversation=agent_deps.conversation_id,
                     )
 
                     mock_record_handoff.assert_called_once()
