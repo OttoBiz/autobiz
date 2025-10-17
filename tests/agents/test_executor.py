@@ -60,8 +60,7 @@ def test_create_agent_executor_with_collab_tools(executor, agent_config):
 async def test_run_handles_message_response(executor, agent_config, agent_deps):
     mock_agent = AsyncMock()
     mock_result = MagicMock(
-        output=MessageResponse(content="Hello customer"),
-        all_messages=MagicMock(return_value=[])
+        output=MessageResponse(content="Hello customer"), all_messages=MagicMock(return_value=[])
     )
     mock_agent.run.return_value = mock_result
     with patch.object(executor, "load_agent_config", return_value=agent_config):
@@ -86,7 +85,7 @@ async def test_run_handles_pause_response(executor, agent_config, agent_deps):
         output=PauseResponse(
             content="I need more info", reason="Awaiting webhook action", resume_trigger="webhook"
         ),
-        all_messages=MagicMock(return_value=[])
+        all_messages=MagicMock(return_value=[]),
     )
     mock_agent.run.return_value = mock_result
     with patch.object(executor, "load_agent_config", return_value=agent_config):
@@ -114,7 +113,7 @@ async def test_run_handles_multi_message_response(executor, agent_config, agent_
                 MessageContent(content="This is another message"),
             ]
         ),
-        all_messages=MagicMock(return_value=[])
+        all_messages=MagicMock(return_value=[]),
     )
     mock_agent.run.return_value = mock_result
 
@@ -155,7 +154,7 @@ async def test_run_handles_handoff_response(executor, agent_config, agent_deps):
             reason="Customer needs contract review",
             context_summary="Contract question",
         ),
-        all_messages=MagicMock(return_value=[])
+        all_messages=MagicMock(return_value=[]),
     )
     mock_agent.run.return_value = mock_result
 

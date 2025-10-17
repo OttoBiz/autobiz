@@ -101,7 +101,9 @@ class ToolsetManager:
                     # Find the requested MCP server by label
                     mcp_by_label = {server.label: server for server in self._mcp_servers_cache}
                     if mcp_server_name not in mcp_by_label:
-                        raise ValueError(f"MCP server '{mcp_server_name}' not found in configuration")
+                        raise ValueError(
+                            f"MCP server '{mcp_server_name}' not found in configuration"
+                        )
 
                     server = mcp_by_label[mcp_server_name]
                     if mcp_credentials:
