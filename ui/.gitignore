@@ -48,6 +48,3 @@ coverage
 .cache
 tmp
 temp
-
-# Prisma
-prisma/generated
