@@ -200,8 +200,8 @@ To handoff, return this exact structure:
         user_message: str,
         deps: AgentDeps,
         business_id: UUID | None = None,
-        conversation_id: UUID | None = None,
-        message_history: list | None = None,
+        conversation: UUID | list | None = None,
+        persist_to_db: bool = False,
     ) -> str:
         """Execute an agent to handle a user message.
 
@@ -212,16 +212,31 @@ To handoff, return this exact structure:
         - MultiMessageResponse: Send multiple messages sequentially
 
         Args:
-            business_id: ID of the business
-            conversation_id: ID of the conversation
             agent_key: Key of the agent to run
             user_message: Message from the user
             deps: Agent dependencies
-            message_history: Previous messages to maintain conversation context
+            business_id: ID of the business
+            conversation: Either UUID for DB-backed conversation or list of messages for in-memory
+            persist_to_db: Whether to persist messages to DB (not yet implemented)
 
         Returns:
             Agent's response content (what was sent to customer)
         """
+        # Determine message history based on conversation type
+        message_history = []
+        conversation_id = None
+
+        if conversation is not None:
+            if isinstance(conversation, UUID):
+                # UUID: would load from DB in future
+                conversation_id = conversation
+                # TODO: message_history = await self._load_history_from_db(conversation)
+                message_history = []
+            elif isinstance(conversation, list):
+                # List: use directly as Pydantic AI message history
+                message_history = conversation
+                conversation_id = None
+
         # Load agent configuration
         config = await self.load_agent_config(business_id, agent_key)
         if not config:
@@ -238,12 +253,18 @@ To handoff, return this exact structure:
         agent = self.create_agent(config)
 
         # Run agent with structured output
-        # Pass message_history to maintain conversation context across handoffs
+        # Pass message_history to maintain conversation context
         result = await agent.run(
             user_message,
             deps=deps,
-            message_history=message_history or [],
+            message_history=message_history,
         )
+
+        # Update conversation list if it was provided as a list
+        # This mutates the list in-place so the caller maintains history
+        if isinstance(conversation, list):
+            conversation.clear()
+            conversation.extend(result.all_messages())
 
         # Pattern match on output type
         match result.output:
@@ -289,15 +310,14 @@ Context summary: {summary}
 Please introduce yourself and help the customer with their request.
 """
 
-                # Start a fresh conversation (no message_history)
-                # The context summary provides what the new agent needs to know
+                # Pass conversation through to new agent
+                # The conversation (UUID or list) maintains continuity
                 return await self.run(
-                    business_id=business_id,
-                    conversation_id=conversation_id,
                     agent_key=target_key,
                     user_message=handoff_message,
                     deps=new_deps,
-                    message_history=message_history,  # Fresh conversation for new agent
+                    business_id=business_id,
+                    conversation=conversation,
                 )
 
             case PauseResponse(content=content):
