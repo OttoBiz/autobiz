@@ -44,7 +44,7 @@ class ProductionAgentExecutor(AgentExecutor):
             row = await conn.fetchrow(
                 """
                 SELECT id, business_id, name, key, system_prompt, tool_groups,
-                       can_handoff_to, metadata, channels, status
+                       subagents, metadata, channels, status
                 FROM agent
                 WHERE business_id = $1 AND key = $2 AND status = 'active'
                 """,
@@ -66,7 +66,7 @@ class ProductionAgentExecutor(AgentExecutor):
                 role=row["key"],  # Map key to role for AgentConfig
                 system_prompt=row["system_prompt"],
                 tool_groups=row["tool_groups"] or ["catalog", "customers", "conversations"],
-                can_handoff_to=row["can_handoff_to"] or [],
+                subagents=row["subagents"] or [],
                 can_consult=[],  # Derived from tool_groups (if "collab" in tools, can consult)
                 personality=metadata.get("personality"),
                 tone=metadata.get("tone"),
@@ -156,9 +156,7 @@ async def receive_message(payload: IncomingMessage):
         )
 
     # Get conversation history for context
-    messages = await get_conversation_messages(
-        conversation.id, include_internal=False, limit=50
-    )
+    messages = await get_conversation_messages(conversation.id, include_internal=False, limit=50)
 
     # Convert to message history format for agent
     # Pydantic AI expects list of message dicts

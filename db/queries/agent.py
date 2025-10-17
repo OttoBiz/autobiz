@@ -12,7 +12,7 @@ async def create_agent(
     key: str,
     system_prompt: str,
     tool_groups: list[str] | None = None,
-    can_handoff_to: list[str] | None = None,
+    subagents: list[str] | None = None,
     metadata: dict | None = None,
     channels: dict | None = None,
     status: str = "active",
@@ -25,7 +25,7 @@ async def create_agent(
         key: System identifier/routing key (e.g., "legal", "support")
         system_prompt: Agent's behavioral instructions
         tool_groups: List of toolset names (e.g., ["catalog", "customers"])
-        can_handoff_to: List of agent keys this agent can transfer to
+        subagents: List of agent keys this agent can transfer to
         metadata: Optional fields (personality, tone, greeting_message, avatar_url, etc.)
         channels: Channel configuration
         status: Agent status (default: "active")
@@ -34,7 +34,7 @@ async def create_agent(
         row = await conn.fetchrow(
             """
             INSERT INTO agent (
-                business_id, name, key, system_prompt, tool_groups, can_handoff_to,
+                business_id, name, key, system_prompt, tool_groups, subagents,
                 metadata, channels, status
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -45,7 +45,7 @@ async def create_agent(
             key,
             system_prompt,
             tool_groups or ["catalog", "customers", "conversations"],
-            can_handoff_to or [],
+            subagents or [],
             metadata or {},
             channels
             or {

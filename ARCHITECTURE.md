@@ -501,7 +501,7 @@ tools:
   - customer_lookup
   - handoff_to_agent
 collaboration_rules:
-  can_handoff_to:
+  subagents:
     - sales-agent
     - technical-support-agent
   auto_handoff_triggers:
@@ -822,7 +822,7 @@ async def validate_handoff(current_agent_id, target_agent_id, reason):
         raise ValidationError("Handoff to same type not allowed")
 
     # 3. Check if handoff is in allowed list
-    if target_agent_id not in current_agent.config['can_handoff_to']:
+    if target_agent_id not in current_agent.config['subagents']:
         raise ValidationError(f"Not configured to hand off to {target_agent_id}")
 
 async def validate_consult(current_agent_id, target_agent_id, question):
@@ -920,7 +920,7 @@ tools:
 
 collaboration_rules:
   # Which agents this agent can hand off to
-  can_handoff_to:
+  subagents:
     - customer-service-agent
     - legal-intake-agent
 

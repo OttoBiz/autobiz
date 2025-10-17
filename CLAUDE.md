@@ -164,7 +164,7 @@ Core tables:
 - Each agent has a `key` field for routing (e.g., "sales", "support", "legal")
 - Each agent has a `name` field for display (e.g., "Legal Assistant Sarah")
 - `tool_groups` JSONB field specifies which toolsets the agent can use
-- `can_handoff_to` JSONB field lists agent keys this agent can transfer to
+- `subagents` JSONB field lists agent keys this agent can transfer to
 - Optional fields (personality, tone, greeting_message) stored in `metadata` JSONB
 
 ## Multi-Agent System & Toolsets
@@ -182,7 +182,7 @@ Core tables:
      "key": "sales",
      "name": "Sales Assistant Sarah",
      "tool_groups": ["catalog", "customers", "collab"],
-     "can_handoff_to": ["legal", "support"]
+     "subagents": ["legal", "support"]
    }
    ```
 

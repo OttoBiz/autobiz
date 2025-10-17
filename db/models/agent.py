@@ -17,7 +17,7 @@ class Agent(BaseModel):
 
     # Multi-agent configuration
     tool_groups: list[str]  # ["catalog", "customers", "conversations", "collab"]
-    can_handoff_to: list[str]  # ["legal", "support"] - agent keys this agent can transfer to
+    subagents: list[str]  # ["legal", "support"] - agent keys this agent can transfer to
 
     # Channels
     channels: dict

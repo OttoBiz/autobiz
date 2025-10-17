@@ -51,7 +51,7 @@ class AgentConfig(BaseModel):
     tool_groups: list[str]  # List of toolset names (e.g., ["catalog", "customers", "collab"])
 
     # Collaboration settings
-    can_handoff_to: list[str] = []  # List of agent keys this agent can hand off to
+    subagents: list[str] = []  # List of agent keys this agent can hand off to
 
     # Optional configurations
     channels: dict[str, Any] = {}
