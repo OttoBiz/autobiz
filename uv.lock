@@ -2,6 +2,13 @@ version = 1
 revision = 3
 requires-python = ">=3.13"
 
+[manifest]
+members = [
+    "ai",
+    "api",
+    "autobiz",
+]
+
 [[package]]
 name = "ag-ui-protocol"
 version = "0.1.9"
@@ -17,7 +24,7 @@ wheels = [
 [[package]]
 name = "ai"
 version = "0.1.0"
-source = { virtual = "." }
+source = { virtual = "services/ai" }
 dependencies = [
     { name = "logfire" },
     { name = "pydantic-ai" },
@@ -71,6 +78,11 @@ wheels = [
 ]
 
 [[package]]
+name = "api"
+version = "0.1.0"
+source = { virtual = "services/api" }
+
+[[package]]
 name = "argcomplete"
 version = "3.6.3"
 source = { registry = "https://pypi.org/simple" }
@@ -99,6 +111,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/cd/3f/1d3bbd0bf23bdd992
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f8/aa/5082412d1ee302e9e7d80b6949bc4d2a8fa1149aaab610c5fc24709605d6/authlib-1.6.5-py2.py3-none-any.whl", hash = "sha256:3e0e0507807f842b02175507bdee8957a1d5707fd4afb17c32fb43fee90b6e3a", size = 243608, upload-time = "2025-10-02T13:36:07.637Z" },
 ]
+
+[[package]]
+name = "autobiz"
+version = "0.1.0"
+source = { virtual = "." }
 
 [[package]]
 name = "beartype"
