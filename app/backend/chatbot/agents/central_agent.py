@@ -224,10 +224,10 @@ async def run_central_agent(
         })
     
     # Update process status
-    if response.finished: 
+    if response.finished:
         # Remove completed process
         if product_name in processes[message_type]:
-        del processes[message_type][product_name]
+            del processes[message_type][product_name]
     else:
         # Update process
         processes[message_type][product_name] = process

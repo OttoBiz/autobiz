@@ -3,14 +3,14 @@ User Chat Interface - Main entry point for customer conversations
 Updated to use pydantic_ai
 """
 from fastapi import BackgroundTasks
-from .routing_agent import route_conversation
-from .product_agent import run_product_agent
-from .upselling_agent import run_upselling_agent
-from .payment_verification_agent import run_verification_agent
-from .customer_complaint_agent import run_customer_complaint_agent
-from .logistics_agent import run_logistics_agent
-from .evaluator_agent import evaluate_response, should_send_response
-from .agent_utils import get_or_create_user_state, save_user_state, format_chat_history
+from backend.chatbot.agents.routing_agent import route_conversation
+from backend.chatbot.agents.product_agent import run_product_agent
+from backend.chatbot.agents.upselling_agent import run_upselling_agent
+from backend.chatbot.agents.payment_verification_agent import run_verification_agent
+from backend.chatbot.agents.customer_complaint_agent import run_customer_complaint_agent
+from backend.chatbot.agents.logistics_agent import run_logistics_agent
+from backend.chatbot.agents.evaluator_agent import evaluate_response, should_send_response
+from backend.chatbot.agents.agent_utils import get_or_create_user_state, save_user_state, format_chat_history
 from backend.db.db_utils import get_business_info
 from backend.struct import UserRequest
 
