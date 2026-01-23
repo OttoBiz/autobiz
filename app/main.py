@@ -13,11 +13,20 @@ from backend.api.routers import customer, business, logistics, analytics, invent
 from backend.whatsapp.routers import router as whatsapp_router
 
 # Import legacy endpoints for backward compatibility
-from backend.chatbot.agents.user_chat_interface import chat
-from backend.chatbot.agents.business_chat_interface import business_chat
+from backend.chatbot.interface.user_chat_interface import chat
+from backend.chatbot.interface.business_chat_interface import business_chat
 from backend.struct import UserRequest, BusinessRequest
 
 load_dotenv()
+
+# Import database connection for lifecycle management
+try:
+    from backend.db.connection import init_db, close_db
+    DB_AVAILABLE = True
+except ImportError:
+    # Fallback if database connection not available
+    DB_AVAILABLE = False
+    print("Warning: Database connection module not available")
 
 LOG_FILE = os.getenv("LOG_FILE", "app.log")
 logging.basicConfig(
@@ -41,6 +50,36 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Database lifecycle events
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database connection pool on startup"""
+    if DB_AVAILABLE:
+        try:
+            await init_db()
+            logging.info("✓ Database connection pool initialized")
+            print("✓ Database connection pool initialized")
+        except Exception as e:
+            logging.error(f"✗ Failed to initialize database: {e}")
+            print(f"✗ Failed to initialize database: {e}")
+            # Don't crash the app, continue without database
+    else:
+        logging.warning("Database connection not available - running without database")
+        print("⚠ Database connection not available - running without database")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Close database connection pool on shutdown"""
+    if DB_AVAILABLE:
+        try:
+            await close_db()
+            logging.info("✓ Database connection pool closed")
+            print("✓ Database connection pool closed")
+        except Exception as e:
+            logging.error(f"✗ Failed to close database: {e}")
+            print(f"✗ Failed to close database: {e}")
 
 # Include routers
 app.include_router(customer.router, prefix="/api/v1")
