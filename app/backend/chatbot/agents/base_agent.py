@@ -156,16 +156,3 @@ class BaseAgent:
         )
 
 
-def select_model(api_key: Optional[str] = None):
-    """
-    Utility function to select model (for backward compatibility).
-    
-    Args:
-        api_key: Optional API key
-        
-    Returns:
-        Tuple of (model, agent)
-    """
-    base_agent = BaseAgent(api_key=api_key)
-    return base_agent.model, base_agent.agent
-
