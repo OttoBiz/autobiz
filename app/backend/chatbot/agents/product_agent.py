@@ -6,11 +6,16 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 from .base_agent import BaseAgent
-from .agent_utils import get_or_create_user_state, save_user_state, format_chat_history
+from chatbot.utils.agent_utils import get_or_create_user_state, save_user_state, format_chat_history
 from backend.modules.products import get_products_by_business, search_products, get_product_images
 from backend.db.db_utils import get_products
 from backend.config import config
-
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
 
 class ProductInfo(BaseModel):
     """Product information structure"""
@@ -25,7 +30,7 @@ class ProductAgentDeps(BaseModel):
     """Dependencies for product agent"""
     user_id: str
     business_id: str
-    api_key: Optional[str] = None
+    # api_key: Optional[str] = None
 
 
 # Initialize product agent
@@ -146,13 +151,10 @@ async def run_product_agent(
             ])
             prompt_parts.append(f"\nAvailable products:\n{products_info}")
         else:
-            prompt_parts.append("\nNo matching products found in inventory.")
+            prompt_parts.append("\nNo matching products found in inventory.") ##TODO: Add upsell products
     
     if intent == "purchase":
         prompt_parts.append("\nCustomer intent: Purchase - provide payment details.")
-    
-    if chat_history:
-        prompt_parts.append(f"\nChat history:\n{format_chat_history(chat_history)}")
     
     # Create dependencies
     deps = ProductAgentDeps(
@@ -165,26 +167,16 @@ async def run_product_agent(
     result = await product_agent.run(
         "\n".join(prompt_parts),
         deps=deps,
-        message_history=[
-            {"role": msg.get("role", "user"), "content": msg.get("content", "")}
-            for msg in chat_history[-10:]
-        ] if chat_history else None
+        message_history=chat_history
     )
     
     response = result.output
     
     # Update user state
-    user_state["chat_history"].append({
-        "role": "user",
-        "name": "customer",
-        "content": customer_message
-    })
-    user_state["chat_history"].append({
-        "role": "assistant",
-        "name": "product_agent",
-        "content": response
-    })
-    
+    user_state["chat_history"].extend([
+    ModelRequest(parts=[UserPromptPart(content=customer_message)]),
+    ModelResponse(parts=[TextPart(content=response)])])
+
     await save_user_state(user_id, business_id, user_state)
     
     return response, user_state
