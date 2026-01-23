@@ -9,6 +9,7 @@ pydantic>=2.7.4
 # Database
 psycopg2-binary==2.9.9
 sqlalchemy==2.0.30
+asyncpg>=0.29.0
 
 # Environment & Config
 python-dotenv==1.0.1
