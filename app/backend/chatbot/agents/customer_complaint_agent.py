@@ -6,15 +6,20 @@ from typing import Dict, Any, Optional
 from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 from .base_agent import BaseAgent
-from .agent_utils import get_or_create_user_state, save_user_state
+from chatbot.utils.agent_utils import get_or_create_user_state, save_user_state
 from fastapi import BackgroundTasks
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
 
 
 class CustomerComplaintDeps(BaseModel):
     """Dependencies for customer complaint agent"""
     user_id: str
     business_id: str
-    api_key: Optional[str] = None
 
 
 # Initialize customer complaint agent
@@ -39,7 +44,7 @@ customer_complaint_agent = customer_complaint_agent_base.agent
 
 
 async def run_customer_complaint_agent(
-    complaint: str,
+    customer_message: str,
     product_name: str,
     user_id: str,
     business_id: str,
@@ -71,7 +76,7 @@ async def run_customer_complaint_agent(
         business_id=business_id
     )
     
-    prompt = f"""Customer complaint: {complaint}
+    prompt = f"""Customer complaint: {customer_message}
 Product: {product_name}
 
 Address this complaint and provide resolution or escalate to human agent if needed."""
@@ -80,16 +85,9 @@ Address this complaint and provide resolution or escalate to human agent if need
     response = result.output
     
     # Update user state
-    user_state["chat_history"].append({
-        "role": "user",
-        "name": "customer",
-        "content": complaint
-    })
-    user_state["chat_history"].append({
-        "role": "assistant",
-        "name": "customer_complaint_agent",
-        "content": response
-    })
+    user_state["chat_history"].append([
+    ModelRequest(parts=[UserPromptPart(content=customer_message)]),
+    ModelResponse(parts=[TextPart(content=response)])])
     
     await save_user_state(user_id, business_id, user_state)
     
