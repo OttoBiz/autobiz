@@ -1,6 +1,5 @@
 """
 Routing Agent - Determines which agent to use based on conversation context
-Converted to pydantic_ai
 """
 from typing import Optional, Literal
 from pydantic import BaseModel
@@ -16,7 +15,7 @@ class ConversationStage(BaseModel):
         "Payment verification",
         "Logistics",
         "Ads Marketing",
-        "Customer complaint/Feedback",
+        "Customer support",
         "General"
     ]
     product_name: Optional[str] = None
@@ -35,7 +34,7 @@ class RoutingAgentDeps(BaseModel):
 routing_agent_base = BaseAgent(
     system_prompt="""You are a conversation routing agent. Analyze customer messages and determine:
 1. The conversation stage (Product Enquiry, Product purchase, Payment verification, Logistics, Ads Marketing, Customer complaint/Feedback, or General)
-2. Product name if mentioned (or 'NONE' if not mentioned)
+2. Product name if mentioned (default="None")
 3. Product category if identifiable
 4. Customer intent (enquiry or purchase)
 5. Confidence level (0.0 to 1.0)
@@ -68,14 +67,11 @@ async def route_conversation(
     """
     deps = RoutingAgentDeps(business_id=business_id, user_id=user_id)
     
-    prompt = f"""Customer message: {message}
-
-Previous conversation:
-{format_history(chat_history) if chat_history else "No previous conversation"}
+    prompt = f"""current user message: {message}
 
 Determine the conversation stage and extract relevant information."""
     
-    result = await routing_agent.run(prompt, deps=deps)
+    result = await routing_agent.run(prompt, deps=deps, message_history=chat_history)
     return result.output
 
 
