@@ -21,15 +21,47 @@ class CentralAgentInput(BaseModel):
     customer_bank_details: Optional[str] = ""
 
 
+class customer(BaseModel):
+    id: str
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+
+class BankAccount(BaseModel):
+    name: Optional[str] = None
+    number: Optional[str] = None
+    name: Optional[str] = None
+    
+class Vendor(BaseModel):
+    id: str
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    bank_account: BankAccount
+    
+class Logistics(BaseModel):
+    id: str
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    
+
+class Product(BaseModel):
+    id: str
+    name: str
+    quantity: int
+    price: float
+    metadata: Optional[Dict[str, Any]] = None
+    
 class Process(BaseModel):
     """Process model for central agent"""
-    product_name: str
-    price: Optional[str] = ""
     communication_history: Optional[List[Dict[str, Any]]] = None
     task_type: str
-    logistic_id: Optional[str] = ""
-    logistic_details: Optional[str] = ""
     customer_address: Optional[str] = ""
+    customer: customer
+    vendor: Vendor
+    logistics: Logistics
+    id: str
 
 
 async def create_structured_input(
