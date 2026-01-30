@@ -30,20 +30,20 @@ class customer(BaseModel):
 class BankAccount(BaseModel):
     name: Optional[str] = None
     number: Optional[str] = None
-    name: Optional[str] = None
     
 class Vendor(BaseModel):
     id: str
     name: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[str] = None
-    bank_account: BankAccount
+    bank_account: Optional[BankAccount] = None
     
 class Logistics(BaseModel):
     id: str
     name: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[str] = None
+    bank_account: Optional[BankAccount] = None
     
 
 class Product(BaseModel):
@@ -56,10 +56,11 @@ class Product(BaseModel):
 class Process(BaseModel):
     """Process model for central agent"""
     communication_history: Optional[List[Dict[str, Any]]] = None
+    finished_tasks: Optional[List[str]] = None
     task_type: str
-    customer_address: Optional[str] = ""
     customer: customer
     vendor: Vendor
+    product: Product
     logistics: Logistics
     id: str
 
