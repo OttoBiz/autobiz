@@ -13,6 +13,7 @@ from backend.chatbot.agents.evaluator_agent import evaluate_response, should_sen
 from backend.chatbot.agents.agent_utils import get_or_create_user_state, save_user_state, format_chat_history
 from backend.db.db_utils import get_business_info
 from backend.struct import UserRequest
+from backend.db.cache_utils import get_user_state, modify_user_state
 
 
 async def chat(
@@ -34,7 +35,7 @@ async def chat(
         Response message from the appropriate agent
     """
     # Get or create user state
-    user_state = await get_or_create_user_state(
+    user_state = await get_user_state(
         user_request.user_id,
         user_request.vendor_id
     )
@@ -93,25 +94,6 @@ async def chat(
             debug=debug
         )
         
-    elif stage == "Ads Marketing":
-        # Use upselling agent
-        response = await run_upselling_agent(
-            product=routing.product_name or "",
-            intent="purchased",
-            business_id=user_request.vendor_id
-        )
-        # Update user state
-        user_state["chat_history"].append({
-            "role": "user",
-            "name": "customer",
-            "content": user_request.message
-        })
-        user_state["chat_history"].append({
-            "role": "assistant",
-            "name": "upselling_agent",
-            "content": response
-        })
-        
     elif stage == "Customer complaint/Feedback":
         # Use customer complaint agent
         response, user_state = await run_customer_complaint_agent(
@@ -138,19 +120,19 @@ async def chat(
         )
     
     # Evaluate response before sending
-    conversation_context = format_chat_history(user_state.get("chat_history", []))
-    evaluation = await evaluate_response(response, conversation_context)
+    # conversation_context = format_chat_history(user_state.get("chat_history", []))
+    # evaluation = await evaluate_response(response, conversation_context)
     
-    if not evaluation.should_send:
-        # Use improved response if evaluation suggests
-        if evaluation.suggested_improvement:
-            response = evaluation.suggested_improvement
-        else:
-            response = "I apologize, let me rephrase that. " + response
+    # if not evaluation.should_send:
+    #     # Use improved response if evaluation suggests
+    #     if evaluation.suggested_improvement:
+    #         response = evaluation.suggested_improvement
+    #     else:
+    #         response = "I apologize, let me rephrase that. " + response
     
     # Save user state (unless resetting for testing)
     if not reset_user_state:
-        await save_user_state(
+        await modify_user_state(
             user_request.user_id,
             user_request.vendor_id,
             user_state
