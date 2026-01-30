@@ -43,6 +43,7 @@ class BaseAgent:
         instructions: Optional[str] = None,
         deps_type: Optional[type] = None,
         output_type: Optional[type] = None,
+        tools: Optional[List[Any]] = None,
     ):
         """
         Initialize base agent with model selection.
@@ -73,6 +74,8 @@ class BaseAgent:
             agent_kwargs["deps_type"] = deps_type
         if output_type:
             agent_kwargs["result_type"] = output_type
+        if tools:
+            agent_kwargs["tools"] = tools
 
         self.agent = Agent(self.model, **agent_kwargs)
 
