@@ -1,20 +1,50 @@
 from pydantic import BaseModel
-from typing import Optional, Dict, Union
+from typing import Optional, Dict, Union, Any
 from datetime import datetime
+
+
+class customer(BaseModel):
+    id: str
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+
+class BankAccount(BaseModel):
+    name: Optional[str] = None
+    number: Optional[str] = None
+    
+class Vendor(BaseModel):
+    id: str
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    bank_account: Optional[BankAccount] = None
+    
+class Logistics(BaseModel):
+    id: str
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    bank_account: Optional[BankAccount] = None
+    
+
+class Product(BaseModel):
+    id: str
+    name: str
+    quantity: int
+    price: float
+    metadata: Optional[Dict[str, Any]] = None
 
 class CentralAgentInput(BaseModel):
     """Input for central agent"""
     sender: str  # ["Agent", "Customer", "Vendor", "Logistics"]
-    recipient: str
-    business_id: Optional[str] = ""
-    customer_id: Optional[str] = ""
-    logistic_id: Optional[str] = ""
+    recipient: str # ["Agent", "Customer", "Vendor", "Logistics"]
+    business: Optional[Vendor] =None
+    customer: Optional[customer] =None
+    logistic: Optional[Logistics] =None
     message: str
-    product_name: str
-    price: Optional[str] = None
-    message_type: Optional[str] = None  # ["Logistic planning", "Customer Feedback", "Product Unavailable", "Payment Verification"]
-    customer_address: Optional[str] = None
-    customer_bank_details: Optional[str] = None
+    product: Optional[Product] =None
+
     
     def to_dict(self):
         return self.dict()
