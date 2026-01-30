@@ -21,7 +21,7 @@ class CentralAgentInput(BaseModel):
     customer_bank_details: Optional[str] = ""
 
 
-class customer(BaseModel):
+class Customer(BaseModel):
     id: str
     name: Optional[str] = None
     phone: Optional[str] = None
@@ -58,7 +58,7 @@ class Process(BaseModel):
     communication_history: Optional[List[Dict[str, Any]]] = None
     finished_tasks: Optional[List[str]] = None
     task_type: str
-    customer: customer
+    customer: Customer
     vendor: Vendor
     product: Product
     logistics: Logistics
@@ -69,28 +69,20 @@ async def create_structured_input(
     sender: str,
     recipient: str,
     message: str,
-    product_name: str,
-    price: str,
-    customer_id: Optional[str] = None,
-    business_id: Optional[str] = None,
-    customer_address: str = "",
-    bank_details: str = "",
-    message_type: Optional[str] = "",
-    logistic_id: Optional[str] = None
+    product: Optional[Product] =None,
+    customer: Optional[Customer] = None,
+    business: Optional[Vendor] = None,
+    logistic: Optional[Logistics] = None
 ) -> CentralAgentInput:
     """Create structured input for central agent"""
     return CentralAgentInput(
         sender=sender,
         recipient=recipient,
         message=message,
-        product_name=product_name,
-        price=price,
-        customer_id=customer_id,
-        business_id=business_id,
-        message_type=message_type,
-        customer_address=customer_address,
-        customer_bank_details=bank_details,
-        logistic_id=logistic_id
+        product=product,
+        customer=customer,
+        business=business,
+        logistic=logistic
     )
 
 
