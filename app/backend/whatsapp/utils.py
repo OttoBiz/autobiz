@@ -56,8 +56,8 @@ class WhatsappBot:
     """WhatsApp bot handler - modular and pluggable"""
     
     def __init__(self, page_access_token: Optional[str] = None, 
-                 app_secret: Optional[str] = None, 
-                 verify_token: Optional[str] = None):
+                app_secret: Optional[str] = None, 
+                verify_token: Optional[str] = None):
         self.page_access_token = page_access_token or PAGE_ACCESS_TOKEN
         self.app_secret = app_secret or APP_SECRET
         self.verify_token = verify_token or VERIFY_TOKEN
