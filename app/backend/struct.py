@@ -33,6 +33,7 @@ class Product(BaseModel):
     name: str
     quantity: int
     price: float
+    has_paid: bool = False
     metadata: Optional[Dict[str, Any]] = None
 
 class CentralAgentInput(BaseModel):
