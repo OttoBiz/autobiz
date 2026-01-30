@@ -61,6 +61,7 @@ async def chat(
     
     if stage == "Product Enquiry" or stage == "Product purchase":
         # Use product agent
+        
         response, user_state = await run_product_agent(
             customer_message=user_request.message,
             product_name=routing.product_name or "NONE",

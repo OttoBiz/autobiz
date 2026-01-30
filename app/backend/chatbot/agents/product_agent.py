@@ -10,13 +10,14 @@ from chatbot.utils.agent_utils import get_or_create_user_state, save_user_state,
 from backend.modules.products import get_products_by_business, search_products, get_product_images
 from backend.db.db_utils import get_products
 from backend.config import config
+from backend.chatbot.agents.upselling_agent import run_upselling_agent
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     TextPart,
     UserPromptPart,
 )
-
+from backend.db.cache_utils import get_user_state
 class ProductInfo(BaseModel):
     """Product information structure"""
     product_name: str
@@ -30,6 +31,7 @@ class ProductAgentDeps(BaseModel):
     """Dependencies for product agent"""
     user_id: str
     business_id: str
+    chat_history: Optional[List[Any]] = None
     # api_key: Optional[str] = None
 
 
@@ -77,7 +79,7 @@ async def get_business_payment_info(
     ctx: RunContext[ProductAgentDeps]
 ) -> Dict[str, str]:
     """Get business payment information"""
-    user_state = await get_or_create_user_state(
+    user_state = await get_user_state(
         ctx.deps.user_id,
         ctx.deps.business_id
     )
@@ -90,6 +92,11 @@ async def get_business_payment_info(
         "paystack_public_key": business_info.get("paystack_public_key", "")
     }
 
+@product_agent.tool
+async def upsell_products(
+    ctx: RunContext[ProductAgentDeps], product_name: str, category: Optional[str] = None, intent: str = "enquiry", **kwargs ) -> List[Dict[str, Any]]:
+    """Upsell products"""
+    return await run_upselling_agent(product_name, intent=intent, conversation_messages = ctx.deps.chat_history, business_id= ctx.deps.business_id, category=category, **kwargs) 
 
 async def run_product_agent(
     customer_message: str,
@@ -120,7 +127,7 @@ async def run_product_agent(
         Tuple of (response_message, updated_user_state)
     """
     if not user_state:
-        user_state = await get_or_create_user_state(user_id, business_id)
+        user_state = await get_user_state(user_id, business_id)
     
     # Get chat history
     chat_history = user_state.get("chat_history", [])
