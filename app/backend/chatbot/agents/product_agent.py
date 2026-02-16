@@ -6,7 +6,8 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 from .base_agent import BaseAgent
-from chatbot.utils.agent_utils import get_or_create_user_state, save_user_state, format_chat_history
+from backend.chatbot.utils.agent_utils import format_chat_history
+from backend.db.cache_utils import get_user_state, modify_user_state
 from backend.modules.products import get_products_by_business, search_products, get_product_images
 from backend.db.db_utils import get_products
 from backend.config import config
@@ -17,7 +18,10 @@ from pydantic_ai.messages import (
     TextPart,
     UserPromptPart,
 )
+
 from backend.db.cache_utils import get_user_state
+
+
 class ProductInfo(BaseModel):
     """Product information structure"""
     product_name: str
@@ -75,6 +79,18 @@ async def get_product_info(
 
 
 @product_agent.tool
+async def fetch_payment_link(
+    ctx: RunContext[ProductAgentDeps],
+    product_id: Optional[str] = None,
+    amount: Optional[float] = None
+) -> Optional[str]:
+    """Fetch payment link for product purchase. Returns None if not available (use bank transfer instead)."""
+    # TODO: Integrate with Paystack or other payment gateway
+    # For now, return None to use bank transfer
+    return None
+
+
+@product_agent.tool
 async def get_business_payment_info(
     ctx: RunContext[ProductAgentDeps]
 ) -> Dict[str, str]:
@@ -129,8 +145,30 @@ async def run_product_agent(
     if not user_state:
         user_state = await get_user_state(user_id, business_id)
     
+    # Get business info for dynamic system prompt
+    business_info = user_state.get("business_information", {})
+    if not business_info:
+        from backend.db.db_utils import get_business_info
+        business_info = await get_business_info(business_id) or {}
+        user_state["business_information"] = business_info
+    
     # Get chat history
     chat_history = user_state.get("chat_history", [])
+    
+    # Build dynamic system prompt with business account details
+    dynamic_prompt = ""
+    if business_info:
+        bank_details = []
+        if business_info.get("bank_name"):
+            bank_details.append(f"Bank Name: {business_info.get('bank_name')}")
+        if business_info.get("bank_account_name"):
+            bank_details.append(f"Account Name: {business_info.get('bank_account_name')}")
+        if business_info.get("bank_account_number"):
+            bank_details.append(f"Account Number: {business_info.get('bank_account_number')}")
+        
+        if bank_details:
+            dynamic_prompt = f"\n\n**Business Payment Details:**\n" + "\n".join(bank_details)
+            dynamic_prompt += "\n\nIf payment link is not available, provide these bank details for bank transfer."
     
     # Prepare prompt
     prompt_parts = [f"Customer message: {customer_message}"]
@@ -142,7 +180,7 @@ async def run_product_agent(
         
         if not product_cache.get("db_queried", False):
             # Query database for products
-            products = await get_products(name=product_name, category=product_category)
+            products = await get_products(name=product_name, category=product_category, business_id=business_id)
             product_cache = {
                 "retrieved_results": products,
                 "db_queried": True
@@ -153,37 +191,39 @@ async def run_product_agent(
         
         if products:
             products_info = "\n".join([
-                f"- {p.get('product_name', '')}: ${p.get('price', 0)} (Stock: {p.get('items_left_in_stock', 0)})"
+                f"- {p.get('name', p.get('product_name', ''))}: ${p.get('price', 0)} (Stock: {p.get('stock_quantity', p.get('items_left_in_stock', 0))})"
                 for p in products[:5]
             ])
             prompt_parts.append(f"\nAvailable products:\n{products_info}")
         else:
-            prompt_parts.append("\nNo matching products found in inventory.") ##TODO: Add upsell products
+            prompt_parts.append("\nNo matching products found in inventory.")
     
     if intent == "purchase":
-        prompt_parts.append("\nCustomer intent: Purchase - provide payment details.")
+        prompt_parts.append("\nCustomer intent: Purchase - try to fetch payment link first. If None, provide bank transfer details.")
     
     # Create dependencies
     deps = ProductAgentDeps(
         user_id=user_id or "",
         business_id=business_id or "",
-        api_key=api_key
+        chat_history=chat_history
     )
     
-    # Run agent
+    # Run agent with dynamic prompt
+    full_prompt = "\n".join(prompt_parts) + dynamic_prompt
+    
     result = await product_agent.run(
-        "\n".join(prompt_parts),
+        full_prompt,
         deps=deps,
-        message_history=chat_history
+        message_history=chat_history[-10:] if chat_history else None
     )
     
     response = result.output
     
     # Update user state
-    user_state["chat_history"].extend([
+    user_state.setdefault("chat_history", []).extend([
     ModelRequest(parts=[UserPromptPart(content=customer_message)]),
     ModelResponse(parts=[TextPart(content=response)])])
 
-    await save_user_state(user_id, business_id, user_state)
+    await modify_user_state(user_id, business_id, user_state)
     
     return response, user_state
