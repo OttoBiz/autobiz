@@ -2,12 +2,11 @@
 Customer Complaint Agent - Handles customer complaints and feedback
 Converted to pydantic_ai
 """
-from typing import Dict, Any, Optional
-from pydantic import BaseModel
-from pydantic_ai import Agent, RunContext
-from .base_agent import BaseAgent
-from chatbot.utils.agent_utils import get_or_create_user_state, save_user_state
+
+from typing import Any, Dict, Optional
+
 from fastapi import BackgroundTasks
+from pydantic import BaseModel
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
@@ -15,9 +14,14 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
+from backend.chatbot.utils.agent_utils import get_or_create_user_state, save_user_state
+
+from .base_agent import BaseAgent
+
 
 class CustomerComplaintDeps(BaseModel):
     """Dependencies for customer complaint agent"""
+
     user_id: str
     business_id: str
 
@@ -37,7 +41,7 @@ customer_complaint_agent_base = BaseAgent(
 **OBJECTIVE**
 - Resolve customer complaints efficiently.
 - Escalate to human agents when necessary.""",
-    deps_type=CustomerComplaintDeps
+    deps_type=CustomerComplaintDeps,
 )
 
 customer_complaint_agent = customer_complaint_agent_base.agent
@@ -51,11 +55,11 @@ async def run_customer_complaint_agent(
     user_state: Optional[Dict[str, Any]] = None,
     background_tasks: Optional[BackgroundTasks] = None,
     debug: bool = False,
-    **kwargs
+    **kwargs,
 ) -> tuple[str, Dict[str, Any]]:
     """
     Run customer complaint agent.
-    
+
     Args:
         complaint: Customer complaint message
         product_name: Product name related to complaint
@@ -64,31 +68,31 @@ async def run_customer_complaint_agent(
         user_state: Optional user state
         background_tasks: Background tasks
         debug: Debug mode
-        
+
     Returns:
         Tuple of (response_message, updated_user_state)
     """
     if not user_state:
         user_state = await get_or_create_user_state(user_id, business_id)
-    
-    deps = CustomerComplaintDeps(
-        user_id=user_id,
-        business_id=business_id
-    )
-    
+
+    deps = CustomerComplaintDeps(user_id=user_id, business_id=business_id)
+
     prompt = f"""Customer complaint: {customer_message}
 Product: {product_name}
 
 Address this complaint and provide resolution or escalate to human agent if needed."""
-    
+
     result = await customer_complaint_agent.run(prompt, deps=deps)
     response = result.output
-    
+
     # Update user state
-    user_state["chat_history"].append([
-    ModelRequest(parts=[UserPromptPart(content=customer_message)]),
-    ModelResponse(parts=[TextPart(content=response)])])
-    
+    user_state["chat_history"].append(
+        [
+            ModelRequest(parts=[UserPromptPart(content=customer_message)]),
+            ModelResponse(parts=[TextPart(content=response)]),
+        ]
+    )
+
     await save_user_state(user_id, business_id, user_state)
-    
+
     return response, user_state
