@@ -11,7 +11,7 @@ import aiofiles
 from pydantic import BaseModel, Field, ValidationError
 from pydantic_ai import RunContext
 
-from app.backend.chatbot.agents.central_agent_utils import (
+from backend.chatbot.agents.central_agent_utils import (
     Customer,
     Logistics,
     Product,

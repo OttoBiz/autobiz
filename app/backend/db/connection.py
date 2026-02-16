@@ -1,6 +1,10 @@
 import os
 from typing import Optional
+
 import asyncpg
+from dotenv import load_dotenv
+
+load_dotenv()
 
 _conn_pool: Optional[asyncpg.Pool] = None
 

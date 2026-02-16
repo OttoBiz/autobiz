@@ -1,37 +1,50 @@
-from typing import List, Union
+import json
 
-from redis.cluster import RedisCluster
-from redis import Redis
 # from .models import Chat
 # from dotenv import load_dotenv
 import os
-import json
+from datetime import date, datetime
+from decimal import Decimal
+from typing import List, Union
+from uuid import UUID
+
+from redis import Redis
+from redis.cluster import RedisCluster
 
 # load_dotenv()
 DEBUG = os.getenv("DEBUG")
 REDIS_URL = os.getenv("REDIS_URL")
 
 
+class JSONEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles UUID, Decimal, and datetime types"""
+
+    def default(self, obj):
+        if isinstance(obj, UUID):
+            return str(obj)
+        elif isinstance(obj, Decimal):
+            return float(obj)
+        elif isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        return super().default(obj)
+
+
 class Cache:
     def __init__(self, host, port, password):
         if DEBUG == "true":
             self._client = Redis(
-            host=host,
-            port=port,
-            password=password,
-            decode_responses=True)
+                host=host, port=port, password=password, decode_responses=True
+            )
         else:
             if REDIS_URL:
                 self._client = Redis.from_url(REDIS_URL)
             else:
                 self._client = RedisCluster(
-                    host=host,
-                    port=port,
-                    password=password,
-                    decode_responses=True)
+                    host=host, port=port, password=password, decode_responses=True
+                )
 
-    def set(self, key: str, val: dict) -> None: 
-        self._client.set(key, json.dumps(val))
+    def set(self, key: str, val: dict) -> None:
+        self._client.set(key, json.dumps(val, cls=JSONEncoder))
 
     def get(self, key: str) -> dict:
         value = self._client.get(key)
@@ -40,19 +53,20 @@ class Cache:
         else:
             return {}
 
-    def get_chat_history(self, session_id: str) -> Union[List]: #List[Chat],
+    def get_chat_history(self, session_id: str) -> Union[List]:  # List[Chat],
         chat_history = self._client.get(session_id)
         if chat_history:
             return json.loads(chat_history)
         else:
             return None
 
-    def set_chat_history(self, session_id: str, chat_history: Union[List]) -> None: #List[Chat], 
-        return self._client.set(session_id, json.dumps(chat_history))
-    
+    def set_chat_history(
+        self, session_id: str, chat_history: Union[List]
+    ) -> None:  # List[Chat],
+        return self._client.set(session_id, json.dumps(chat_history, cls=JSONEncoder))
+
     def delete(self, key: str) -> None:
         self._client.delete(key)
-    
+
     def flush_db(self):
         self._client.flushdb()
-    

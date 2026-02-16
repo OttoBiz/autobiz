@@ -2,16 +2,19 @@
 Product Agent - Handles product inquiries and purchases
 Converted to pydantic_ai
 """
-from typing import List, Dict, Any, Optional
+
+from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel
-from pydantic_ai import Agent, RunContext
-from .base_agent import BaseAgent
-from backend.chatbot.utils.agent_utils import format_chat_history
-from backend.db.cache_utils import get_user_state, modify_user_state
-from backend.modules.products import get_products_by_business, search_products, get_product_images
-from backend.db.db_utils import get_products
-from backend.config import config
+from pydantic_ai import RunContext
+
 from backend.chatbot.agents.upselling_agent import run_upselling_agent
+from backend.chatbot.utils.agent_utils import get_or_create_user_state, save_user_state
+from backend.db.cache_utils import get_user_state
+from backend.db.db_utils import get_products
+from backend.modules.products import get_product_images, get_products_by_business
+
+from .base_agent import BaseAgent
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
@@ -19,11 +22,9 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from backend.db.cache_utils import get_user_state
-
-
 class ProductInfo(BaseModel):
     """Product information structure"""
+
     product_name: str
     price: float
     items_in_stock: int
@@ -33,10 +34,10 @@ class ProductInfo(BaseModel):
 
 class ProductAgentDeps(BaseModel):
     """Dependencies for product agent"""
+
     user_id: str
     business_id: str
     chat_history: Optional[List[Any]] = None
-    # api_key: Optional[str] = None
 
 
 # Initialize product agent
@@ -49,7 +50,7 @@ product_agent_base = BaseAgent(
 - If no product matches, upsells other similar or relevant products.
 
 Keep your responses concise. Respond in a chat messaging style.""",
-    deps_type=ProductAgentDeps
+    deps_type=ProductAgentDeps,
 )
 
 product_agent = product_agent_base.agent
@@ -57,24 +58,28 @@ product_agent = product_agent_base.agent
 
 @product_agent.tool
 async def get_product_info(
-    ctx: RunContext[ProductAgentDeps],
-    product_name: str,
-    category: Optional[str] = None
+    ctx: RunContext[ProductAgentDeps], product_name: str, category: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     """Get product information from database with multimodal support"""
     if ctx.deps.business_id:
-        products = await get_products_by_business(ctx.deps.business_id, category=category)
+        products = await get_products_by_business(
+            ctx.deps.business_id, category=category
+        )
         # Filter by name
-        products = [p for p in products if product_name.lower() in p.get("product_name", "").lower()]
+        products = [
+            p
+            for p in products
+            if product_name.lower() in p.get("product_name", "").lower()
+        ]
     else:
         products = await get_products(name=product_name, category=category)
-    
+
     # Add image URLs for multimodal retrieval
     for product in products:
         if product.get("id"):
             images = await get_product_images(product["id"])
             product["image_urls"] = images
-    
+
     return products
 
 
@@ -82,52 +87,62 @@ async def get_product_info(
 async def fetch_payment_link(
     ctx: RunContext[ProductAgentDeps],
     product_id: Optional[str] = None,
-    amount: Optional[float] = None
+    amount: Optional[float] = None,
 ) -> Optional[str]:
     """Fetch payment link for product purchase. Returns None if not available (use bank transfer instead)."""
     # TODO: Integrate with Paystack or other payment gateway
-    # For now, return None to use bank transfer
     return None
 
 
 @product_agent.tool
 async def get_business_payment_info(
-    ctx: RunContext[ProductAgentDeps]
+    ctx: RunContext[ProductAgentDeps],
 ) -> Dict[str, str]:
     """Get business payment information"""
-    user_state = await get_user_state(
-        ctx.deps.user_id,
-        ctx.deps.business_id
-    )
+    user_state = await get_user_state(ctx.deps.user_id, ctx.deps.business_id)
     business_info = user_state.get("business_information", {})
-    
+
     return {
         "bank_name": business_info.get("bank_name", ""),
         "bank_account_number": business_info.get("bank_account_number", ""),
         "bank_account_name": business_info.get("bank_account_name", ""),
-        "paystack_public_key": business_info.get("paystack_public_key", "")
+        "paystack_public_key": business_info.get("paystack_public_key", ""),
     }
+
 
 @product_agent.tool
 async def upsell_products(
-    ctx: RunContext[ProductAgentDeps], product_name: str, category: Optional[str] = None, intent: str = "enquiry", **kwargs ) -> List[Dict[str, Any]]:
+    ctx: RunContext[ProductAgentDeps],
+    product_name: str,
+    category: Optional[str] = None,
+    intent: str = "enquiry",
+    **kwargs,
+) -> List[Dict[str, Any]]:
     """Upsell products"""
-    return await run_upselling_agent(product_name, intent=intent, conversation_messages = ctx.deps.chat_history, business_id= ctx.deps.business_id, category=category, **kwargs) 
+    return await run_upselling_agent(
+        product_name,
+        intent=intent,
+        conversation_messages=ctx.deps.chat_history,
+        business_id=ctx.deps.business_id,
+        category=category,
+        **kwargs,
+    )
+
 
 async def run_product_agent(
     customer_message: str,
     product_name: str,
     product_category: str,
     intent: str = "enquiry",
-    user_id: str = None,
-    business_id: str = None,
+    user_id: str = "",
+    business_id: str = "",
     user_state: Optional[Dict[str, Any]] = None,
     api_key: Optional[str] = None,
-    debug: bool = False
+    debug: bool = False,
 ) -> tuple[str, Dict[str, Any]]:
     """
     Run product agent to handle customer product inquiries.
-    
+
     Args:
         customer_message: Customer's message
         product_name: Name of the product inquired about
@@ -138,23 +153,24 @@ async def run_product_agent(
         user_state: Optional user state (will be fetched if not provided)
         api_key: Optional API key
         debug: Debug mode
-        
+
     Returns:
         Tuple of (response_message, updated_user_state)
     """
     if not user_state:
-        user_state = await get_user_state(user_id, business_id)
-    
+        user_state = await get_or_create_user_state(user_id, business_id)
+
     # Get business info for dynamic system prompt
     business_info = user_state.get("business_information", {})
     if not business_info:
         from backend.db.db_utils import get_business_info
+
         business_info = await get_business_info(business_id) or {}
         user_state["business_information"] = business_info
-    
+
     # Get chat history
     chat_history = user_state.get("chat_history", [])
-    
+
     # Build dynamic system prompt with business account details
     dynamic_prompt = ""
     if business_info:
@@ -165,65 +181,62 @@ async def run_product_agent(
             bank_details.append(f"Account Name: {business_info.get('bank_account_name')}")
         if business_info.get("bank_account_number"):
             bank_details.append(f"Account Number: {business_info.get('bank_account_number')}")
-        
+
         if bank_details:
-            dynamic_prompt = f"\n\n**Business Payment Details:**\n" + "\n".join(bank_details)
+            dynamic_prompt = "\n\n**Business Payment Details:**\n" + "\n".join(bank_details)
             dynamic_prompt += "\n\nIf payment link is not available, provide these bank details for bank transfer."
-    
+
     # Prepare prompt
     prompt_parts = [f"Customer message: {customer_message}"]
-    
+
     if product_name.strip() != "NONE":
         # Check if product was already queried
         products_cache = user_state.get("products", {})
         product_cache = products_cache.get(product_name, {})
-        
+
         if not product_cache.get("db_queried", False):
             # Query database for products
             products = await get_products(name=product_name, category=product_category, business_id=business_id)
-            product_cache = {
-                "retrieved_results": products,
-                "db_queried": True
-            }
+            product_cache = {"retrieved_results": products, "db_queried": True}
             user_state.setdefault("products", {})[product_name] = product_cache
-        
+
         products = product_cache.get("retrieved_results", [])
-        
+
         if products:
-            products_info = "\n".join([
-                f"- {p.get('name', p.get('product_name', ''))}: ${p.get('price', 0)} (Stock: {p.get('stock_quantity', p.get('items_left_in_stock', 0))})"
-                for p in products[:5]
-            ])
+            products_info = "\n".join(
+                [
+                    f"- {p.get('name', p.get('product_name', ''))}: ${p.get('price', 0)} (Stock: {p.get('stock_quantity', p.get('items_left_in_stock', 0))})"
+                    for p in products[:5]
+                ]
+            )
             prompt_parts.append(f"\nAvailable products:\n{products_info}")
         else:
-            prompt_parts.append("\nNo matching products found in inventory.")
-    
+            prompt_parts.append(
+                "\nNo matching products found in inventory."
+            )  ##TODO: Add upsell products
+
     if intent == "purchase":
         prompt_parts.append("\nCustomer intent: Purchase - try to fetch payment link first. If None, provide bank transfer details.")
-    
+
     # Create dependencies
     deps = ProductAgentDeps(
         user_id=user_id or "",
         business_id=business_id or "",
-        chat_history=chat_history
+        chat_history=chat_history,
     )
-    
+
     # Run agent with dynamic prompt
     full_prompt = "\n".join(prompt_parts) + dynamic_prompt
-    
-    result = await product_agent.run(
-        full_prompt,
-        deps=deps,
-        message_history=chat_history[-10:] if chat_history else None
-    )
-    
+
+    result = await product_agent.run(full_prompt, deps=deps)
+
     response = result.output
-    
-    # Update user state
-    user_state.setdefault("chat_history", []).extend([
+
+    # Update user state with serializable chat history
+    user_state["chat_history"].extend([
     ModelRequest(parts=[UserPromptPart(content=customer_message)]),
     ModelResponse(parts=[TextPart(content=response)])])
 
-    await modify_user_state(user_id, business_id, user_state)
-    
+    await save_user_state(user_id, business_id, user_state)
+
     return response, user_state

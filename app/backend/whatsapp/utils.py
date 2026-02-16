@@ -2,17 +2,20 @@
 WhatsApp Integration - Refactored for Pydantic AI agents
 Plug and play modularity for WhatsApp interface
 """
+
 import hashlib
 import hmac
 import json
-import os
-from typing import Union, Optional
-from urllib.parse import parse_qs
-from pydantic import BaseModel
-import requests
-from dotenv import load_dotenv
 import logging
+import os
+from typing import Optional, Union
+from urllib.parse import parse_qs
+
+import requests
 from backend.config import config
+from dotenv import load_dotenv
+from fastapi import UploadFile
+from pydantic import BaseModel
 
 load_dotenv()
 
@@ -27,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 class MessageRequest(BaseModel):
     """WhatsApp message request"""
+
     message: str
     sender_id: str
     recipient_id: str
@@ -34,6 +38,7 @@ class MessageRequest(BaseModel):
 
 class UserRequest(BaseModel):
     """User request from WhatsApp"""
+
     user_id: str
     vendor_id: str
     message: str
@@ -42,6 +47,7 @@ class UserRequest(BaseModel):
 
 class BusinessRequest(BaseModel):
     """Business request from WhatsApp"""
+
     sender: str
     message: str
     product_name: str
@@ -54,10 +60,13 @@ class BusinessRequest(BaseModel):
 
 class WhatsappBot:
     """WhatsApp bot handler - modular and pluggable"""
-    
-    def __init__(self, page_access_token: Optional[str] = None, 
-                app_secret: Optional[str] = None, 
-                verify_token: Optional[str] = None):
+
+    def __init__(
+        self,
+        page_access_token: Optional[str] = None,
+        app_secret: Optional[str] = None,
+        verify_token: Optional[str] = None,
+    ):
         self.page_access_token = page_access_token or PAGE_ACCESS_TOKEN
         self.app_secret = app_secret or APP_SECRET
         self.verify_token = verify_token or VERIFY_TOKEN
@@ -102,23 +111,25 @@ class WhatsappBot:
                 phone_number_id = messaging_events[0]["metadata"]["phone_number_id"]
                 message = messaging_events[0]["messages"][0]
                 sender_id = message["from"]
-                
-                await self.handle_message(sender_id, phone_number_id, message, background_task)
+
+                await self.handle_message(
+                    sender_id, phone_number_id, message, background_task
+                )
             except Exception as e:
                 logger.error(f"Error handling webhook: {e}")
                 return "Error processing webhook"
-        
+
         return "OK"
 
-    async def handle_message(self, sender_id: str, recipient_id: str, 
-                            message: dict, background_task) -> None:
+    async def handle_message(
+        self, sender_id: str, recipient_id: str, message: dict, background_task
+    ) -> None:
         """Handle incoming message with file support"""
-        from fastapi import UploadFile
         from io import BytesIO
-        
+
         message_text = ""
         files = []
-        
+
         if message.get("text"):
             message_text = message["text"]["body"]
         elif message.get("audio"):
@@ -130,7 +141,9 @@ class WhatsappBot:
             if audio_url:
                 file_obj = await self._download_file(audio_url, f"audio_{audio_id}.ogg")
                 if file_obj:
-                    files.append(UploadFile(file=file_obj, filename=f"audio_{audio_id}.ogg"))
+                    files.append(
+                        UploadFile(file=file_obj, filename=f"audio_{audio_id}.ogg")
+                    )
             message_text = "[Audio message - processing...]"
         elif message.get("image"):
             # Process image with media processing agent
@@ -141,7 +154,9 @@ class WhatsappBot:
             if image_url:
                 file_obj = await self._download_file(image_url, f"image_{image_id}.jpg")
                 if file_obj:
-                    files.append(UploadFile(file=file_obj, filename=f"image_{image_id}.jpg"))
+                    files.append(
+                        UploadFile(file=file_obj, filename=f"image_{image_id}.jpg")
+                    )
             message_text = "[Image message - processing...]"
         elif message.get("document"):
             # Process document with media processing agent
@@ -164,25 +179,27 @@ class WhatsappBot:
             user_id=sender_id,
             vendor_id=recipient_id,
             message=message_text or "File uploaded",
-            session_id=f"whatsapp-{sender_id}-{recipient_id}"
+            session_id=f"whatsapp-{sender_id}-{recipient_id}",
         )
 
         # Get response from chat interface with files
-        response = await self.get_response(request, background_task, files=files if files else None)
-        
+        response = await self.get_response(
+            request, background_task, files=files if files else None
+        )
+
         # Send response
         self.send_message(recipient_id, sender_id, response)
-    
+
     async def _get_media_url(self, media_id: str) -> Optional[str]:
         """Get media URL from WhatsApp API"""
         if not self.page_access_token:
             return None
-        
+
         try:
             response = requests.get(
                 f"https://graph.facebook.com/v18.0/{media_id}",
                 headers={"Authorization": f"Bearer {self.page_access_token}"},
-                timeout=10
+                timeout=10,
             )
             if response.status_code == 200:
                 data = response.json()
@@ -190,14 +207,20 @@ class WhatsappBot:
         except Exception as e:
             logger.error(f"Error getting media URL: {e}")
         return None
-    
+
     async def _download_file(self, url: str, filename: str):
         """Download file from URL and return file-like object"""
-        import httpx
         from io import BytesIO
+
+        import httpx
+
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get(url, headers={"Authorization": f"Bearer {self.page_access_token}"}, timeout=30)
+                response = await client.get(
+                    url,
+                    headers={"Authorization": f"Bearer {self.page_access_token}"},
+                    timeout=30,
+                )
                 if response.status_code == 200:
                     content = response.content
                     # Create file-like object
@@ -208,15 +231,21 @@ class WhatsappBot:
             logger.error(f"Error downloading file: {e}")
         return None
 
-    async def get_response(self, request: Union[UserRequest, BusinessRequest], 
-                          background_task, files: Optional[List[UploadFile]] = None) -> str:
+    async def get_response(
+        self,
+        request: Union[UserRequest, BusinessRequest],
+        background_task,
+        files: Optional[list[UploadFile]] = None,
+    ) -> str:
         """Get response from appropriate agent"""
         try:
-            from backend.chatbot.interface.user_chat_interface import chat
             from backend.chatbot.interface.business_chat_interface import business_chat
+            from backend.chatbot.interface.user_chat_interface import chat
 
             if isinstance(request, UserRequest):
-                response = await chat(request, background_task, reset_user_state=False, files=files)
+                response = await chat(
+                    request, background_task, reset_user_state=False, files=files
+                )
             elif isinstance(request, BusinessRequest):
                 response = await business_chat(request, background_task)
             else:
@@ -228,7 +257,9 @@ class WhatsappBot:
             logger.error(f"Error getting response: {e}")
             return "Sorry, I encountered an error. Please try again."
 
-    def send_message(self, phone_number_id: str, recipient_id: str, message: str) -> bool:
+    def send_message(
+        self, phone_number_id: str, recipient_id: str, message: str
+    ) -> bool:
         """Send WhatsApp message"""
         if not self.page_access_token or not phone_number_id:
             logger.warning("WhatsApp credentials not configured")
@@ -255,11 +286,13 @@ class WhatsappBot:
                 f"https://graph.facebook.com/v18.0/{phone_number_id}/messages",
                 json=payload,
                 headers=headers,
-                timeout=10
+                timeout=10,
             )
-            
+
             if response.status_code != 200:
-                logger.error(f"Failed to send message: {response.status_code} - {response.text}")
+                logger.error(
+                    f"Failed to send message: {response.status_code} - {response.text}"
+                )
                 return False
             else:
                 logger.info(f"Message sent successfully to {recipient_id}")
@@ -273,19 +306,15 @@ class WhatsappBot:
         if not self.app_secret:
             logger.warning("APP_SECRET not configured, skipping signature verification")
             return True  # Allow in development
-        
+
         if signature.startswith("sha256="):
             sha256 = hmac.new(
-                self.app_secret.encode("utf-8"),
-                request_body,
-                hashlib.sha256
+                self.app_secret.encode("utf-8"), request_body, hashlib.sha256
             ).hexdigest()
             return sha256 == signature[7:]
         elif signature.startswith("sha1="):
             sha1 = hmac.new(
-                self.app_secret.encode("utf-8"),
-                request_body,
-                hashlib.sha1
+                self.app_secret.encode("utf-8"), request_body, hashlib.sha1
             ).hexdigest()
             return sha1 == signature[5:]
         return False
