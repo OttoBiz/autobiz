@@ -1,8 +1,9 @@
 """
 User Chat Interface - Main entry point for customer conversations
-Updated to use pydantic_ai
+Updated to use pydantic_ai with file handling support
 """
-from fastapi import BackgroundTasks
+from fastapi import BackgroundTasks, UploadFile
+from typing import List, Optional, Dict, Any
 from backend.chatbot.agents.routing_agent import route_conversation
 from backend.chatbot.agents.product_agent import run_product_agent
 from backend.chatbot.agents.upselling_agent import run_upselling_agent
@@ -10,7 +11,8 @@ from backend.chatbot.agents.payment_verification_agent import run_verification_a
 from backend.chatbot.agents.customer_complaint_agent import run_customer_complaint_agent
 from backend.chatbot.agents.logistics_agent import run_logistics_agent
 from backend.chatbot.agents.evaluator_agent import evaluate_response, should_send_response
-from backend.chatbot.agents.agent_utils import get_or_create_user_state, save_user_state, format_chat_history
+from backend.chatbot.utils.agent_utils import get_or_create_user_state, save_user_state, format_chat_history
+from backend.chatbot.utils.file_handler import process_uploaded_files
 from backend.db.db_utils import get_business_info
 from backend.struct import UserRequest
 from backend.db.cache_utils import get_user_state, modify_user_state
@@ -20,7 +22,8 @@ async def chat(
     user_request: UserRequest,
     background_tasks: BackgroundTasks = None,
     reset_user_state: bool = False,
-    debug: bool = False
+    debug: bool = False,
+    files: Optional[List[UploadFile]] = None
 ) -> str:
     """
     Main chat function that routes customer messages to appropriate agents.
@@ -30,6 +33,7 @@ async def chat(
         background_tasks: Background tasks for async operations
         reset_user_state: Whether to reset user state (for testing)
         debug: Debug mode
+        files: Optional list of uploaded files
         
     Returns:
         Response message from the appropriate agent
@@ -45,9 +49,54 @@ async def chat(
     
     chat_history = user_state.get("chat_history", [])
     
+    # Process files if provided
+    file_content_summary = "*Uploaded Files By User"
+    receipt_data = None
+    
+    if files:
+        # Get product info from user state for receipt verification
+        products_cache = user_state.get("products", {})
+        expected_product = None
+        expected_amount = None
+        
+        # Try to get latest product info
+        if products_cache:
+            latest_product = list(products_cache.values())[0]
+            products = latest_product.get("retrieved_results", [])
+            if products:
+                expected_product = products[0].get("name") or products[0].get("product_name")
+                expected_amount = products[0].get("price")
+        
+        # Process files
+        processed_files = await process_uploaded_files(
+            files,
+            user_request.vendor_id,
+            user_request.user_id,
+            expected_product=expected_product,
+            expected_amount=expected_amount
+        )
+        
+        # Save processed files to user state
+        user_state.setdefault("uploaded_files", []).extend(processed_files)
+        
+        # Extract receipt data if available
+        for file_result in processed_files:
+            if file_result.get("extracted_content"):
+                file_content_summary += f"\nFile '{file_result['filename']}': {file_result['extracted_content']}"
+                
+                # Check if it's a receipt
+                if "receipt" in file_result.get("filename", "").lower() or "payment" in file_result.get("filename", "").lower():
+                    receipt_data = file_result.get("extracted_content")
+                    user_state["receipt_data"] = receipt_data
+    
+    # Combine message with file content
+    full_message = user_request.message
+    if file_content_summary:
+        full_message += "\n\n" + file_content_summary
+    
     # Route conversation to determine which agent to use
     routing = await route_conversation(
-        message=user_request.message,
+        message=full_message,
         chat_history=chat_history,
         business_id=user_request.vendor_id,
         user_id=user_request.user_id
@@ -61,9 +110,8 @@ async def chat(
     
     if stage == "Product Enquiry" or stage == "Product purchase":
         # Use product agent
-        
         response, user_state = await run_product_agent(
-            customer_message=user_request.message,
+            customer_message=full_message,
             product_name=routing.product_name or "NONE",
             product_category=routing.product_category or "",
             intent=routing.intent or "enquiry",
@@ -73,21 +121,22 @@ async def chat(
             debug=debug
         )
         
-    elif stage == "Payment verification":
-        # Use payment verification agent
+    elif stage == "Payment verification" or receipt_data:
+        # Use payment verification agent (especially if receipt was uploaded)
         response = await run_verification_agent(
-            customer_message=user_request.message,
+            customer_message=full_message,
             user_id=user_request.user_id,
             business_id=user_request.vendor_id,
             user_state=user_state,
             background_tasks=background_tasks,
+            receipt_data=receipt_data,
             debug=debug
         )
         
     elif stage == "Logistics":
         # Use logistics agent
         response = await run_logistics_agent(
-            customer_message=user_request.message,
+            customer_message=full_message,
             user_id=user_request.user_id,
             business_id=user_request.vendor_id,
             user_state=user_state,
@@ -98,7 +147,7 @@ async def chat(
     elif stage == "Customer complaint/Feedback":
         # Use customer complaint agent
         response, user_state = await run_customer_complaint_agent(
-            complaint=user_request.message,
+            complaint=full_message,
             product_name=routing.product_name or "",
             user_id=user_request.user_id,
             business_id=user_request.vendor_id,
@@ -110,7 +159,7 @@ async def chat(
     else:
         # General conversation - use product agent as fallback
         response, user_state = await run_product_agent(
-            customer_message=user_request.message,
+            customer_message=full_message,
             product_name="NONE",
             product_category="",
             intent="enquiry",
@@ -119,17 +168,6 @@ async def chat(
             user_state=user_state,
             debug=debug
         )
-    
-    # Evaluate response before sending
-    # conversation_context = format_chat_history(user_state.get("chat_history", []))
-    # evaluation = await evaluate_response(response, conversation_context)
-    
-    # if not evaluation.should_send:
-    #     # Use improved response if evaluation suggests
-    #     if evaluation.suggested_improvement:
-    #         response = evaluation.suggested_improvement
-    #     else:
-    #         response = "I apologize, let me rephrase that. " + response
     
     # Save user state (unless resetting for testing)
     if not reset_user_state:
