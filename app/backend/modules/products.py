@@ -2,44 +2,43 @@
 Products Module
 Handles product-related operations
 """
-from typing import List, Dict, Any, Optional
-from backend.db.database import get_db
-from backend.db.models import Product, Business
-from backend.db.db_utils import get_products as db_get_products
-from sqlalchemy import or_
+
+from typing import Any, Dict, List, Optional
+
+from backend.db.db_utils import (
+    get_product_by_id as db_get_product_by_id,
+)
+from backend.db.db_utils import (
+    get_products,
+)
+from backend.db.db_utils import (
+    search_products as db_search_products,
+)
+from backend.db.db_utils import (
+    update_product_stock as db_update_product_stock,
+)
 
 
 async def get_product_by_id(product_id: str) -> Optional[Dict[str, Any]]:
     """Get product by ID"""
-    with get_db() as db:
-        product = db.query(Product).filter(Product.id == product_id).first()
-        if product:
-            return product.to_dict()
-    return None
+    return await db_get_product_by_id(product_id)
 
 
 async def get_products_by_business(
-    business_id: str,
-    category: Optional[str] = None,
-    limit: int = 50
+    business_id: str, category: Optional[str] = None, limit: int = 50
 ) -> List[Dict[str, Any]]:
     """Get products by business ID"""
-    with get_db() as db:
-        query = db.query(Product).filter(Product.business_id == business_id)
-        if category:
-            query = query.filter(Product.product_category == category)
-        products = query.limit(limit).all()
-        return [p.to_dict() for p in products]
+    return await get_products(business_id=business_id, category=category)
 
 
 async def search_products(
     query: str,
     business_id: Optional[str] = None,
     category: Optional[str] = None,
-    limit: int = 20
+    limit: int = 20,
 ) -> List[Dict[str, Any]]:
     """Search products by query string"""
-    return await db_get_products(name=query, category=category)
+    return await db_search_products(query=query, business_id=business_id, limit=limit)
 
 
 async def get_product_images(product_id: str) -> List[str]:
@@ -50,13 +49,7 @@ async def get_product_images(product_id: str) -> List[str]:
     return []
 
 
-async def update_product_stock(product_id: str, quantity: int):
+async def update_product_stock(product_id: str, quantity: int) -> bool:
     """Update product stock"""
-    with get_db() as db:
-        product = db.query(Product).filter(Product.id == product_id).first()
-        if product:
-            product.items_in_stock = quantity
-            db.commit()
-            return True
-    return False
-
+    result = await db_update_product_stock(product_id, quantity)
+    return result is not None

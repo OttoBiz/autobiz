@@ -96,15 +96,13 @@ class BaseAgent:
             return GeminiModel(model_name, provider=GoogleGLAProvider(api_key=api_key))
         elif "claude" in model_name.lower():
             return AnthropicModel(
-                "claude-3-5-sonnet-latest", provider=AnthropicProvider(api_key=api_key)
+                model_name, provider=AnthropicProvider(api_key=api_key)
             )
         elif "gpt" in model_name.lower() or "openai" in model_name.lower():
-            return OpenAIModel("gpt-4o", provider=OpenAIProvider(api_key=api_key))
+            return OpenAIModel(model_name, provider=OpenAIProvider(api_key=api_key))
         else:
             # Default to Gemini
-            return GeminiModel(
-                "gemini-2.0-flash", provider=GoogleGLAProvider(api_key=api_key)
-            )
+            return GeminiModel(model_name, provider=GoogleGLAProvider(api_key=api_key))
 
     async def run(
         self,
@@ -151,5 +149,3 @@ class BaseAgent:
         return self.agent.run_sync(
             prompt, deps=deps, message_history=message_history, **kwargs
         )
-
-
