@@ -11,7 +11,12 @@ from pydantic import BaseModel
 from backend.chatbot.utils.agent_utils import get_or_create_user_state, save_user_state
 
 from .base_agent import BaseAgent
-
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
 
 class CustomerComplaintDeps(BaseModel):
     """Dependencies for customer complaint agent"""
@@ -80,12 +85,9 @@ Address this complaint and provide resolution or escalate to human agent if need
     response = result.output
 
     # Update user state
-    user_state["chat_history"].append(
-        {"role": "user", "name": "customer", "content": customer_message}
-    )
-    user_state["chat_history"].append(
-        {"role": "assistant", "name": "complaint_agent", "content": response}
-    )
+    user_state["chat_history"].extend([
+    ModelRequest(parts=[UserPromptPart(content=customer_message)]),
+    ModelResponse(parts=[TextPart(content=response)])])
 
     await save_user_state(user_id, business_id, user_state)
 
