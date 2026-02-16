@@ -1,0 +1,44 @@
+[
+  {
+    "timestamp": "2026-02-16T17:45:52.629322",
+    "agent_name": "evaluator_agent",
+    "test_id": "eval_good_response",
+    "description": "Good response \u2014 should approve",
+    "input_data": {
+      "response": "Thank you for your interest! The Ankara Maxi Dress is available in sizes S to XL, priced at 12,500 naira. Would you like to place an order?",
+      "context": "Customer asked about ankara dresses"
+    },
+    "expected": "should_send=True",
+    "actual_output": {
+      "appropriate": true,
+      "score": 8.0,
+      "feedback": "Pros: The reply is polite, concise, and gives key info (available sizes and price) with a clear call-to-action. Tone is friendly and professional and the message is easy to understand.\nCons: It narrows the answer to one specific style while the customer asked about \"ankara dresses\" (plural). It omits useful details customers commonly need: color/pattern options, fabric/care, size measurements or a size chart, photos/links, payment and shipping info, and whether the price is per piece. The currency symbol and whether price includes any fees is not clarified.\nOverall: Good short reply but could be improved by adding options and a brief follow-up question to better match the customer's broader query.",
+      "should_send": true,
+      "suggested_improvement": "Mention that the customer asked about ankara dresses generally, offer other styles or ask which style they mean, include color/pattern options, a size chart or measurements, photos or a product link, payment and shipping details, and clarify the price (per piece and include currency symbol). Example addition: \u201cWe have multiple Ankara styles \u2014 would you like photos? This Maxi Dress comes in S\u2013XL (see size chart), \u20a612,500 per piece; we have red/blue/green prints. Would you like to see pictures or place an order?\u201d"
+    },
+    "success": true,
+    "duration_ms": 14183.42,
+    "error": null
+  },
+  {
+    "timestamp": "2026-02-16T17:46:01.195637",
+    "agent_name": "evaluator_agent",
+    "test_id": "eval_rude_response",
+    "description": "Rude response \u2014 should reject",
+    "input_data": {
+      "response": "Why are you bothering me with this stupid question? Just look at the website.",
+      "context": "Customer asked about product availability"
+    },
+    "expected": "should_send=False",
+    "actual_output": {
+      "appropriate": false,
+      "score": 1.0,
+      "feedback": "The response is inappropriate and unprofessional. It is rude to the customer, provides no helpful information about product availability, and may alienate the customer. It fails on appropriateness, tone, accuracy (no factual answer), completeness, and clarity of assistance.",
+      "should_send": false,
+      "suggested_improvement": "Apologize and offer help. Example rewrite: \"Sorry \u2014 I can help with that. Which product are you asking about (name or SKU)? I can check current availability for you or send a link to the product page.\""
+    },
+    "success": true,
+    "duration_ms": 8565.54,
+    "error": null
+  }
+]

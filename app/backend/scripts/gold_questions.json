@@ -1,0 +1,117 @@
+{
+  "routing_agent": [
+    {
+      "id": "route_product_inquiry",
+      "input": "Do you have any ankara dresses in stock?",
+      "expected_stage": "Product Enquiry",
+      "description": "Product search by name"
+    },
+    {
+      "id": "route_purchase_intent",
+      "input": "I want to buy the wireless earbuds, how do I pay?",
+      "expected_stage": "Product purchase",
+      "description": "Purchase intent with payment question"
+    },
+    {
+      "id": "route_payment_notification",
+      "input": "I just transferred 15000 naira to your GTBank account for my order",
+      "expected_stage": "Payment verification",
+      "description": "Bank transfer notification"
+    },
+    {
+      "id": "route_delivery_tracking",
+      "input": "Where is my order? I placed it 3 days ago and haven't received it",
+      "expected_stage": "Logistics",
+      "description": "Delivery tracking request"
+    },
+    {
+      "id": "route_complaint",
+      "input": "The dress I received is the wrong size, I ordered L but got S",
+      "expected_stage": "Customer complaint/Feedback",
+      "description": "Product complaint — wrong size"
+    },
+    {
+      "id": "route_greeting",
+      "input": "Hello! Good afternoon",
+      "expected_stage": "General",
+      "description": "Casual greeting — should route to General"
+    }
+  ],
+  "product_agent": [
+    {
+      "id": "product_search_name",
+      "input": "Do you have any sneakers?",
+      "description": "Search by product name"
+    },
+    {
+      "id": "product_purchase_flow",
+      "input": "I want to buy the Slim Fit Chinos, size L. How do I pay?",
+      "description": "Purchase with payment request"
+    },
+    {
+      "id": "product_out_of_stock",
+      "input": "Do you have the Eyebrow Pencil?",
+      "description": "Out-of-stock item query (stock=0)"
+    }
+  ],
+  "payment_agent": [
+    {
+      "id": "payment_bank_transfer",
+      "input": "I transferred 25000 naira from my GTBank account 0123456789 to your account. The reference is TXN-123456.",
+      "description": "Detailed bank transfer notification"
+    },
+    {
+      "id": "payment_vague_claim",
+      "input": "I've paid already",
+      "description": "Vague payment claim — agent should ask for details"
+    }
+  ],
+  "upselling_agent": [
+    {
+      "id": "upsell_post_purchase",
+      "input": "Ankara Maxi Dress",
+      "intent": "purchased",
+      "description": "Post-purchase complementary suggestion"
+    },
+    {
+      "id": "upsell_alternative",
+      "input": "Mechanical Keyboard",
+      "intent": "inquired",
+      "description": "Pre-purchase alternative when item unavailable"
+    }
+  ],
+  "complaint_agent": [
+    {
+      "id": "complaint_wrong_size",
+      "input": "I ordered the Agbada Set in XL but received M. This is unacceptable!",
+      "product_name": "Agbada Set",
+      "description": "Wrong size complaint"
+    },
+    {
+      "id": "complaint_refund_demand",
+      "input": "I want a full refund immediately. The product is defective and I'm very upset.",
+      "product_name": "Wireless Earbuds",
+      "description": "Refund demand — should escalate to human agent"
+    },
+    {
+      "id": "complaint_damaged",
+      "input": "My package arrived damaged. The box was crushed and the ceramic vase inside is cracked.",
+      "product_name": "Ceramic Vase",
+      "description": "Damaged product during delivery"
+    }
+  ],
+  "evaluator_agent": [
+    {
+      "id": "eval_good_response",
+      "input": "Thank you for your interest! The Ankara Maxi Dress is available in sizes S to XL, priced at 12,500 naira. Would you like to place an order?",
+      "context": "Customer asked about ankara dresses",
+      "description": "Good response — should approve"
+    },
+    {
+      "id": "eval_rude_response",
+      "input": "Why are you bothering me with this stupid question? Just look at the website.",
+      "context": "Customer asked about product availability",
+      "description": "Rude response — should reject"
+    }
+  ]
+}
