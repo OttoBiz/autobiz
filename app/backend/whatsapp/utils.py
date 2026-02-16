@@ -112,53 +112,111 @@ class WhatsappBot:
 
     async def handle_message(self, sender_id: str, recipient_id: str, 
                             message: dict, background_task) -> None:
-        """Handle incoming message"""
+        """Handle incoming message with file support"""
+        from fastapi import UploadFile
+        from io import BytesIO
+        
         message_text = ""
+        files = []
         
         if message.get("text"):
             message_text = message["text"]["body"]
         elif message.get("audio"):
-            # TODO: Process audio with audio processing agent
+            # Process audio with audio processing agent
             audio_id = message["audio"]["id"]
             logger.info(f"Audio message received: {audio_id}")
+            # Download audio file
+            audio_url = await self._get_media_url(audio_id)
+            if audio_url:
+                file_obj = await self._download_file(audio_url, f"audio_{audio_id}.ogg")
+                if file_obj:
+                    files.append(UploadFile(file=file_obj, filename=f"audio_{audio_id}.ogg"))
             message_text = "[Audio message - processing...]"
         elif message.get("image"):
-            # TODO: Process image with media processing agent
+            # Process image with media processing agent
             image_id = message["image"]["id"]
             logger.info(f"Image message received: {image_id}")
+            # Download image file
+            image_url = await self._get_media_url(image_id)
+            if image_url:
+                file_obj = await self._download_file(image_url, f"image_{image_id}.jpg")
+                if file_obj:
+                    files.append(UploadFile(file=file_obj, filename=f"image_{image_id}.jpg"))
             message_text = "[Image message - processing...]"
         elif message.get("document"):
-            # TODO: Process document with media processing agent
+            # Process document with media processing agent
             doc_id = message["document"]["id"]
+            doc_name = message["document"].get("filename", f"document_{doc_id}")
             logger.info(f"Document message received: {doc_id}")
+            # Download document file
+            doc_url = await self._get_media_url(doc_id)
+            if doc_url:
+                file_obj = await self._download_file(doc_url, doc_name)
+                if file_obj:
+                    files.append(UploadFile(file=file_obj, filename=doc_name))
             message_text = "[Document message - processing...]"
 
-        if not message_text:
+        if not message_text and not files:
             return
 
         # Create request structure
         request = UserRequest(
             user_id=sender_id,
             vendor_id=recipient_id,
-            message=message_text,
+            message=message_text or "File uploaded",
             session_id=f"whatsapp-{sender_id}-{recipient_id}"
         )
 
-        # Get response from chat interface
-        response = await self.get_response(request, background_task)
+        # Get response from chat interface with files
+        response = await self.get_response(request, background_task, files=files if files else None)
         
         # Send response
         self.send_message(recipient_id, sender_id, response)
+    
+    async def _get_media_url(self, media_id: str) -> Optional[str]:
+        """Get media URL from WhatsApp API"""
+        if not self.page_access_token:
+            return None
+        
+        try:
+            response = requests.get(
+                f"https://graph.facebook.com/v18.0/{media_id}",
+                headers={"Authorization": f"Bearer {self.page_access_token}"},
+                timeout=10
+            )
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("url")
+        except Exception as e:
+            logger.error(f"Error getting media URL: {e}")
+        return None
+    
+    async def _download_file(self, url: str, filename: str):
+        """Download file from URL and return file-like object"""
+        import httpx
+        from io import BytesIO
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, headers={"Authorization": f"Bearer {self.page_access_token}"}, timeout=30)
+                if response.status_code == 200:
+                    content = response.content
+                    # Create file-like object
+                    file_obj = BytesIO(content)
+                    file_obj.name = filename
+                    return file_obj
+        except Exception as e:
+            logger.error(f"Error downloading file: {e}")
+        return None
 
     async def get_response(self, request: Union[UserRequest, BusinessRequest], 
-                          background_task) -> str:
+                          background_task, files: Optional[List[UploadFile]] = None) -> str:
         """Get response from appropriate agent"""
         try:
-            from backend.chatbot.agents.user_chat_interface import chat
-            from backend.chatbot.agents.business_chat_interface import business_chat
+            from backend.chatbot.interface.user_chat_interface import chat
+            from backend.chatbot.interface.business_chat_interface import business_chat
 
             if isinstance(request, UserRequest):
-                response = await chat(request, background_task, reset_user_state=False)
+                response = await chat(request, background_task, reset_user_state=False, files=files)
             elif isinstance(request, BusinessRequest):
                 response = await business_chat(request, background_task)
             else:
