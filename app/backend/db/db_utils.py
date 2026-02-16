@@ -4,13 +4,16 @@ Database utility functions using asyncpg for async PostgreSQL operations.
 Migrated from SQLAlchemy to asyncpg for better async performance and simpler queries.
 """
 
-from typing import List, Dict, Any, Optional
-from uuid import UUID
-import asyncpg
+from typing import Any, Dict, List, Optional
+
 from backend.db.connection import get_db
+from backend.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 ## PRODUCT FUNCTIONS
+
 
 async def get_products(
     business_id: str = None,
@@ -70,19 +73,25 @@ async def get_products(
 
     query += " ORDER BY created_at DESC"
 
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(query, *params)
-        return [dict(row) for row in rows]
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
+            return [dict(row) for row in rows]
+    except Exception:
+        logger.error(
+            "get_products_failed | business_id=%s name=%s",
+            business_id,
+            name,
+            exc_info=True,
+        )
+        return []
 
 
 async def search_products(
-    query: str,
-    business_id: str = None,
-    limit: int = 10,
-    offset: int = 0
+    query: str, business_id: str = None, limit: int = 10, offset: int = 0
 ) -> List[Dict[str, Any]]:
     """
-    Full-text search on products using PostgreSQL ts_vector.
+    Search products by query string (case-insensitive pattern matching).
 
     Args:
         query: Search query string
@@ -95,18 +104,15 @@ async def search_products(
     """
     pool = await get_db()
 
-    # Format query for PostgreSQL tsquery (OR operator)
-    formatted_query = " | ".join(query.split())
-
     sql_query = """
         SELECT id, business_id, name, description, price, stock_quantity,
-               sku, category, attributes, is_active, created_at, updated_at,
-               ts_rank(ts_vector, to_tsquery('english', $1)) as rank
+               sku, category, attributes, is_active, created_at, updated_at
         FROM products
-        WHERE ts_vector @@ to_tsquery('english', $1)
+        WHERE is_active = true
+          AND (name ILIKE $1 OR description ILIKE $1 OR category ILIKE $1)
     """
 
-    params = [formatted_query]
+    params = [f"%{query}%"]
     param_count = 2
 
     if business_id:
@@ -114,12 +120,23 @@ async def search_products(
         params.append(business_id)
         param_count += 1
 
-    sql_query += f" ORDER BY rank DESC LIMIT ${param_count} OFFSET ${param_count + 1}"
+    sql_query += (
+        f" ORDER BY created_at DESC LIMIT ${param_count} OFFSET ${param_count + 1}"
+    )
     params.extend([limit, offset])
 
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(sql_query, *params)
-        return [dict(row) for row in rows]
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(sql_query, *params)
+            return [dict(row) for row in rows]
+    except Exception:
+        logger.error(
+            "search_products_failed | query=%s business_id=%s",
+            query,
+            business_id,
+            exc_info=True,
+        )
+        return []
 
 
 async def get_product_by_id(product_id: str) -> Optional[Dict[str, Any]]:
@@ -139,6 +156,7 @@ async def get_product_by_id(product_id: str) -> Optional[Dict[str, Any]]:
 
 
 ## BUSINESS FUNCTIONS
+
 
 async def get_business_info(business_id: str) -> Optional[Dict[str, Any]]:
     """
@@ -170,9 +188,15 @@ async def get_business_info(business_id: str) -> Optional[Dict[str, Any]]:
         LIMIT 1
     """
 
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(query, business_id, business_id)
-        return dict(row) if row else None
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(query, business_id, business_id)
+            return dict(row) if row else None
+    except Exception:
+        logger.error(
+            "get_business_info_failed | business_id=%s", business_id, exc_info=True
+        )
+        return None
 
 
 async def get_business_by_handle(handle: str) -> Optional[Dict[str, Any]]:
@@ -210,6 +234,7 @@ async def get_business_by_handle(handle: str) -> Optional[Dict[str, Any]]:
 
 
 ## USER FUNCTIONS
+
 
 async def get_user_by_phone(phone_number: str) -> Optional[Dict[str, Any]]:
     """Get user by phone number."""
@@ -249,7 +274,7 @@ async def create_or_update_user(
     delivery_address: str = None,
     city: str = None,
     state: str = None,
-) -> Dict[str, Any]:
+) -> Dict[str, Any] | None:
     """
     Create a new user or update existing user information.
 
@@ -278,12 +303,21 @@ async def create_or_update_user(
                   created_at, updated_at
     """
 
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(query, phone_number, full_name, delivery_address, city, state)
-        return dict(row)
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                query, phone_number, full_name, delivery_address, city, state
+            )
+            return dict(row)
+    except Exception:
+        logger.error(
+            "create_or_update_user_failed | phone=%s", phone_number, exc_info=True
+        )
+        return None
 
 
 ## ORDER FUNCTIONS
+
 
 async def create_order(
     user_id: str,
@@ -312,9 +346,12 @@ async def create_order(
     pool = await get_db()
 
     # Generate order number (simple format: ORD-YYYYMMDD-XXXX)
-    from datetime import datetime
     import random
-    order_number = f"ORD-{datetime.now().strftime('%Y%m%d')}-{random.randint(1000, 9999)}"
+    from datetime import datetime
+
+    order_number = (
+        f"ORD-{datetime.now().strftime('%Y%m%d')}-{random.randint(1000, 9999)}"
+    )
 
     query = """
         INSERT INTO orders (
@@ -332,9 +369,14 @@ async def create_order(
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             query,
-            order_number, user_id, business_id, total_amount,
-            delivery_address, delivery_city, delivery_state,
-            metadata or {}
+            order_number,
+            user_id,
+            business_id,
+            total_amount,
+            delivery_address,
+            delivery_city,
+            delivery_state,
+            metadata or {},
         )
         return dict(row)
 
@@ -342,9 +384,9 @@ async def create_order(
 async def update_order_status(
     order_id: str,
     status: str,
-    tracking_number: str = None,
-    logistic_id: str = None,
-) -> Dict[str, Any]:
+    tracking_number: str = "",
+    logistic_id: str = "",
+) -> Dict[str, Any] | None:
     """
     Update order status and optionally assign logistics.
 
@@ -434,9 +476,7 @@ async def get_orders_by_user(user_id: str, limit: int = 10) -> List[Dict[str, An
 
 
 async def get_orders_by_business(
-    business_id: str,
-    status: str = None,
-    limit: int = 50
+    business_id: str, status: str = None, limit: int = 50
 ) -> List[Dict[str, Any]]:
     """Get orders for a business, optionally filtered by status."""
     pool = await get_db()
@@ -467,6 +507,7 @@ async def get_orders_by_business(
 
 
 ## TRANSACTION FUNCTIONS
+
 
 async def create_transaction(
     user_id: str,
@@ -519,9 +560,16 @@ async def create_transaction(
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             query,
-            user_id, business_id, amount, payment_method, order_id,
-            receipt_image_url, transaction_reference, bank_name,
-            account_number, metadata or {}
+            user_id,
+            business_id,
+            amount,
+            payment_method,
+            order_id,
+            receipt_image_url,
+            transaction_reference,
+            bank_name,
+            account_number,
+            metadata or {},
         )
         return dict(row)
 
@@ -592,7 +640,7 @@ async def get_transaction_by_id(transaction_id: str) -> Optional[Dict[str, Any]]
 
 
 async def get_transaction_by_reference(
-    transaction_reference: str
+    transaction_reference: str,
 ) -> Optional[Dict[str, Any]]:
     """Get transaction by reference number."""
     pool = await get_db()
@@ -613,121 +661,121 @@ async def get_transaction_by_reference(
 
 ## BUSINESS ANALYTICS FUNCTIONS
 
+
 async def get_business_analytics(
-    business_id: str,
-    start_date: str = None,
-    end_date: str = None
+    business_id: str, start_date: str = None, end_date: str = None
 ) -> Dict[str, Any]:
     """
     Get business analytics including sales, orders, and revenue.
-    
+
     Args:
         business_id: Business UUID
         start_date: Optional start date (ISO format)
         end_date: Optional end date (ISO format)
-        
+
     Returns:
         Dictionary with analytics data
     """
     pool = await get_db()
-    
+
     # Base query filters
     date_filter = ""
     params = [business_id]
     param_count = 2
-    
+
     if start_date:
         date_filter += f" AND t.created_at >= ${param_count}::timestamp"
         params.append(start_date)
         param_count += 1
-    
+
     if end_date:
         date_filter += f" AND t.created_at <= ${param_count}::timestamp"
         params.append(end_date)
         param_count += 1
-    
+
     # Total sales and transactions
     sales_query = f"""
-        SELECT 
+        SELECT
             COALESCE(SUM(t.amount), 0) as total_sales,
             COUNT(t.id) as total_transactions,
             COALESCE(AVG(t.amount), 0) as avg_transaction_value
         FROM transactions t
-        WHERE t.business_id = $1::uuid 
+        WHERE t.business_id = $1::uuid
           AND t.status = 'verified'
           {date_filter}
     """
-    
+
     # Order statistics
     orders_query = f"""
-        SELECT 
+        SELECT
             COUNT(o.id) as total_orders,
             COALESCE(SUM(o.total_amount), 0) as total_revenue,
             COUNT(CASE WHEN o.status = 'delivered' THEN 1 END) as delivered_orders,
             COUNT(CASE WHEN o.status = 'pending' THEN 1 END) as pending_orders
         FROM orders o
         WHERE o.business_id = $1::uuid
-          {date_filter.replace('t.created_at', 'o.created_at')}
+          {date_filter.replace("t.created_at", "o.created_at")}
     """
-    
+
     # Product performance
     products_query = f"""
-        SELECT 
+        SELECT
             p.name,
             p.id,
             COUNT(DISTINCT o.id) as order_count,
             COALESCE(SUM(o.total_amount), 0) as revenue
         FROM products p
-        LEFT JOIN orders o ON o.business_id = p.business_id 
+        LEFT JOIN orders o ON o.business_id = p.business_id
           AND o.metadata->>'product_id' = p.id::text
-          {date_filter.replace('t.created_at', 'o.created_at') if date_filter else ''}
+          {date_filter.replace("t.created_at", "o.created_at") if date_filter else ""}
         WHERE p.business_id = $1::uuid AND p.is_active = true
         GROUP BY p.id, p.name
         ORDER BY revenue DESC
         LIMIT 10
     """
-    
+
     async with pool.acquire() as conn:
         sales_row = await conn.fetchrow(sales_query, *params)
         orders_row = await conn.fetchrow(orders_query, *params)
         products_rows = await conn.fetch(products_query, *params)
-        
+
         return {
             "business_id": business_id,
             "sales": {
                 "total_sales": float(sales_row["total_sales"]),
                 "total_transactions": sales_row["total_transactions"],
-                "average_transaction_value": float(sales_row["avg_transaction_value"])
+                "average_transaction_value": float(sales_row["avg_transaction_value"]),
             },
             "orders": {
                 "total_orders": orders_row["total_orders"],
                 "total_revenue": float(orders_row["total_revenue"]),
                 "delivered_orders": orders_row["delivered_orders"],
-                "pending_orders": orders_row["pending_orders"]
+                "pending_orders": orders_row["pending_orders"],
             },
-            "top_products": [dict(row) for row in products_rows]
+            "top_products": [dict(row) for row in products_rows],
         }
 
 
 ## INVENTORY FUNCTIONS
 
+
 async def get_inventory(business_id: str) -> List[Dict[str, Any]]:
     """
     Get inventory information for a business.
-    
+
     Args:
         business_id: Business UUID
-        
+
     Returns:
         List of inventory items with stock levels
     """
     pool = await get_db()
-    
+
     query = """
-        SELECT 
+        SELECT
             id, name, description, price, stock_quantity,
             sku, category, is_active,
-            CASE 
+            CASE
                 WHEN stock_quantity <= 0 THEN 'out_of_stock'
                 WHEN stock_quantity <= 10 THEN 'low_stock'
                 ELSE 'in_stock'
@@ -736,28 +784,27 @@ async def get_inventory(business_id: str) -> List[Dict[str, Any]]:
         WHERE business_id = $1::uuid AND is_active = true
         ORDER BY stock_quantity ASC, name ASC
     """
-    
+
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, business_id)
         return [dict(row) for row in rows]
 
 
 async def update_product_stock(
-    product_id: str,
-    stock_quantity: int
+    product_id: str, stock_quantity: int
 ) -> Optional[Dict[str, Any]]:
     """
     Update product stock quantity.
-    
+
     Args:
         product_id: Product UUID
         stock_quantity: New stock quantity
-        
+
     Returns:
         Updated product dictionary or None if not found
     """
     pool = await get_db()
-    
+
     query = """
         UPDATE products
         SET stock_quantity = $2,
@@ -765,34 +812,36 @@ async def update_product_stock(
         WHERE id = $1::uuid
         RETURNING id, name, stock_quantity, sku, category, updated_at
     """
-    
+
     async with pool.acquire() as conn:
         row = await conn.fetchrow(query, product_id, stock_quantity)
         return dict(row) if row else None
 
 
-async def get_low_stock_products(business_id: str, threshold: int = 10) -> List[Dict[str, Any]]:
+async def get_low_stock_products(
+    business_id: str, threshold: int = 10
+) -> List[Dict[str, Any]]:
     """
     Get products with low stock levels.
-    
+
     Args:
         business_id: Business UUID
         threshold: Stock threshold (default 10)
-        
+
     Returns:
         List of products with stock below threshold
     """
     pool = await get_db()
-    
+
     query = """
         SELECT id, name, stock_quantity, sku, category
         FROM products
-        WHERE business_id = $1::uuid 
+        WHERE business_id = $1::uuid
           AND stock_quantity <= $2
           AND is_active = true
         ORDER BY stock_quantity ASC
     """
-    
+
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, business_id, threshold)
         return [dict(row) for row in rows]

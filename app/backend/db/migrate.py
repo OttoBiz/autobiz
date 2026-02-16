@@ -8,11 +8,12 @@ Usage:
 """
 
 import asyncio
-import asyncpg
 import os
 import sys
 from pathlib import Path
 from typing import List, Tuple
+
+import asyncpg
 
 
 class MigrationRunner:
@@ -120,7 +121,7 @@ class MigrationRunner:
                 print(f"\n✗ Migration {version} failed: {e}")
                 raise
 
-        print(f"\n✓ All migrations completed successfully")
+        print("\n✓ All migrations completed successfully")
 
     async def show_status(self):
         """Show migration status."""
@@ -147,7 +148,9 @@ class MigrationRunner:
                     version,
                 )
                 if result:
-                    applied_at = f" ({result['applied_at'].strftime('%Y-%m-%d %H:%M:%S')})"
+                    applied_at = (
+                        f" ({result['applied_at'].strftime('%Y-%m-%d %H:%M:%S')})"
+                    )
 
             print(f"{status:12} {version:03d}_{name}{applied_at}")
 
@@ -198,6 +201,9 @@ class MigrationRunner:
 async def main():
     """Main entry point."""
     # Get DATABASE_URL from environment
+    from dotenv import load_dotenv
+
+    load_dotenv()
     dsn = os.getenv("DATABASE_URL")
     if not dsn:
         print("✗ DATABASE_URL environment variable not set")
