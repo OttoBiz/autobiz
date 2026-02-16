@@ -24,6 +24,7 @@ class PaymentVerificationDeps(BaseModel):
     """Dependencies for payment verification agent"""
     user_id: str
     business_id: str
+    user_state: Optional[Dict[str, Any]] = None
     api_key: Optional[str] = None
 
 
@@ -42,11 +43,17 @@ payment_verification_agent_base = BaseAgent(
 2. Compare with business account details (bank name, account number, account name)
 3. Compare amount with product price
 4. If everything matches, notify vendor for final confirmation
-5. If mismatch, ask customer to verify details
+5. If mismatch, ask customer to verify details and resend the appropriate document or receipt.
 
 **OBJECTIVE**
 - Verify payment transactions accurately and efficiently.
-- Communicate clearly with all parties involved.""",
+- Communicate clearly with all parties involved.
+
+**IMPORTANT:** Only call notify_vendor_for_confirmation if:
+- Receipt account number matches business account number
+- Receipt account name matches business account name  
+- Receipt bank name matches business bank name
+- Receipt amount matches product price (allow small variance)""",
     deps_type=PaymentVerificationDeps
 )
 
@@ -58,14 +65,35 @@ async def notify_vendor_for_confirmation(
     ctx: RunContext[PaymentVerificationDeps],
     product_name: str,
     amount: float,
-    transaction_reference: Optional[str] = None,
+    transaction_reference: Optional[Dict[Any],str] = None,
     receipt_details: Optional[str] = None
 ) -> Dict[str, Any]:
     """Notify vendor to confirm payment verification"""
     # This will trigger central agent to send message to vendor
+    agent_input = await create_structured_input(
+        sender="agent",
+        recipient="vendor",
+        message=f"Payment verification request: Customer claims payment for product '{product_name}', Amount: ${amount}. Receipt details: {receipt_details}, Transaction reference: {transaction_reference}. Please confirm if payment was received.",
+        product_name=product_name,
+        price=str(amount) if amount else "",
+        customer_id=ctx.deps.user_id,
+        business_id=ctx.deps.business_id
+    )
+    
+    try:
+        await run_central_agent(
+            event_message = agent_input,
+                user_state=  ctx.deps.user_state,
+            )
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Error notifying vendor: {e}"
+        }
+    
     return {
         "status": "vendor_notified",
-        "message": "Vendor has been notified for payment confirmation"
+        "message": "Vendor has been notified for payment confirmation. Inform customer to wait for confirmation from vendor."
     }
 
 
@@ -139,76 +167,17 @@ async def run_verification_agent(
     dynamic_prompt = "\n".join(dynamic_prompt_parts)
     
     # Update agent system prompt dynamically
-    original_prompt = payment_verification_agent_base.system_prompt
-    updated_prompt = original_prompt + dynamic_prompt
+    payment_verification_agent_base.add_data(data=dynamic_prompt, chat_history=user_state.get("chat_history", []))
     
     # Create new agent instance with updated prompt (or use message history)
     deps = PaymentVerificationDeps(
         user_id=user_id,
-        business_id=business_id
+        business_id=business_id,
+        user_state=user_state
     )
     
-    # Build verification prompt
-    verification_prompt = f"""Customer message: {customer_message}
-
-{dynamic_prompt}
-
-**VERIFICATION TASK:**
-1. Extract payment details from the customer message and receipt data
-2. Compare receipt details with business account information above
-3. Compare payment amount with product price above
-4. If everything matches (account number, account name, bank name, and amount), use notify_vendor_for_confirmation tool to send message to vendor
-5. If there's a mismatch, ask customer to verify the details
-
-Receipt data: {receipt_data or 'Not provided'}
-
-**IMPORTANT:** Only call notify_vendor_for_confirmation if:
-- Receipt account number matches business account number
-- Receipt account name matches business account name  
-- Receipt bank name matches business bank name
-- Receipt amount matches product price (allow small variance)
-"""
-    
-    result = await payment_verification_agent.run(verification_prompt, deps=deps)
+    result = await payment_verification_agent.run(customer_message, deps=deps)
     response = result.output
-    
-    # Check if vendor notification was triggered via tool calls
-    vendor_notified = False
-    
-    # Check for tool calls in the result
-    if hasattr(result, 'data') and result.data:
-        tool_calls = result.data.get('tool_calls', [])
-        for call in tool_calls:
-            if isinstance(call, dict) and call.get('tool_name') == 'notify_vendor_for_confirmation':
-                vendor_notified = True
-                break
-    
-    # Also check if response indicates verification success and matches criteria
-    response_lower = response.lower()
-    if not vendor_notified and product_name and product_price:
-        # Check if response indicates successful verification
-        verification_keywords = ["verified", "match", "confirmed", "correct", "matches"]
-        if any(keyword in response_lower for keyword in verification_keywords):
-            # Trigger central agent to send message to vendor
-            if background_tasks:
-                agent_input = await create_structured_input(
-                    sender="agent",
-                    recipient="vendor",
-                    message=f"Payment verification request: Customer claims payment for product '{product_name}', Amount: ${product_price}. Receipt details: {receipt_data or customer_message}. Please confirm if payment was received.",
-                    product_name=product_name or "",
-                    price=str(product_price) if product_price else "",
-                    customer_id=user_id,
-                    business_id=business_id,
-                    message_type="Payment Verification"
-                )
-                background_tasks.add_task(
-                    run_central_agent,
-                    agent_input,
-                    user_state,
-                    vendor_only=True,
-                    debug=debug
-                )
-                vendor_notified = True
     
     # Update user state
     user_state.setdefault("chat_history", []).extend([
