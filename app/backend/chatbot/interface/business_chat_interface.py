@@ -114,6 +114,7 @@ async def get_low_stock_alerts(
 async def business_chat(
     business_request: BusinessRequest,
     background_tasks: BackgroundTasks,
+    api_key: Optional[str] = None,
     debug: bool = False
 ) -> Optional[str]:
     """
@@ -132,7 +133,7 @@ async def business_chat(
     
     chat_history = user_state.get("chat_history", [])
     
-    result = await business_chat_agent.run(business_request.message, deps=BusinessChatDeps(business_id=business_request.vendor_id, api_key=None),
+    result = await business_chat_agent.run(business_request.message, deps=BusinessChatDeps(business_id=business_request.vendor_id, api_key=api_key),
                                         message_history=chat_history    )
     
     # Update chat history
