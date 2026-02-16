@@ -7,12 +7,6 @@ from typing import Any, Dict, Optional
 
 from fastapi import BackgroundTasks
 from pydantic import BaseModel
-from pydantic_ai.messages import (
-    ModelRequest,
-    ModelResponse,
-    TextPart,
-    UserPromptPart,
-)
 
 from backend.chatbot.utils.agent_utils import get_or_create_user_state, save_user_state
 
@@ -87,10 +81,10 @@ Address this complaint and provide resolution or escalate to human agent if need
 
     # Update user state
     user_state["chat_history"].append(
-        [
-            ModelRequest(parts=[UserPromptPart(content=customer_message)]),
-            ModelResponse(parts=[TextPart(content=response)]),
-        ]
+        {"role": "user", "name": "customer", "content": customer_message}
+    )
+    user_state["chat_history"].append(
+        {"role": "assistant", "name": "complaint_agent", "content": response}
     )
 
     await save_user_state(user_id, business_id, user_state)
