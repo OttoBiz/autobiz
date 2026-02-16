@@ -36,8 +36,6 @@ async def customer_chat(
     Handle customer chat messages with file attachments.
     Supports images, PDFs, and audio files.
     """
-    # Process files if needed (for media processing agent)
-    # For now, just handle text message
     user_request = UserRequest(
         user_id=user_id,
         vendor_id=vendor_id,
@@ -46,7 +44,13 @@ async def customer_chat(
         msg_date_time=datetime.now()
     )
     
-    response = await chat(user_request, background_tasks, reset_user_state=False)
+    # Pass files to chat function
+    response = await chat(
+        user_request, 
+        background_tasks, 
+        reset_user_state=False,
+        files=files
+    )
     
     return {
         "message": response,
