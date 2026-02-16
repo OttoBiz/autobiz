@@ -4,6 +4,7 @@ Main FastAPI application for Ottobiz
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 import logging
 import os
@@ -89,6 +90,10 @@ app.include_router(analytics.router, prefix="/api/v1")
 app.include_router(inventory.router, prefix="/api/v1")
 app.include_router(supply_chain.router, prefix="/api/v1")
 app.include_router(whatsapp_router, prefix="/whatsapp")
+
+# Mount static files for uploads
+if os.path.exists("uploads"):
+    app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # Legacy endpoints for backward compatibility
 @app.post("/chat")
