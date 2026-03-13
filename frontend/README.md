@@ -2,24 +2,57 @@
 
 Next.js frontend for the Ottobiz platform.
 
-## Setup
+## Local Development Setup
 
-1. Install dependencies:
+### Prerequisites
+- Node.js 18+ installed
+- Backend running on `http://localhost:8000` (or update `.env.local`)
+
+### Quick Start
+
+1. **Install dependencies:**
 ```bash
+cd frontend
 npm install
 ```
 
-2. Create `.env.local`:
-```env
-NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
-```
+2. **Environment variables are already configured** (`.env.local` exists)
+   - Default backend URL: `http://localhost:8000`
+   - To change: Edit `frontend/.env.local`
 
-3. Run development server:
+3. **Start development server:**
 ```bash
 npm run dev
 ```
 
-4. Build for production:
+4. **Open browser:**
+   - Frontend: http://localhost:3000
+   - Make sure backend is running on http://localhost:8000
+
+### Testing Locally
+
+1. **Start Backend First:**
+```bash
+# In a separate terminal
+cd app
+uvicorn main:app --reload
+```
+
+2. **Start Frontend:**
+```bash
+# In frontend directory
+npm run dev
+```
+
+3. **Test the Application:**
+   - Open http://localhost:3000
+   - Select a user and business persona
+   - Start chatting in the customer window
+   - Test business chat, logistics chat
+   - Click analytics buttons to test endpoints
+
+### Build for Production
+
 ```bash
 npm run build
 npm start

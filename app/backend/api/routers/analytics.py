@@ -100,31 +100,89 @@ async def user_analytics(request: AnalyticsRequest):
         
         total_spent = sum(t.amount for t in transactions)
         purchase_count = len(transactions)
+        avg_order_value = total_spent / purchase_count if purchase_count > 0 else 0
         
-        # Get favorite categories
+        # Get orders with metadata
         orders = db.query(Order).filter(Order.user_id == request.user_id).all()
+        
+        # Calculate spending habits
+        spending_by_month = {}
+        spending_by_category = {}
+        
+        for order in orders:
+            # Monthly spending
+            if order.date_created:
+                month_key = order.date_created.strftime("%Y-%m")
+                spending_by_month[month_key] = spending_by_month.get(month_key, 0) + order.total_amount
+            
+            # Category spending (from metadata)
+            if order.metadata and isinstance(order.metadata, dict):
+                category = order.metadata.get("category", "uncategorized")
+                spending_by_category[category] = spending_by_category.get(category, 0) + order.total_amount
         
         # Get recent purchases
         recent_purchases = [
             {
                 "order_id": str(order.id),
+                "order_number": order.order_number if hasattr(order, 'order_number') else None,
                 "amount": order.total_amount,
+                "status": order.status if hasattr(order, 'status') else None,
                 "date": order.date_created.isoformat() if order.date_created else None
             }
-            for order in orders[-5:]
+            for order in sorted(orders, key=lambda x: x.date_created if x.date_created else datetime.min, reverse=True)[:5]
         ]
+        
+        # Determine spending pattern
+        spending_pattern = "moderate"
+        if purchase_count > 0:
+            if avg_order_value > 500:
+                spending_pattern = "high_value"
+            elif avg_order_value < 100:
+                spending_pattern = "budget_conscious"
+            
+            if purchase_count > 10:
+                spending_pattern += "_frequent"
+            elif purchase_count < 3:
+                spending_pattern += "_occasional"
+        
+        # Generate recommendations based on spending habits
+        recommendations = []
+        if purchase_count == 0:
+            recommendations = [
+                "Start exploring our product catalog",
+                "Check out our featured products",
+                "Sign up for exclusive deals"
+            ]
+        else:
+            top_category = max(spending_by_category.items(), key=lambda x: x[1])[0] if spending_by_category else None
+            if top_category:
+                recommendations.append(f"Based on your preferences, you might like more {top_category} products")
+            
+            if avg_order_value < 200:
+                recommendations.append("Consider bundling products for better value")
+            
+            if purchase_count > 5:
+                recommendations.append("You're a valued customer! Check out our loyalty rewards")
+            
+            recommendations.append("Browse our new arrivals and trending products")
     
     return {
         "user_id": request.user_id,
-        "spending": {
-            "total_spent": total_spent,
+        "spending_habits": {
+            "total_spent": float(total_spent),
             "purchase_count": purchase_count,
-            "average_order_value": total_spent / purchase_count if purchase_count > 0 else 0
+            "average_order_value": float(avg_order_value),
+            "spending_pattern": spending_pattern,
+            "spending_by_month": spending_by_month,
+            "spending_by_category": spending_by_category,
+            "favorite_category": max(spending_by_category.items(), key=lambda x: x[1])[0] if spending_by_category else None
         },
         "recent_purchases": recent_purchases,
-        "recommendations": [
-            "You might like similar products",
-            "Check out our new arrivals"
+        "recommendations": recommendations,
+        "insights": [
+            f"Average order value: ${avg_order_value:.2f}",
+            f"Total purchases: {purchase_count}",
+            f"Most active month: {max(spending_by_month.items(), key=lambda x: x[1])[0] if spending_by_month else 'N/A'}"
         ]
     }
 

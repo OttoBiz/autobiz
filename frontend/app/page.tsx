@@ -128,33 +128,57 @@ export default function Page() {
     scrollToBottom(logisticsMessagesEndRef)
   }, [logisticsMessages])
 
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || [])
+    setSelectedFiles((prev) => [...prev, ...files])
+    if (event.target) {
+      event.target.value = ""
+    }
+  }
+
+  const removeFile = (index: number) => {
+    setSelectedFiles((prev) => prev.filter((_, i) => i !== index))
+  }
+
   // Customer chat handlers
   const handleCustomerSend = async () => {
-    if (!customerInput.trim() || !selectedUser || !selectedBusiness) return
+    if ((!customerInput.trim() && selectedFiles.length === 0) || !selectedUser || !selectedBusiness) return
 
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
-      content: customerInput,
+      content: customerInput || "File(s) uploaded",
       sender: "user",
       timestamp: new Date(),
     }
 
     setCustomerMessages((prev) => [...prev, userMessage])
     const message = customerInput
+    const currentFiles = [...selectedFiles]
     setCustomerInput("")
+    setSelectedFiles([])
     setIsCustomerLoading(true)
 
     try {
+      const formData = new FormData()
+      formData.append("user_id", selectedUser.id)
+      formData.append("vendor_id", selectedBusiness.id)
+      formData.append("session_id", `session-${Date.now()}`)
+      formData.append("message", message)
+      
+      if (apiKey.trim()) {
+        formData.append("api_key", apiKey)
+      }
+
+      currentFiles.forEach((file) => {
+        formData.append("files", file)
+      })
+
       const response = await fetch(`${BACKEND_URL}/api/v1/customer/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_id: selectedUser.id,
-          vendor_id: selectedBusiness.id,
-          session_id: `session-${Date.now()}`,
-          message: message,
-          api_key: apiKey || undefined,
-        }),
+        body: formData,
       })
 
       const data = await response.json()
@@ -382,8 +406,12 @@ export default function Page() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <div className="flex justify-between items-center">
             <div className="flex items-center space-x-3">
-              <div className="flex items-center justify-center w-12 h-12 bg-gradient-to-r from-blue-500 to-purple-600 rounded-xl">
-                <ShoppingCart className="w-6 h-6 text-white" />
+              <div className="flex items-center justify-center w-12 h-12 rounded-xl overflow-hidden bg-white">
+                <img 
+                  src="/ottobiz.png" 
+                  alt="Ottobiz Logo" 
+                  className="w-full h-full object-contain"
+                />
               </div>
               <div>
                 <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
@@ -515,8 +543,42 @@ export default function Page() {
                 )}
               <div ref={customerMessagesEndRef} />
             </div>
+            {/* File Preview */}
+            {selectedFiles.length > 0 && (
+              <div className="px-4 pb-2">
+                <div className="flex flex-wrap gap-2">
+                  {selectedFiles.map((file, index) => (
+                    <div key={index} className="flex items-center space-x-2 bg-gray-100 rounded-lg px-2 py-1 text-xs">
+                      {file.type.startsWith("image/") ? (
+                        <ImageIcon className="w-3 h-3" />
+                      ) : file.type === "application/pdf" ? (
+                        <FileText className="w-3 h-3" />
+                      ) : (
+                        <Volume2 className="w-3 h-3" />
+                      )}
+                      <span className="truncate max-w-24">{file.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => removeFile(index)}
+                        className="text-red-500 hover:text-red-700"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="border-t p-3">
               <div className="flex space-x-2">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="p-2 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                  disabled={!canChat}
+                >
+                  <Paperclip className="w-4 h-4" />
+                </button>
                 <input
                   type="text"
                   value={customerInput}
@@ -528,13 +590,21 @@ export default function Page() {
                 />
                 <button
                   onClick={handleCustomerSend}
-                  disabled={!canChat || isCustomerLoading}
+                  disabled={!canChat || isCustomerLoading || (!customerInput.trim() && selectedFiles.length === 0)}
                   className="bg-blue-500 text-white px-4 py-2 rounded disabled:opacity-50"
                 >
                   <Send className="w-4 h-4" />
                 </button>
               </div>
             </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept="image/*,audio/*,.pdf,.doc,.docx,.txt"
+              onChange={handleFileSelect}
+              className="hidden"
+            />
               </div>
 
           {/* Business Chat */}

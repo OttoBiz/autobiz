@@ -119,32 +119,49 @@ async def business_chat(
 ) -> Optional[str]:
     """
     Handle business chat messages.
+    Supports both business owners and logistics companies.
     
     Args:
-        business_request: Business request
+        business_request: Business request (can be business or logistics)
         background_tasks: Background tasks
+        api_key: Optional API key
         debug: Debug mode
         
     Returns:
         Response message or None if handled in background
     """
-    # Get business state
-    user_state = await get_user_state(business_request.vendor_id, business_request.vendor_id) or {}
+    # Determine state key: use logistic_id if present (for logistics), otherwise vendor_id (for business)
+    state_key_id = business_request.logistic_id if business_request.logistic_id else business_request.vendor_id
+    state_key_type = "logistics" if business_request.logistic_id else "business"
+    
+    # Get state using appropriate key
+    user_state = await get_user_state(state_key_id, state_key_id) or {}
+    
+    # Initialize chat_history if not present
+    if "chat_history" not in user_state:
+        user_state["chat_history"] = []
     
     chat_history = user_state.get("chat_history", [])
     
-    result = await business_chat_agent.run(business_request.message, deps=BusinessChatDeps(business_id=business_request.vendor_id, api_key=api_key),
-                                        message_history=chat_history    )
+    # Run business chat agent
+    result = await business_chat_agent.run(
+        business_request.message, 
+        deps=BusinessChatDeps(business_id=business_request.vendor_id, api_key=api_key),
+        message_history=chat_history
+    )
     
     # Update chat history
     user_state["chat_history"].append(
-    ModelRequest(parts=[UserPromptPart(content=business_request.message)]))
-
+        ModelRequest(parts=[UserPromptPart(content=business_request.message)])
+    )
     
     if not result.for_central_agent:
         response = result.output        
-        user_state["chat_history"].append([ModelResponse(parts=[TextPart(content=response)])])
-        await modify_user_state(business_request.vendor_id, business_request.vendor_id, user_state)
+        user_state["chat_history"].append(
+            ModelResponse(parts=[TextPart(content=response)])
+        )
+        # Persist state using appropriate key
+        await modify_user_state(state_key_id, state_key_id, user_state)
         return response
     
     # Run central agent in background
@@ -156,5 +173,6 @@ async def business_chat(
         debug=debug
     )
     
-    await modify_user_state(business_request.vendor_id, business_request.vendor_id, user_state)
+    # Persist state using appropriate key
+    await modify_user_state(state_key_id, state_key_id, user_state)
     return "Message processed. Coordinating with relevant parties. You'll be notified when the message has been processed successfully or we need more information from you."

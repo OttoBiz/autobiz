@@ -27,7 +27,7 @@ class BusinessMessageRequest(BaseModel):
     msg_date_time: Optional[str] = None
 
 
-@router.post("/businessChat")
+@router.post("/chat")
 async def business_chat_endpoint(
     request: BusinessMessageRequest,
     background_tasks: BackgroundTasks
@@ -55,4 +55,13 @@ async def business_chat_endpoint(
         "message": response or "Message processed",
         "vendor_id": request.vendor_id
     }
+
+
+@router.post("/businessChat")
+async def business_chat_endpoint_legacy(
+    request: BusinessMessageRequest,
+    background_tasks: BackgroundTasks
+):
+    """Legacy endpoint - redirects to /chat"""
+    return await business_chat_endpoint(request, background_tasks)
 

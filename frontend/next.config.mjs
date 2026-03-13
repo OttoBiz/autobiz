@@ -7,12 +7,11 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
   images: {
-    domains: ["localhost", "a-health.onrender.com"],
+    domains: ["localhost"],
     unoptimized: true,
   },
-  env: {
-    NEXT_PUBLIC_BACKEND_URL: "https://a-health.onrender.com",
-  },
+  // Environment variables are loaded from .env.local
+  // NEXT_PUBLIC_BACKEND_URL defaults to http://localhost:8000 for local development
 }
 
 export default nextConfig
