@@ -25,7 +25,7 @@ class CustomerMessageRequest(BaseModel):
 @router.post("/chat")
 async def customer_chat(
     http_request: Request,
-    background_tasks: Optional[BackgroundTasks] = None
+    background_tasks: BackgroundTasks
 ):
     """
     Handle customer chat messages with file attachments.

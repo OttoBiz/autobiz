@@ -11,6 +11,7 @@ from pydantic_ai import RunContext
 
 from backend.chatbot.agents.central_agent import run_central_agent
 from backend.chatbot.agents.central_agent_utils import create_structured_input
+from backend.struct import Customer, Vendor
 from backend.chatbot.utils.agent_utils import get_or_create_user_state, save_user_state
 from backend.db.db_utils import get_business_info
 
@@ -69,19 +70,17 @@ async def notify_vendor_for_confirmation(
     ctx: RunContext[PaymentVerificationDeps],
     product_name: str,
     amount: float,
-    transaction_reference: Optional[Dict[Any],str] = None,
+    transaction_reference: Optional[Dict[Any, str]] = None,
     receipt_details: Optional[str] = None
 ) -> Dict[str, Any]:
     """Notify vendor to confirm payment verification"""
     # This will trigger central agent to send message to vendor
     agent_input = await create_structured_input(
-        sender="agent",
-        recipient="vendor",
+        sender="Agent",
+        recipient="Vendor",
         message=f"Payment verification request: Customer claims payment for product '{product_name}', Amount: ${amount}. Receipt details: {receipt_details}, Transaction reference: {transaction_reference}. Please confirm if payment was received.",
-        product_name=product_name,
-        price=str(amount) if amount else "",
-        customer_id=ctx.deps.user_id,
-        business_id=ctx.deps.business_id
+        customer=Customer(id=ctx.deps.user_id),
+        business=Vendor(id=ctx.deps.business_id),
     )
     
     try:

@@ -37,26 +37,26 @@ interface Persona {
 }
 
 const predefinedUsers: Persona[] = [
-  { id: "user-1", name: "John Doe" },
-  { id: "user-2", name: "Sarah Johnson" },
-  { id: "user-3", name: "Michael Chen" },
-  { id: "user-4", name: "Emily Rodriguez" },
-  { id: "user-5", name: "David Wilson" },
-  { id: "user-6", name: "Lisa Thompson" },
+  { id: "00000000-0000-0000-0000-000000000001", name: "John Doe" },
+  { id: "00000000-0000-0000-0000-000000000002", name: "Sarah Johnson" },
+  { id: "00000000-0000-0000-0000-000000000003", name: "Michael Chen" },
+  { id: "00000000-0000-0000-0000-000000000004", name: "Emily Rodriguez" },
+  { id: "00000000-0000-0000-0000-000000000005", name: "David Wilson" },
+  { id: "00000000-0000-0000-0000-000000000006", name: "Lisa Thompson" },
 ]
 
 const predefinedBusinesses: Persona[] = [
-  { id: "business-1", name: "Donrey Fashion" },
-  { id: "business-2", name: "Junae Cosmetics" },
-  { id: "business-3", name: "Manny Gadgets" },
-  { id: "business-4", name: "Tesla Tech" },
-  { id: "business-5", name: "Kemi Surprises" },
+  { id: "00000000-0000-0000-0001-000000000001", name: "Donrey Fashion" },
+  { id: "00000000-0000-0000-0001-000000000002", name: "Junae Cosmetics" },
+  { id: "00000000-0000-0000-0001-000000000003", name: "Manny Gadgets" },
+  { id: "00000000-0000-0000-0001-000000000004", name: "Tesla Tech" },
+  { id: "00000000-0000-0000-0001-000000000005", name: "Kemi Surprises" },
 ]
 
 const predefinedLogistics: Persona[] = [
-  { id: "logistics-1", name: "Fast Delivery Co" },
-  { id: "logistics-2", name: "Express Logistics" },
-  { id: "logistics-3", name: "Quick Ship" },
+  { id: "00000000-0000-0000-0002-000000000001", name: "Fast Delivery Co" },
+  { id: "00000000-0000-0000-0002-000000000002", name: "Express Logistics" },
+  { id: "00000000-0000-0000-0002-000000000003", name: "Quick Ship" },
 ]
 
 export default function Page() {
@@ -106,6 +106,10 @@ export default function Page() {
   const [supplyChainData, setSupplyChainData] = useState<any>(null)
   const [isLoadingAnalytics, setIsLoadingAnalytics] = useState(false)
 
+  const [customerSessionId, setCustomerSessionId] = useState(() => crypto.randomUUID())
+  const [businessSessionId, setBusinessSessionId] = useState(() => crypto.randomUUID())
+  const [logisticsSessionId, setLogisticsSessionId] = useState(() => crypto.randomUUID())
+
   const [apiKey, setApiKey] = useState("")
 
   const customerMessagesEndRef = useRef<HTMLDivElement>(null)
@@ -127,6 +131,46 @@ export default function Page() {
   useEffect(() => {
     scrollToBottom(logisticsMessagesEndRef)
   }, [logisticsMessages])
+
+  useEffect(() => {
+    if (!selectedBusiness && !selectedLogistics) return
+
+    const interval = setInterval(async () => {
+      if (selectedBusiness) {
+        try {
+          const res = await fetch(`${BACKEND_URL}/api/v1/business/inbox/${selectedBusiness.id}`)
+          const data = await res.json()
+          if (data.messages?.length > 0) {
+            const incoming = data.messages.map((m: { message: string; sender: string }, i: number) => ({
+              id: `inbox-${Date.now()}-${i}`,
+              content: `[From ${m.sender}] ${m.message}`,
+              sender: "ai" as const,
+              timestamp: new Date(),
+            }))
+            setBusinessMessages((prev) => [...prev, ...incoming])
+          }
+        } catch (_) {}
+      }
+
+      if (selectedLogistics) {
+        try {
+          const res = await fetch(`${BACKEND_URL}/api/v1/business/inbox/${selectedLogistics.id}`)
+          const data = await res.json()
+          if (data.messages?.length > 0) {
+            const incoming = data.messages.map((m: { message: string; sender: string }, i: number) => ({
+              id: `inbox-${Date.now()}-${i}`,
+              content: `[From ${m.sender}] ${m.message}`,
+              sender: "ai" as const,
+              timestamp: new Date(),
+            }))
+            setLogisticsMessages((prev) => [...prev, ...incoming])
+          }
+        } catch (_) {}
+      }
+    }, 3000)
+
+    return () => clearInterval(interval)
+  }, [selectedBusiness, selectedLogistics])
 
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -165,7 +209,7 @@ export default function Page() {
       const formData = new FormData()
       formData.append("user_id", selectedUser.id)
       formData.append("vendor_id", selectedBusiness.id)
-      formData.append("session_id", `session-${Date.now()}`)
+      formData.append("session_id", customerSessionId)
       formData.append("message", message)
       
       if (apiKey.trim()) {
@@ -226,7 +270,7 @@ export default function Page() {
         body: JSON.stringify({
           user_id: selectedUser?.id || "user-1",
           vendor_id: selectedBusiness.id,
-          session_id: `session-${Date.now()}`,
+          session_id: businessSessionId,
           sender: "business",
           message: message,
           product_name: "",
@@ -246,6 +290,7 @@ export default function Page() {
       setBusinessMessages((prev) => [...prev, aiMessage])
     } catch (error) {
       console.error("Error:", error)
+      setBusinessMessages((prev) => [...prev, { id: (Date.now() + 1).toString(), content: `Error: ${error instanceof Error ? error.message : "Unknown error"}`, sender: "ai", timestamp: new Date() }])
     } finally {
       setIsBusinessLoading(false)
     }
@@ -275,7 +320,7 @@ export default function Page() {
           user_id: selectedUser?.id || "user-1",
           vendor_id: selectedBusiness?.id || "business-1",
           logistic_id: selectedLogistics.id,
-          session_id: `session-${Date.now()}`,
+          session_id: logisticsSessionId,
           sender: "logistics",
           message: message,
           product_name: "",
@@ -295,6 +340,7 @@ export default function Page() {
       setLogisticsMessages((prev) => [...prev, aiMessage])
     } catch (error) {
       console.error("Error:", error)
+      setLogisticsMessages((prev) => [...prev, { id: (Date.now() + 1).toString(), content: `Error: ${error instanceof Error ? error.message : "Unknown error"}`, sender: "ai", timestamp: new Date() }])
     } finally {
       setIsLogisticsLoading(false)
     }
@@ -451,7 +497,7 @@ export default function Page() {
               {predefinedUsers.map((user) => (
                 <button
                   key={user.id}
-                  onClick={() => setSelectedUser(user)}
+                  onClick={() => { setSelectedUser(user); setCustomerSessionId(crypto.randomUUID()) }}
                   className={`p-2 rounded text-sm transition-all ${
                     selectedUser?.id === user.id
                       ? "bg-blue-500 text-white"
@@ -474,7 +520,7 @@ export default function Page() {
               {predefinedBusinesses.map((business) => (
                 <button
                   key={business.id}
-                  onClick={() => setSelectedBusiness(business)}
+                  onClick={() => { setSelectedBusiness(business); setBusinessSessionId(crypto.randomUUID()); setCustomerSessionId(crypto.randomUUID()) }}
                   className={`p-2 rounded text-sm transition-all ${
                     selectedBusiness?.id === business.id
                       ? "bg-green-500 text-white"
@@ -497,7 +543,7 @@ export default function Page() {
               {predefinedLogistics.map((logistics) => (
                 <button
                   key={logistics.id}
-                  onClick={() => setSelectedLogistics(logistics)}
+                  onClick={() => { setSelectedLogistics(logistics); setLogisticsSessionId(crypto.randomUUID()) }}
                   className={`p-2 rounded text-sm transition-all ${
                     selectedLogistics?.id === logistics.id
                       ? "bg-orange-500 text-white"

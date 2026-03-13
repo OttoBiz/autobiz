@@ -17,7 +17,7 @@ from backend.chatbot.agents.central_agent_utils import (
     Product,
     Vendor,
 )
-from backend.db.cache_utils import get_user_state
+from backend.db.cache_utils import get_user_state, push_to_inbox
 from backend.struct import CentralAgentInput
 from backend.whatsapp.utils import whatsapp
 
@@ -205,6 +205,24 @@ async def run_central_agent(
             {"role": "assistant", "name": response.sender, "content": response.message}
         )
 
+    # Push message to recipient's inbox for frontend polling
+    recipient_lower = response.recipient.lower()
+    if recipient_lower == "vendor":
+        recipient_id = getattr(event_message.business, "id", None)
+    elif recipient_lower == "logistics":
+        recipient_id = getattr(event_message.logistic, "id", None)
+    elif recipient_lower == "customer":
+        recipient_id = getattr(event_message.customer, "id", None)
+    else:
+        recipient_id = None
+
+    if recipient_id:
+        await push_to_inbox(recipient_id, {
+            "message": response.message,
+            "sender": response.sender,
+            "recipient": response.recipient,
+        })
+
     # Send WhatsApp message if configured
     try:
         sender_number = get_contact(response.sender, event_message)
@@ -219,7 +237,6 @@ async def run_central_agent(
         "message": response.message,
         "sender": response.sender,
         "recipient": response.recipient,
-        "finished": response.finished,
         "reasoning": response.reasoning,
     }
 

@@ -6,7 +6,7 @@ from fastapi import APIRouter
 from typing import Optional
 from pydantic import BaseModel
 from datetime import datetime, timedelta
-from backend.db.database import get_db
+from backend.db.connection import get_db
 from backend.db.models import Transaction, Order, User, Business
 from sqlalchemy import func, and_
 

@@ -46,3 +46,18 @@ async def delete_user_state(user_id, vendor_id):
             vendor_id,
             exc_info=True,
         )
+
+
+async def push_to_inbox(recipient_id: str, message: dict) -> None:
+    try:
+        redis_conn.push_to_list(f"inbox:{recipient_id}", message)
+    except Exception:
+        logger.error("inbox_push_failed | recipient_id=%s", recipient_id, exc_info=True)
+
+
+async def get_inbox(recipient_id: str) -> list:
+    try:
+        return redis_conn.pop_all_from_list(f"inbox:{recipient_id}")
+    except Exception:
+        logger.error("inbox_get_failed | recipient_id=%s", recipient_id, exc_info=True)
+        return []

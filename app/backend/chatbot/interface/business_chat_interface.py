@@ -52,7 +52,8 @@ business_chat_agent_base = BaseAgent(
 - Use analytics tools to provide data-driven insights
 - Use inventory tools to manage stock levels
 - Keep responses concise and actionable""",
-    deps_type=BusinessChatDeps
+    deps_type=BusinessChatDeps,
+    output_type=OutputBusinessChat
 )
 
 business_chat_agent = business_chat_agent_base.agent
@@ -66,12 +67,10 @@ async def get_business_analytics_tool(
     end_date: Optional[str] = None
 ) -> Dict[str, Any]:
     """Get business analytics including sales, orders, revenue, and top products"""
-    analytics = await get_business_analytics(
-        ctx.deps.business_id,
-        start_date=start_date,
-        end_date=end_date
-    )
-    return analytics
+    try:
+        return await get_business_analytics(ctx.deps.business_id, start_date=start_date, end_date=end_date)
+    except Exception as e:
+        return {"error": f"Analytics unavailable: {e}", "sales": {}, "orders": {}, "top_products": []}
 
 
 # Inventory Management Tools
@@ -80,8 +79,10 @@ async def get_inventory_info(
     ctx: RunContext[BusinessChatDeps]
 ) -> List[Dict[str, Any]]:
     """Get current inventory information including stock levels and status"""
-    inventory = await get_inventory(ctx.deps.business_id)
-    return inventory
+    try:
+        return await get_inventory(ctx.deps.business_id)
+    except Exception as e:
+        return [{"error": f"Inventory unavailable: {e}"}]
 
 
 @business_chat_agent.tool
@@ -91,14 +92,13 @@ async def update_product_availability(
     stock_quantity: int
 ) -> Dict[str, Any]:
     """Update product stock quantity/availability"""
-    updated = await update_product_stock(product_id, stock_quantity)
-    if not updated:
-        return {"error": "Product not found"}
-    return {
-        "success": True,
-        "product": updated,
-        "message": f"Stock updated to {stock_quantity} units"
-    }
+    try:
+        updated = await update_product_stock(product_id, stock_quantity)
+        if not updated:
+            return {"error": "Product not found"}
+        return {"success": True, "product": updated, "message": f"Stock updated to {stock_quantity} units"}
+    except Exception as e:
+        return {"error": f"Update failed: {e}"}
 
 
 @business_chat_agent.tool
@@ -107,8 +107,10 @@ async def get_low_stock_alerts(
     threshold: int = 10
 ) -> List[Dict[str, Any]]:
     """Get products with low stock levels that need restocking"""
-    low_stock = await get_low_stock_products(ctx.deps.business_id, threshold)
-    return low_stock
+    try:
+        return await get_low_stock_products(ctx.deps.business_id, threshold)
+    except Exception as e:
+        return [{"error": f"Low stock check unavailable: {e}"}]
 
 
 async def business_chat(
@@ -155,19 +157,19 @@ async def business_chat(
         ModelRequest(parts=[UserPromptPart(content=business_request.message)])
     )
     
-    if not result.for_central_agent:
-        response = result.output        
+    if not result.output.for_central_agent:
+        response = result.output.response
         user_state["chat_history"].append(
             ModelResponse(parts=[TextPart(content=response)])
         )
         # Persist state using appropriate key
         await modify_user_state(state_key_id, state_key_id, user_state)
         return response
-    
+
     # Run central agent in background
     background_tasks.add_task(
         run_central_agent,
-        result.agent_input,
+        result.output.agent_input,
         user_state,
         vendor_only=True,
         debug=debug

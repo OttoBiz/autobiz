@@ -9,10 +9,13 @@ from pydantic import BaseModel
 from pydantic_ai import RunContext
 
 from backend.chatbot.agents.upselling_agent import run_upselling_agent
+from backend.chatbot.agents.central_agent import run_central_agent
+from backend.chatbot.agents.central_agent_utils import create_structured_input
 from backend.chatbot.utils.agent_utils import get_or_create_user_state, save_user_state
 from backend.db.cache_utils import get_user_state
 from backend.db.db_utils import get_products
 from backend.modules.products import get_product_images, get_products_by_business
+from backend.struct import Customer, Vendor
 
 from .base_agent import BaseAgent
 from pydantic_ai.messages import (
@@ -42,14 +45,15 @@ class ProductAgentDeps(BaseModel):
 
 # Initialize product agent
 product_agent_base = BaseAgent(
-    system_prompt="""You are a vendor assistant that:
-- Provides relevant information to customer enquiries about products (price, stock availability, product attributes).
-- Provides payment details (bank details or payment links) when a customer intends to purchase a product.
-- Clarifies or asks about details and specific attributes of products to provide accurate information.
-- Matches existing products in the vendor's inventory for the best customer experience.
-- If no product matches, upsells other similar or relevant products.
+    system_prompt="""You are a vendor assistant. Your ONLY source of product information is the get_product_info tool.
 
-Keep your responses concise. Respond in a chat messaging style.""",
+RULES:
+- ALWAYS call get_product_info before answering any product question. Never invent or assume products.
+- Call get_product_info with no arguments to list all available products.
+- Only mention products that are returned by the tool. If the tool returns nothing, say the vendor has no matching products.
+- When a customer wants to purchase, fetch the payment link or provide bank transfer details.
+- If information is missing (no products listed, no payment details set up), call notify_vendor to send a message directly to the vendor — NEVER ask the customer to contact the owner manually.
+- Keep responses concise and conversational.""",
     deps_type=ProductAgentDeps,
 )
 
@@ -58,29 +62,22 @@ product_agent = product_agent_base.agent
 
 @product_agent.tool
 async def get_product_info(
-    ctx: RunContext[ProductAgentDeps], product_name: str, category: Optional[str] = None
+    ctx: RunContext[ProductAgentDeps], product_name: Optional[str] = None, category: Optional[str] = None
 ) -> List[Dict[str, Any]]:
-    """Get product information from database with multimodal support"""
-    if ctx.deps.business_id:
-        products = await get_products_by_business(
-            ctx.deps.business_id, category=category
+    """Get products for this vendor from the database. Call with no product_name to list all products."""
+    try:
+        products = await get_products(
+            business_id=ctx.deps.business_id,
+            name=product_name if product_name else None,
+            category=category,
         )
-        # Filter by name
-        products = [
-            p
-            for p in products
-            if product_name.lower() in p.get("product_name", "").lower()
-        ]
-    else:
-        products = await get_products(name=product_name, category=category)
-
-    # Add image URLs for multimodal retrieval
-    for product in products:
-        if product.get("id"):
-            images = await get_product_images(product["id"])
-            product["image_urls"] = images
-
-    return products
+        for product in products:
+            if product.get("id"):
+                images = await get_product_images(product["id"])
+                product["image_urls"] = images
+        return products
+    except Exception as e:
+        return [{"error": f"Could not fetch products: {e}"}]
 
 
 @product_agent.tool
@@ -108,6 +105,26 @@ async def get_business_payment_info(
         "bank_account_name": business_info.get("bank_account_name", ""),
         "paystack_public_key": business_info.get("paystack_public_key", ""),
     }
+
+
+@product_agent.tool
+async def notify_vendor(
+    ctx: RunContext[ProductAgentDeps],
+    message: str,
+) -> Dict[str, Any]:
+    """Send a message to the vendor via the central agent. Use this instead of drafting messages for the customer to send manually."""
+    try:
+        agent_input = await create_structured_input(
+            sender="Agent",
+            recipient="Vendor",
+            message=message,
+            customer=Customer(id=ctx.deps.user_id),
+            business=Vendor(id=ctx.deps.business_id),
+        )
+        await run_central_agent(event_message=agent_input)
+        return {"status": "vendor_notified", "message": "Message sent to vendor. The customer will be updated when the vendor responds."}
+    except Exception as e:
+        return {"status": "error", "message": f"Could not reach vendor: {e}"}
 
 
 @product_agent.tool
@@ -189,31 +206,32 @@ async def run_product_agent(
     # Prepare prompt
     prompt_parts = [f"Customer message: {customer_message}"]
 
-    if product_name.strip() != "NONE":
-        # Check if product was already queried
-        products_cache = user_state.get("products", {})
-        product_cache = products_cache.get(product_name, {})
+    # Always fetch products for this vendor — use product_name filter when specific, else fetch all
+    cache_key = product_name if product_name.strip() != "NONE" else "__all__"
+    products_cache = user_state.get("products", {})
+    product_cache = products_cache.get(cache_key, {})
 
-        if not product_cache.get("db_queried", False):
-            # Query database for products
-            products = await get_products(name=product_name, category=product_category, business_id=business_id)
-            product_cache = {"retrieved_results": products, "db_queried": True}
-            user_state.setdefault("products", {})[product_name] = product_cache
+    if not product_cache.get("db_queried", False):
+        name_filter = product_name if product_name.strip() != "NONE" else None
+        try:
+            products = await get_products(name=name_filter, category=product_category or None, business_id=business_id)
+        except Exception:
+            products = []
+        product_cache = {"retrieved_results": products, "db_queried": True}
+        user_state.setdefault("products", {})[cache_key] = product_cache
 
-        products = product_cache.get("retrieved_results", [])
+    products = product_cache.get("retrieved_results", [])
 
-        if products:
-            products_info = "\n".join(
-                [
-                    f"- {p.get('name', p.get('product_name', ''))}: ${p.get('price', 0)} (Stock: {p.get('stock_quantity', p.get('items_left_in_stock', 0))})"
-                    for p in products[:5]
-                ]
-            )
-            prompt_parts.append(f"\nAvailable products:\n{products_info}")
-        else:
-            prompt_parts.append(
-                "\nNo matching products found in inventory."
-            )  ##TODO: Add upsell products
+    if products:
+        products_info = "\n".join(
+            [
+                f"- {p.get('name', p.get('product_name', ''))}: ${p.get('price', 0)} (Stock: {p.get('stock_quantity', p.get('items_left_in_stock', 0))})"
+                for p in products[:10]
+            ]
+        )
+        prompt_parts.append(f"\nVendor's products from database:\n{products_info}")
+    else:
+        prompt_parts.append("\nNo products found in this vendor's inventory.")
 
     if intent == "purchase":
         prompt_parts.append("\nCustomer intent: Purchase - try to fetch payment link first. If None, provide bank transfer details.")

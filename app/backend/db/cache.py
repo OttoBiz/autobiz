@@ -68,5 +68,13 @@ class Cache:
     def delete(self, key: str) -> None:
         self._client.delete(key)
 
+    def push_to_list(self, key: str, value: dict) -> None:
+        self._client.rpush(key, json.dumps(value, cls=JSONEncoder))
+
+    def pop_all_from_list(self, key: str) -> list:
+        items = self._client.lrange(key, 0, -1)
+        self._client.delete(key)
+        return [json.loads(item) for item in items]
+
     def flush_db(self):
         self._client.flushdb()

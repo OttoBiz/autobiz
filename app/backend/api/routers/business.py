@@ -6,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks
 from typing import Optional
 from pydantic import BaseModel
 from backend.chatbot.interface.business_chat_interface import business_chat
+from backend.db.cache_utils import get_inbox
 from backend.struct import BusinessRequest
 from datetime import datetime
 
@@ -55,6 +56,13 @@ async def business_chat_endpoint(
         "message": response or "Message processed",
         "vendor_id": request.vendor_id
     }
+
+
+@router.get("/inbox/{vendor_id}")
+async def get_vendor_inbox(vendor_id: str):
+    """Poll for messages sent to this vendor by the central agent."""
+    messages = await get_inbox(vendor_id)
+    return {"vendor_id": vendor_id, "messages": messages}
 
 
 @router.post("/businessChat")
