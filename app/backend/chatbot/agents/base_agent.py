@@ -3,11 +3,19 @@ Base Agent Class for Ottobiz
 All agents inherit from this base class which provides common functionality.
 """
 
+import os
+import logfire
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 from datetime import datetime
 
 from pydantic_ai import Agent
+
+logfire.configure(
+    token=os.getenv("LOGFIRE_TOKEN"),
+    send_to_logfire="if-token-present",
+)
+logfire.instrument_pydantic_ai()
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.gemini import GeminiModel
 from pydantic_ai.models.openai import OpenAIModel

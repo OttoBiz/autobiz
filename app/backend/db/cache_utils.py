@@ -1,4 +1,5 @@
 from backend.logging_config import get_logger
+from pydantic_ai.messages import ModelMessagesTypeAdapter
 
 from .cache import Cache
 from .config import REDIS_SERVER_HOST, REDIS_SERVER_PASSWORD, REDIS_SERVER_PORT
@@ -13,6 +14,13 @@ redis_conn = Cache(
 async def get_user_state(user_id, vendor_id, session_id=None):
     try:
         user_state = redis_conn.get(f"{user_id}:{vendor_id}")
+        if user_state and "chat_history" in user_state:
+            raw = user_state["chat_history"]
+            if raw and isinstance(raw[0], dict):
+                try:
+                    user_state["chat_history"] = ModelMessagesTypeAdapter.validate_python(raw)
+                except Exception:
+                    user_state["chat_history"] = []
         return user_state
     except Exception:
         logger.error(

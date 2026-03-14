@@ -8,6 +8,8 @@ from decimal import Decimal
 from typing import List, Union
 from uuid import UUID
 
+from pydantic import BaseModel as PydanticBaseModel
+
 from redis import Redis
 from redis.cluster import RedisCluster
 
@@ -26,6 +28,8 @@ class JSONEncoder(json.JSONEncoder):
             return float(obj)
         elif isinstance(obj, (datetime, date)):
             return obj.isoformat()
+        elif isinstance(obj, PydanticBaseModel):
+            return obj.model_dump(mode="json")
         return super().default(obj)
 
 
