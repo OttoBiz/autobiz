@@ -29,6 +29,9 @@ interface ChatMessage {
   content: string
   sender: "user" | "ai"
   timestamp: Date
+  customer_id?: string
+  product_name?: string
+  order_id?: string
 }
 
 interface Persona {
@@ -141,12 +144,18 @@ export default function Page() {
           const res = await fetch(`${BACKEND_URL}/api/v1/business/inbox/${selectedBusiness.id}`)
           const data = await res.json()
           if (data.messages?.length > 0) {
-            const incoming = data.messages.map((m: { message: string; sender: string }, i: number) => ({
-              id: `inbox-${Date.now()}-${i}`,
-              content: `[From ${m.sender}] ${m.message}`,
-              sender: "ai" as const,
-              timestamp: new Date(),
-            }))
+            const incoming = data.messages.map((m: { message: string; sender: string; customer_id?: string; product_name?: string; order_id?: string }, i: number) => {
+              const ctx = [m.customer_id, m.product_name, m.order_id].filter(Boolean).join(" · ")
+              return {
+                id: `inbox-${Date.now()}-${i}`,
+                content: ctx ? `[Re: ${ctx}] [From ${m.sender}] ${m.message}` : `[From ${m.sender}] ${m.message}`,
+                sender: "ai" as const,
+                timestamp: new Date(),
+                customer_id: m.customer_id,
+                product_name: m.product_name,
+                order_id: m.order_id,
+              }
+            })
             setBusinessMessages((prev) => [...prev, ...incoming])
           }
         } catch (_) {}
@@ -154,15 +163,21 @@ export default function Page() {
 
       if (selectedLogistics) {
         try {
-          const res = await fetch(`${BACKEND_URL}/api/v1/business/inbox/${selectedLogistics.id}`)
+          const res = await fetch(`${BACKEND_URL}/api/v1/logistics/inbox/${selectedLogistics.id}`)
           const data = await res.json()
           if (data.messages?.length > 0) {
-            const incoming = data.messages.map((m: { message: string; sender: string }, i: number) => ({
-              id: `inbox-${Date.now()}-${i}`,
-              content: `[From ${m.sender}] ${m.message}`,
-              sender: "ai" as const,
-              timestamp: new Date(),
-            }))
+            const incoming = data.messages.map((m: { message: string; sender: string; customer_id?: string; product_name?: string; order_id?: string }, i: number) => {
+              const ctx = [m.customer_id, m.product_name, m.order_id].filter(Boolean).join(" · ")
+              return {
+                id: `inbox-${Date.now()}-${i}`,
+                content: ctx ? `[Re: ${ctx}] [From ${m.sender}] ${m.message}` : `[From ${m.sender}] ${m.message}`,
+                sender: "ai" as const,
+                timestamp: new Date(),
+                customer_id: m.customer_id,
+                product_name: m.product_name,
+                order_id: m.order_id,
+              }
+            })
             setLogisticsMessages((prev) => [...prev, ...incoming])
           }
         } catch (_) {}
@@ -268,14 +283,15 @@ export default function Page() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          user_id: selectedUser?.id || "user-1",
+          user_id: businessReplyContext?.customerId || selectedUser?.id || "user-1",
           vendor_id: selectedBusiness.id,
           session_id: businessSessionId,
           sender: "business",
           message: message,
-          product_name: "",
+          product_name: businessReplyContext?.productName || "",
           product_price: "",
           message_type: "General",
+          order_id: businessReplyContext?.orderId || undefined,
           api_key: apiKey || undefined,
         }),
       })
@@ -317,15 +333,16 @@ export default function Page() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          user_id: selectedUser?.id || "user-1",
+          user_id: logisticsReplyContext?.customerId || selectedUser?.id || "user-1",
           vendor_id: selectedBusiness?.id || "business-1",
           logistic_id: selectedLogistics.id,
           session_id: logisticsSessionId,
           sender: "logistics",
           message: message,
-          product_name: "",
+          product_name: logisticsReplyContext?.productName || "",
           product_price: "",
           message_type: "Logistic planning",
+          order_id: logisticsReplyContext?.orderId || undefined,
           api_key: apiKey || undefined,
         }),
       })
@@ -659,6 +676,12 @@ export default function Page() {
               <Building2 className="w-5 h-5" />
               <h3 className="font-semibold">Business Chat</h3>
             </div>
+            {businessReplyContext && (
+              <div className="px-4 py-1 bg-green-50 border-b text-xs text-green-700 flex items-center justify-between">
+                <span>Replying to: {businessReplyContext.customerId}{businessReplyContext.productName ? ` · ${businessReplyContext.productName}` : ""}</span>
+                <button type="button" onClick={() => setBusinessReplyContext(null)} className="text-green-600 hover:underline">Clear</button>
+              </div>
+            )}
             <div className="flex-1 overflow-y-auto p-4 space-y-2">
               {businessMessages.map((msg) => (
                 <div
@@ -670,7 +693,9 @@ export default function Page() {
                       msg.sender === "user"
                         ? "bg-green-500 text-white"
                         : "bg-gray-100 text-gray-800"
-                    }`}
+                    } ${msg.customer_id ? "cursor-pointer hover:ring-2 hover:ring-green-300" : ""}`}
+                    onClick={msg.customer_id ? () => setBusinessReplyContext({ customerId: msg.customer_id!, productName: msg.product_name, orderId: msg.order_id }) : undefined}
+                    role={msg.customer_id ? "button" : undefined}
                   >
                     {msg.content}
                   </div>
@@ -711,6 +736,12 @@ export default function Page() {
               <Truck className="w-5 h-5" />
               <h3 className="font-semibold">Logistics Chat</h3>
             </div>
+            {logisticsReplyContext && (
+              <div className="px-4 py-1 bg-orange-50 border-b text-xs text-orange-700 flex items-center justify-between">
+                <span>Replying to: {logisticsReplyContext.customerId}{logisticsReplyContext.productName ? ` · ${logisticsReplyContext.productName}` : ""}</span>
+                <button type="button" onClick={() => setLogisticsReplyContext(null)} className="text-orange-600 hover:underline">Clear</button>
+              </div>
+            )}
             <div className="flex-1 overflow-y-auto p-4 space-y-2">
               {logisticsMessages.map((msg) => (
                 <div
@@ -722,7 +753,9 @@ export default function Page() {
                       msg.sender === "user"
                         ? "bg-orange-500 text-white"
                         : "bg-gray-100 text-gray-800"
-                    }`}
+                    } ${msg.customer_id ? "cursor-pointer hover:ring-2 hover:ring-orange-300" : ""}`}
+                    onClick={msg.customer_id ? () => setLogisticsReplyContext({ customerId: msg.customer_id!, productName: msg.product_name, orderId: msg.order_id }) : undefined}
+                    role={msg.customer_id ? "button" : undefined}
                   >
                     {msg.content}
                   </div>
