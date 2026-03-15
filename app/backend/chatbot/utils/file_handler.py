@@ -1,6 +1,7 @@
 """
 File Handler - Handles file uploads and processing
 """
+import asyncio
 import os
 import uuid
 from typing import List, Dict, Any, Optional
@@ -44,79 +45,71 @@ async def save_file(file_content: bytes, filename: str, business_id: str, user_i
     return f"{base_url}/uploads/{business_id}/{user_id}/{unique_filename}"
 
 
+async def _process_single_file(
+    file: UploadFile,
+    business_id: str,
+    user_id: str,
+    expected_product: Optional[str],
+    expected_amount: Optional[float],
+) -> Dict[str, Any]:
+    """Process a single file. Used for parallel execution."""
+    file_content = await file.read()
+    await file.seek(0)
+    content_type = file.content_type or "application/octet-stream"
+
+    parse_result = await process_file(file_content, file.filename, content_type)
+    file_url = await save_file(file_content, file.filename, business_id, user_id)
+
+    result: Dict[str, Any] = {
+        "filename": file.filename,
+        "file_url": file_url,
+        "content_type": content_type,
+        "initial_parse": parse_result,
+    }
+
+    use_ai = (
+        parse_result.get("poorly_parsed")
+        or not parse_result.get("success")
+        or (content_type.startswith("image/") and not parse_result.get("content"))
+    )
+    if use_ai:
+        try:
+            if content_type.startswith("image/"):
+                media_result = (
+                    await process_receipt_image(file_url, expected_product, expected_amount)
+                    if (expected_product or expected_amount)
+                    else await process_image(file_url, task="general")
+                )
+                result["media_processing"] = media_result
+                result["extracted_content"] = media_result.get("extracted_data") or media_result.get("analysis")
+            elif content_type == "application/pdf":
+                media_result = await process_document(file_url, task="extract_text")
+                result["media_processing"] = media_result
+                result["extracted_content"] = media_result.get("content")
+        except Exception as e:
+            result["media_processing_error"] = str(e)
+            result["extracted_content"] = parse_result.get("content", "")
+    else:
+        result["extracted_content"] = parse_result.get("content", "") or ""
+
+    return result
+
+
 async def process_uploaded_files(
     files: List[UploadFile],
     business_id: str,
     user_id: str,
     expected_product: Optional[str] = None,
-    expected_amount: Optional[float] = None
+    expected_amount: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Process uploaded files - first with file_processor, then media_processing_agent if needed.
-    
-    Args:
-        files: List of uploaded files
-        business_id: Business ID
-        user_id: User ID
-        expected_product: Expected product name (for receipts)
-        expected_amount: Expected amount (for receipts)
-        
-    Returns:
-        List of processed file results
+    Process uploaded files in parallel.
     """
-    processed_files = []
-    
-    for file in files:
-        # Read file content
-        file_content = await file.read()
-        # Reset file pointer for potential reuse
-        await file.seek(0)
-        content_type = file.content_type or "application/octet-stream"
-        
-        # First-line parsing with file_processor
-        parse_result = await process_file(file_content, file.filename, content_type)
-        
-        # Save file
-        file_url = await save_file(file_content, file.filename, business_id, user_id)
-        
-        result = {
-            "filename": file.filename,
-            "file_url": file_url,
-            "content_type": content_type,
-            "initial_parse": parse_result
-        }
-        
-        # If poorly parsed or image/PDF, use media_processing_agent
-        if (parse_result.get("poorly_parsed") or 
-            not parse_result.get("success") or
-            content_type.startswith("image/") or
-            content_type == "application/pdf"):
-            
-            try:
-                if content_type.startswith("image/"):
-                    if expected_product or expected_amount:
-                        # Receipt processing
-                        media_result = await process_receipt_image(
-                            file_url,
-                            expected_product,
-                            expected_amount
-                        )
-                    else:
-                        # General image processing
-                        media_result = await process_image(file_url, task="general")
-                    result["media_processing"] = media_result
-                    result["extracted_content"] = media_result.get("extracted_data") or media_result.get("analysis")
-                elif content_type == "application/pdf":
-                    media_result = await process_document(file_url, task="extract_text")
-                    result["media_processing"] = media_result
-                    result["extracted_content"] = media_result.get("content")
-            except Exception as e:
-                result["media_processing_error"] = str(e)
-                result["extracted_content"] = parse_result.get("content", "")
-        else:
-            # Use initial parse result
-            result["extracted_content"] = parse_result.get("content", "")
-        
-        processed_files.append(result)
-    
-    return processed_files
+    if not files:
+        return []
+
+    tasks = [
+        _process_single_file(f, business_id, user_id, expected_product, expected_amount)
+        for f in files
+    ]
+    return list(await asyncio.gather(*tasks))
