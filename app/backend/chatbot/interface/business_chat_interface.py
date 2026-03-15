@@ -16,7 +16,7 @@ from backend.db.db_utils import (
     update_product_stock,
     get_low_stock_products
 )
-from backend.struct import BusinessRequest, CentralAgentInput
+from backend.struct import BusinessRequest, CentralAgentInput, Customer, Vendor, Product
 from pydantic import BaseModel, Field
 from pydantic_ai.messages import (
     ModelRequest,
@@ -29,6 +29,7 @@ class BusinessChatDeps(BaseModel):
     """Dependencies for business chat"""
     business_id: str
     api_key: Optional[str] = None
+    reply_context: Optional[Dict[str, str]] = None  # customer_id, product_name, order_id when replying to inbox
 
 class OutputBusinessChat(BaseModel):
     """Output for business chat"""
@@ -48,6 +49,7 @@ business_chat_agent_base = BaseAgent(
 
 **RULES**
 - Be professional and helpful
+- When reply_context is provided (customer_id, product_name, order_id), treat the message as a reply to that thread and route to central agent.
 - Route complex communications to central agent
 - Use analytics tools to provide data-driven insights
 - Use inventory tools to manage stock levels
@@ -132,24 +134,30 @@ async def business_chat(
     Returns:
         Response message or None if handled in background
     """
-    # Determine state key: use logistic_id if present (for logistics), otherwise vendor_id (for business)
     state_key_id = business_request.logistic_id if business_request.logistic_id else business_request.vendor_id
-    state_key_type = "logistics" if business_request.logistic_id else "business"
-    
-    # Get state using appropriate key
     user_state = await get_user_state(state_key_id, state_key_id) or {}
-    
-    # Initialize chat_history if not present
     if "chat_history" not in user_state:
         user_state["chat_history"] = []
-    
+
+    reply_context = None
+    if business_request.user_id and business_request.user_id not in (business_request.vendor_id, business_request.logistic_id):
+        reply_context = {
+            "customer_id": business_request.user_id,
+            "product_name": business_request.product_name or "",
+            "order_id": business_request.order_id or "",
+        }
+        if not reply_context["product_name"] and not reply_context["order_id"]:
+            reply_context = {k: v for k, v in reply_context.items() if v}
+
     chat_history = user_state.get("chat_history", [])
-    
-    # Run business chat agent
     result = await business_chat_agent.run(
-        business_request.message, 
-        deps=BusinessChatDeps(business_id=business_request.vendor_id, api_key=api_key),
-        message_history=chat_history
+        business_request.message,
+        deps=BusinessChatDeps(
+            business_id=business_request.vendor_id,
+            api_key=api_key,
+            reply_context=reply_context,
+        ),
+        message_history=chat_history,
     )
     
     # Update chat history
@@ -157,22 +165,37 @@ async def business_chat(
         ModelRequest(parts=[UserPromptPart(content=business_request.message)])
     )
     
-    if not result.output.for_central_agent:
+    if not result.output.for_central_agent and not (reply_context and reply_context.get("customer_id")):
         response = result.output.response
         user_state["chat_history"].append(
             ModelResponse(parts=[TextPart(content=response)])
         )
-        # Persist state using appropriate key
         await modify_user_state(state_key_id, state_key_id, user_state)
         return response
 
-    # Run central agent in background
+    agent_input = result.output.agent_input
+    central_user_state = user_state
+
+    if reply_context and reply_context.get("customer_id"):
+        customer_id = reply_context["customer_id"]
+        vendor_id = business_request.vendor_id
+        central_user_state = await get_user_state(customer_id, vendor_id) or {}
+        agent_input = await create_structured_input(
+            sender="Vendor" if not business_request.logistic_id else "Logistics",
+            recipient="Agent",
+            message=business_request.message,
+            customer=Customer(id=customer_id),
+            business=Vendor(id=vendor_id),
+            product=Product(id="", name=reply_context.get("product_name", ""), quantity=1, price=0, has_paid=False) if reply_context.get("product_name") else None,
+            order_id=reply_context.get("order_id") or None,
+        )
+
     background_tasks.add_task(
         run_central_agent,
-        result.output.agent_input,
-        user_state,
+        agent_input,
+        central_user_state,
         vendor_only=True,
-        debug=debug
+        debug=debug,
     )
     
     # Persist state using appropriate key

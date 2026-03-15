@@ -16,6 +16,12 @@ from backend.chatbot.utils.file_handler import process_uploaded_files
 from backend.db.db_utils import get_business_info
 from backend.struct import UserRequest
 from backend.db.cache_utils import get_user_state, modify_user_state
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
 
 
 async def chat(
@@ -94,12 +100,27 @@ async def chat(
     if file_content_summary:
         full_message += "\n\n" + file_content_summary
     
-    # Route conversation to determine which agent to use
+    business_name = (user_state.get("business_information") or {}).get("name")
+    if not business_name:
+        biz = await get_business_info(user_request.vendor_id)
+        business_name = (biz or {}).get("name")
+        if biz:
+            user_state.setdefault("business_information", {}).update(biz)
+
+    processes = user_state.get("processes", {})
+    order_context = ", ".join(
+        f"{pname} -> {p.get('order_id', '')}"
+        for pname, p in processes.items()
+        if isinstance(p, dict) and p.get("order_id")
+    ) or None
+
     routing = await route_conversation(
         message=full_message,
         chat_history=chat_history,
         business_id=user_request.vendor_id,
-        user_id=user_request.user_id
+        user_id=user_request.user_id,
+        business_name=business_name,
+        order_context=order_context,
     )
     
     if debug:
@@ -107,6 +128,8 @@ async def chat(
     
     # Route to appropriate agent based on conversation stage
     stage = routing.stage
+    print(f"Conversation Stage: {stage}")
+    print(f"Routing: {routing}")
     
     if stage == "Product Enquiry" or stage == "Product purchase":
         # Use product agent
@@ -122,26 +145,28 @@ async def chat(
         )
         
     elif stage == "Payment verification" or receipt_data:
-        # Use payment verification agent (especially if receipt was uploaded)
         response = await run_verification_agent(
             customer_message=full_message,
             user_id=user_request.user_id,
             business_id=user_request.vendor_id,
+            product_name=routing.product_name or None,
             user_state=user_state,
             background_tasks=background_tasks,
             receipt_data=receipt_data,
-            debug=debug
+            order_id=routing.order_id,
+            debug=debug,
         )
         
     elif stage == "Logistics":
-        # Use logistics agent
         response = await run_logistics_agent(
             customer_message=full_message,
             user_id=user_request.user_id,
             business_id=user_request.vendor_id,
+            product_name=routing.product_name or None,
             user_state=user_state,
             background_tasks=background_tasks,
-            debug=debug
+            order_id=routing.order_id,
+            debug=debug,
         )
         
     elif stage == "Customer complaint/Feedback":
@@ -157,18 +182,12 @@ async def chat(
         )
         
     else:
-        # General conversation - use product agent as fallback
-        response, user_state = await run_product_agent(
-            customer_message=full_message,
-            product_name="NONE",
-            product_category="",
-            intent="enquiry",
-            user_id=user_request.user_id,
-            business_id=user_request.vendor_id,
-            user_state=user_state,
-            debug=debug
-        )
-    
+        response = routing.response or "How can I help you today?"
+        user_state.setdefault("chat_history", []).extend([
+            ModelRequest(parts=[UserPromptPart(content=user_request.message)]),
+            ModelResponse(parts=[TextPart(content=response)]),
+        ])
+        
     # Save user state (unless resetting for testing)
     if not reset_user_state:
         await modify_user_state(
