@@ -1,6 +1,7 @@
 """
 Main FastAPI application for Ottobiz
 """
+import asyncio
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,10 +24,11 @@ load_dotenv()
 # Import database connection for lifecycle management
 try:
     from backend.db.connection import init_db, close_db
+    from backend.db.populate import populate_db_on_startup
     DB_AVAILABLE = True
 except ImportError:
-    # Fallback if database connection not available
     DB_AVAILABLE = False
+    populate_db_on_startup = None
     print("Warning: Database connection module not available")
 
 LOG_FILE = os.getenv("LOG_FILE", "app.log")
@@ -55,19 +57,29 @@ app.add_middleware(
 # Database lifecycle events
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database connection pool on startup"""
-    if DB_AVAILABLE:
+    """Initialize database connection pool and populate on startup"""
+    if not DB_AVAILABLE:
+        logging.warning("Database connection not available - running without database")
+        print("⚠ Database connection not available - running without database")
+        return
+
+    for attempt in range(10):
         try:
             await init_db()
             logging.info("✓ Database connection pool initialized")
             print("✓ Database connection pool initialized")
+            if populate_db_on_startup:
+                await populate_db_on_startup()
+                print("✓ Database populated with migrations and dummy data")
+            return
         except Exception as e:
-            logging.error(f"✗ Failed to initialize database: {e}")
-            print(f"✗ Failed to initialize database: {e}")
-            # Don't crash the app, continue without database
-    else:
-        logging.warning("Database connection not available - running without database")
-        print("⚠ Database connection not available - running without database")
+            logging.warning(f"DB init attempt {attempt + 1}/10 failed: {e}")
+            if attempt < 9:
+                await asyncio.sleep(3)
+            else:
+                logging.error(f"✗ Failed to initialize database: {e}")
+                print(f"✗ Failed to initialize database: {e}")
+                raise
 
 
 @app.on_event("shutdown")
