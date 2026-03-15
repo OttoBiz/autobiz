@@ -14,7 +14,7 @@ router = APIRouter(prefix="/business", tags=["business"])
 
 
 class BusinessMessageRequest(BaseModel):
-    """Business message request"""
+    """Business message request. user_id/product_name/order_id = reply context when responding to inbox."""
     user_id: str
     vendor_id: str
     logistic_id: Optional[str] = ""
@@ -24,6 +24,7 @@ class BusinessMessageRequest(BaseModel):
     product_name: Optional[str] = ""
     product_price: Optional[str] = ""
     message_type: str
+    order_id: Optional[str] = None
     api_key: Optional[str] = None
     msg_date_time: Optional[str] = None
 
@@ -40,13 +41,14 @@ async def business_chat_endpoint(
     business_request = BusinessRequest(
         user_id=request.user_id,
         vendor_id=request.vendor_id,
-        logistic_id=request.logistic_id,
+        logistic_id=request.logistic_id or "",
         session_id=request.session_id,
         sender=request.sender,
         message=request.message,
-        product_name=request.product_name,
+        product_name=request.product_name or "",
         product_price=request.product_price,
         message_type=request.message_type,
+        order_id=request.order_id,
         msg_date_time=request.msg_date_time or datetime.now()
     )
     

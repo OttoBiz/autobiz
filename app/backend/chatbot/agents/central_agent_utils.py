@@ -22,10 +22,11 @@ async def create_structured_input(
     sender: str,
     recipient: str,
     message: str,
-    product: Optional[Product] =None,
+    product: Optional[Product] = None,
     customer: Optional[Customer] = None,
     business: Optional[Vendor] = None,
-    logistic: Optional[Logistics] = None
+    logistic: Optional[Logistics] = None,
+    order_id: Optional[str] = None,
 ) -> CentralAgentInput:
     """Create structured input for central agent"""
     return CentralAgentInput(
@@ -35,7 +36,8 @@ async def create_structured_input(
         product=product,
         customer=customer,
         business=business,
-        logistic=logistic
+        logistic=logistic,
+        order_id=order_id,
     )
 
 

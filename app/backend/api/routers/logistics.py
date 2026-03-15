@@ -6,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks
 from typing import Optional
 from pydantic import BaseModel
 from backend.chatbot.interface.business_chat_interface import business_chat
+from backend.db.cache_utils import get_inbox
 from backend.struct import BusinessRequest
 from datetime import datetime
 
@@ -13,7 +14,7 @@ router = APIRouter(prefix="/logistics", tags=["logistics"])
 
 
 class LogisticsMessageRequest(BaseModel):
-    """Logistics message request"""
+    """Logistics message request. user_id/product_name/order_id = reply context when responding to inbox."""
     user_id: str
     vendor_id: str
     logistic_id: str
@@ -23,6 +24,7 @@ class LogisticsMessageRequest(BaseModel):
     product_name: Optional[str] = ""
     product_price: Optional[str] = ""
     message_type: str = "Logistic planning"
+    order_id: Optional[str] = None
     api_key: Optional[str] = None
     msg_date_time: Optional[str] = None
 
@@ -43,9 +45,10 @@ async def logistics_chat(
         session_id=request.session_id,
         sender=request.sender,
         message=request.message,
-        product_name=request.product_name,
+        product_name=request.product_name or "",
         product_price=request.product_price,
         message_type=request.message_type,
+        order_id=request.order_id,
         msg_date_time=request.msg_date_time or datetime.now()
     )
     
@@ -55,6 +58,13 @@ async def logistics_chat(
         "message": response or "Message processed",
         "logistic_id": request.logistic_id
     }
+
+
+@router.get("/inbox/{logistic_id}")
+async def get_logistics_inbox(logistic_id: str):
+    """Poll for messages sent to this logistics company by the central agent."""
+    messages = await get_inbox(logistic_id)
+    return {"logistic_id": logistic_id, "messages": messages}
 
 
 @router.get("/orders/{order_id}/tracking")

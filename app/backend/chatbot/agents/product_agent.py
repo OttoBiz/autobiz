@@ -64,7 +64,9 @@ product_agent = product_agent_base.agent
 async def get_product_info(
     ctx: RunContext[ProductAgentDeps], product_name: Optional[str] = None, category: Optional[str] = None
 ) -> List[Dict[str, Any]]:
-    """Get products for this vendor from the database. Call with no product_name to list all products."""
+    """Get relevant products for this vendor's business (per customer's enquiry) from the database. 
+    Call with no product_name to list all products."""
+    
     try:
         products = await get_products(
             business_id=ctx.deps.business_id,
@@ -95,7 +97,7 @@ async def fetch_payment_link(
 async def get_business_payment_info(
     ctx: RunContext[ProductAgentDeps],
 ) -> Dict[str, str]:
-    """Get business payment information"""
+    """Get business payment information (bank account details)"""
     user_state = await get_user_state(ctx.deps.user_id, ctx.deps.business_id)
     business_info = user_state.get("business_information", {})
 
@@ -112,7 +114,8 @@ async def notify_vendor(
     ctx: RunContext[ProductAgentDeps],
     message: str,
 ) -> Dict[str, Any]:
-    """Send a message to the vendor via the central agent. Use this instead of drafting messages for the customer to send manually."""
+    """Send a message to the vendor via the central agent. 
+    Use this when you are unable to find/provide any information concerning a product or the business (per customer's request)."""
     try:
         agent_input = await create_structured_input(
             sender="Agent",
@@ -135,7 +138,7 @@ async def upsell_products(
     intent: str = "enquiry",
     **kwargs,
 ) -> List[Dict[str, Any]]:
-    """Upsell products"""
+    """use this to upsell similar or complimentary products to customer if product they enquired about cannot be found."""
     return await run_upselling_agent(
         product_name,
         intent=intent,
