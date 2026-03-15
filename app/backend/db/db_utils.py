@@ -233,6 +233,20 @@ async def get_business_by_handle(handle: str) -> Optional[Dict[str, Any]]:
         return dict(row) if row else None
 
 
+async def get_logistics_companies(limit: int = 10) -> List[Dict[str, Any]]:
+    """Get logistics companies (business_type='logistics')."""
+    pool = await get_db()
+    query = """
+        SELECT id, name, phone_number, email
+        FROM businesses
+        WHERE business_type = 'logistics'
+        LIMIT $1
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query, limit)
+        return [dict(row) for row in rows]
+
+
 ## USER FUNCTIONS
 
 
