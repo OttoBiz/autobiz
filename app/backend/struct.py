@@ -51,6 +51,7 @@ class CentralAgentInput(BaseModel):
     logistic: Optional[Logistics] = None
     message: str
     product: Optional[Product] = None
+    order_id: Optional[str] = None
 
     def to_dict(self):
         return self.dict()
@@ -98,7 +99,7 @@ class UserRequest(BaseModel):
 
 
 class BusinessRequest(BaseModel):
-    user_id: str
+    user_id: str  # customer_id when replying to a specific thread
     vendor_id: str
     logistic_id: str
     session_id: str
@@ -107,6 +108,7 @@ class BusinessRequest(BaseModel):
     product_name: str
     product_price: Optional[str]
     message_type: str
+    order_id: Optional[str] = None  # for reply context
     msg_date_time: Optional[Union[datetime, str]] = None
 
 
