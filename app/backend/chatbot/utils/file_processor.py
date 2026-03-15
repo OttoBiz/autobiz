@@ -24,6 +24,12 @@ try:
 except ImportError:
     PDFPLUMBER_AVAILABLE = False
 
+try:
+    import pytesseract
+    PYTESSERACT_AVAILABLE = True
+except ImportError:
+    PYTESSERACT_AVAILABLE = False
+
 
 def is_poorly_parsed(text: str) -> bool:
     """
@@ -122,14 +128,7 @@ async def parse_pdf(file_content: bytes, filename: str) -> Dict[str, Any]:
 
 async def parse_image(file_content: bytes, filename: str) -> Dict[str, Any]:
     """
-    Parse image file (extract basic metadata).
-    
-    Args:
-        file_content: Image file bytes
-        filename: Original filename
-        
-    Returns:
-        Parsed content dictionary
+    Parse image file. Uses OCR (pytesseract) when available; falls back to AI if poor.
     """
     if not PIL_AVAILABLE:
         return {
@@ -137,20 +136,29 @@ async def parse_image(file_content: bytes, filename: str) -> Dict[str, Any]:
             "error": "PIL/Pillow not available",
             "type": "image",
             "filename": filename,
-            "poorly_parsed": True  # Always needs media_processing_agent
+            "poorly_parsed": True,
         }
-    
+
     try:
         image = Image.open(BytesIO(file_content))
+        content = None
+        if PYTESSERACT_AVAILABLE:
+            try:
+                content = pytesseract.image_to_string(image)
+                content = (content or "").strip()
+            except Exception:  # Tesseract not installed or OCR failed
+                pass
+
+        poorly_parsed = is_poorly_parsed(content) if content else True
         return {
-            "success": True,
-            "content": None,  # Images need OCR/vision processing
+            "success": bool(content),
+            "content": content,
             "type": "image",
             "filename": filename,
             "format": image.format,
             "size": image.size,
             "mode": image.mode,
-            "poorly_parsed": False  # Images always need media_processing_agent
+            "poorly_parsed": poorly_parsed,
         }
     except Exception as e:
         return {
@@ -158,7 +166,7 @@ async def parse_image(file_content: bytes, filename: str) -> Dict[str, Any]:
             "error": str(e),
             "type": "image",
             "filename": filename,
-            "poorly_parsed": True
+            "poorly_parsed": True,
         }
 
 
