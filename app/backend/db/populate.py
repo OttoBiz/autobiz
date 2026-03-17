@@ -73,7 +73,7 @@ def _dummy_business_fields(slug: str, seed: int = 0) -> dict:
 def _dummy_user_fields(name: str, idx: int) -> dict:
     """Generate dummy values for user columns."""
     return {
-        "phone_number": f"+234700000000{idx}",
+        "phone_number": f"+234700000{idx:04d}",
         "full_name": name,
         "delivery_address": f"123 {name.split()[0]} Street, Apt {idx}",
         "city": ["Lagos", "Abuja", "Port Harcourt", "Ibadan", "Kano", "Benin"][idx % 6],
@@ -82,13 +82,33 @@ def _dummy_user_fields(name: str, idx: int) -> dict:
 
 
 async def _run_migrations(pool) -> None:
-    """Execute migration files in order."""
+    """Execute migration files in order, skipping already-applied ones."""
     migration_files = sorted(MIGRATIONS_DIR.glob("*.sql"))
-    for path in migration_files:
-        sql = path.read_text()
-        async with pool.acquire() as conn:
-            await conn.execute(sql)
-        logging.info(f"Applied migration: {path.name}")
+    async with pool.acquire() as conn:
+        # Bootstrap the tracking table before we can check it
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        for path in migration_files:
+            version = int(path.stem.split("_")[0])
+            already_applied = await conn.fetchval(
+                "SELECT 1 FROM schema_migrations WHERE version = $1", version
+            )
+            if already_applied:
+                logging.info(f"Skipping already-applied migration: {path.name}")
+                continue
+            sql = path.read_text()
+            async with conn.transaction():
+                await conn.execute(sql)
+                await conn.execute(
+                    "INSERT INTO schema_migrations (version, name) VALUES ($1, $2)",
+                    version, path.name,
+                )
+            logging.info(f"Applied migration: {path.name}")
 
 
 def _business_row(uuid: str, name: str, row: dict | None, dummy: dict, business_type: str) -> tuple:
@@ -241,6 +261,8 @@ async def _load_products(pool) -> None:
         business_id = FRONTEND_BUSINESS_IDS[business_name]
         csv_path = DUMMY_DATA_DIR / f"{filename}.csv"
         if not csv_path.exists():
+            logging.warning(f"Dummy data CSV not found, skipping products for '{business_name}': {csv_path}")
+            print(f"⚠ Missing CSV: {csv_path}")
             continue
         parse_fn = parsers[filename]
         rows = parse_fn(str(csv_path), business_id)
@@ -266,16 +288,15 @@ async def _load_products(pool) -> None:
 
 async def populate_db_on_startup() -> None:
     """Run migrations and seed database. Idempotent on re-run."""
-    try:
-        pool = await get_db()
-    except Exception as e:
-        logging.warning(f"populate_db_on_startup: DB not ready: {e}")
-        return
+    pool = await get_db()  # Let exception propagate — caller handles retries
 
     try:
         await _run_migrations(pool)
-        await _load_businesses(pool)  # First: clears orders/products via CASCADE
+        # Truncate dependents first to avoid FK constraint conflicts:
+        # users CASCADE → orders, transactions
+        # businesses CASCADE → products, orders (already gone), transactions (already gone)
         await _load_users(pool)
+        await _load_businesses(pool)
         await _load_products(pool)
         logging.info("Database populated successfully")
     except Exception as e:
