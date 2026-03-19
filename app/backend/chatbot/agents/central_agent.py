@@ -19,6 +19,7 @@ from backend.db.db_utils import (
     get_order_by_number,
     get_orders_by_user,
     get_user_by_id,
+    update_order_status as db_update_order_status,
 )
 from backend.struct import CentralAgentInput
 from backend.whatsapp.utils import whatsapp
@@ -83,6 +84,7 @@ Coordinate communication between customers, vendors, and logistics. Confirm paym
 **TOOLS**
 - create_order: Call when payment is confirmed (by vendor or payment link). Creates order in DB and caches in processes.
 - get_order_info: Read order from DB or processes cache.
+- update_order_status: Update order status (shipped, delivered, cancelled). Call when vendor/logistics confirms delivery.
 - mark_task_finished: Add completed activity to finished_tasks. Call when payment confirmed, order created, delivery arranged, etc.
 - get_delivery_address, get_logistics_info, get_contact_info: Fetch context for coordination.
 
@@ -184,6 +186,41 @@ async def get_order_info(
             return {"product_name": pname, **proc}
 
     return {"error": "Order not found"}
+
+
+@central_agent.tool
+async def update_order_status(
+    ctx: RunContext[CentralAgentDeps],
+    order_id: str,
+    status: str,
+    tracking_number: Optional[str] = None,
+    logistic_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Update order status in DB. Status: pending, payment_verified, shipped, delivered, cancelled. Call when vendor/logistics confirms delivery or shipping."""
+    try:
+        updated = await db_update_order_status(
+            order_id=order_id,
+            status=status,
+            tracking_number=tracking_number or "",
+            logistic_id=logistic_id or "",
+        )
+        if not updated:
+            return {"error": "Order not found", "order_id": order_id}
+        customer_id = _customer_id(ctx)
+        business_id = _business_id(ctx)
+        user_state = await get_user_state(customer_id, business_id) or {}
+        processes = user_state.get("processes", {})
+        for pname, proc in processes.items():
+            if proc.get("order_id") == order_id:
+                processes[pname]["status"] = status
+                if tracking_number:
+                    processes[pname]["tracking_number"] = tracking_number
+                break
+        user_state["processes"] = processes
+        await modify_user_state(customer_id, business_id, user_state)
+        return {"status": "updated", "order_id": order_id, "new_status": status}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @central_agent.tool
@@ -341,6 +378,8 @@ async def run_central_agent(
             inbox_payload["product_name"] = product_name
         if event_message.order_id:
             inbox_payload["order_id"] = event_message.order_id
+        if recipient_lower == "customer" and business_id:
+            inbox_payload["business_id"] = business_id
         await push_to_inbox(recipient_id, inbox_payload)
 
     try:

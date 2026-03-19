@@ -6,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, UploadFile, File, Form, Request
 from typing import Optional, List
 from pydantic import BaseModel
 from backend.chatbot.interface.user_chat_interface import chat
+from backend.db.cache_utils import get_inbox
 from backend.struct import UserRequest
 from datetime import datetime
 
@@ -92,4 +93,11 @@ async def customer_chat(
         "vendor_id": user_request.vendor_id,
         "files_received": len(files_list) if files_list else 0
     }
+
+
+@router.get("/inbox/{user_id}")
+async def get_customer_inbox(user_id: str):
+    """Poll for messages sent to this customer by the central agent (e.g. order updates, delivery notifications)."""
+    messages = await get_inbox(user_id)
+    return {"user_id": user_id, "messages": messages}
 
