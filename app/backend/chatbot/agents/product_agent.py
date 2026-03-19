@@ -137,8 +137,8 @@ async def upsell_products(
     category: Optional[str] = None,
     intent: str = "enquiry",
     **kwargs,
-) -> List[Dict[str, Any]]:
-    """use this to upsell similar or complimentary products to customer if product they enquired about cannot be found."""
+) -> str:
+    """Upsell similar or complementary products (including from other businesses) when product not found."""
     return await run_upselling_agent(
         product_name,
         intent=intent,

@@ -2,14 +2,13 @@
 Upselling Agent - Recommends complementary and alternative products
 Converted to pydantic_ai
 """
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext
 from .base_agent import BaseAgent
-from backend.modules.products import search_products, get_product_images
-from backend.modules.services import search_services
+from backend.modules.products import get_product_images
+from backend.modules.products import search_products
 from backend.db.db_utils import get_products
-from backend.config import config
 
 
 class UpsellingAgentDeps(BaseModel):
@@ -65,11 +64,18 @@ async def get_related_products(
 async def get_cross_sell_products(
     ctx: RunContext[UpsellingAgentDeps],
     product_category: str,
-    limit: int = 3
+    limit: int = 5,
 ) -> List[Dict[str, Any]]:
-    """Get cross-sell products from other businesses (premium feature)"""
-    # TODO: Implement cross-selling from other businesses
-    products = await search_products("", category=product_category, limit=limit)
+    """Get cross-sell products from other businesses (excludes current vendor)."""
+    products = await get_products(
+        category=product_category,
+        exclude_business_id=ctx.deps.business_id or None,
+        limit=limit,
+    )
+    for p in products:
+        if p.get("id"):
+            images = await get_product_images(p["id"])
+            p["image_urls"] = images
     return products
 
 
@@ -77,11 +83,38 @@ async def get_cross_sell_products(
 async def get_complementary_products(
     ctx: RunContext[UpsellingAgentDeps],
     product_category: str,
-    limit: int = 3
+    limit: int = 3,
 ) -> List[Dict[str, Any]]:
-    """Get complementary products in the same category"""
-    products = await get_products(category=product_category)
-    return products[:limit]
+    """Get complementary products in the same category from this business."""
+    products = await get_products(
+        business_id=ctx.deps.business_id or None,
+        category=product_category,
+        limit=limit,
+    )
+    return products
+
+
+async def run_ads_marketing_agent(
+    customer_message: str,
+    product_name: Optional[str] = None,
+    business_id: str = None,
+    user_state: Optional[Dict[str, Any]] = None,
+    **kwargs,
+) -> str:
+    """Run upselling agent for Ads/Marketing stage. Promotes products and offers."""
+    deps = UpsellingAgentDeps(business_id=business_id or "", api_key=kwargs.get("api_key"))
+    chat_history = (user_state or {}).get("chat_history", []) if user_state else []
+    instruction = "The customer is interested in promotions or marketing. Suggest relevant products, deals, or complementary items from this business. Be persuasive but helpful."
+    prompt = f"""Customer message: {customer_message}
+Product context: {product_name or "General interest"}
+
+Instruction: {instruction}
+
+{format_conversation(chat_history[-6:]) if chat_history else ""}
+
+Provide a friendly, persuasive marketing response."""
+    result = await upselling_agent.run(prompt, deps=deps)
+    return result.output
 
 
 async def run_upselling_agent(

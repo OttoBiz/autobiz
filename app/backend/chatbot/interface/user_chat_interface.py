@@ -6,7 +6,7 @@ from fastapi import BackgroundTasks, UploadFile
 from typing import List, Optional, Dict, Any
 from backend.chatbot.agents.routing_agent import route_conversation
 from backend.chatbot.agents.product_agent import run_product_agent
-from backend.chatbot.agents.upselling_agent import run_upselling_agent
+from backend.chatbot.agents.upselling_agent import run_ads_marketing_agent, run_upselling_agent
 from backend.chatbot.agents.payment_verification_agent import run_verification_agent
 from backend.chatbot.agents.customer_complaint_agent import run_customer_complaint_agent
 from backend.chatbot.agents.logistics_agent import run_logistics_agent
@@ -170,7 +170,6 @@ async def chat(
         )
         
     elif stage == "Customer complaint/Feedback":
-        # Use customer complaint agent
         response, user_state = await run_customer_complaint_agent(
             complaint=full_message,
             product_name=routing.product_name or "",
@@ -180,9 +179,21 @@ async def chat(
             background_tasks=background_tasks,
             debug=debug
         )
-        
+
+    elif stage == "Ads Marketing":
+        response = await run_ads_marketing_agent(
+            customer_message=full_message,
+            product_name=routing.product_name,
+            business_id=user_request.vendor_id,
+            user_state=user_state,
+        )
+        user_state.setdefault("chat_history", []).extend([
+            ModelRequest(parts=[UserPromptPart(content=user_request.message)]),
+            ModelResponse(parts=[TextPart(content=response)]),
+        ])
+
     else:
-        response = routing.response or "How can I help you today?"
+        response = routing.response
         user_state.setdefault("chat_history", []).extend([
             ModelRequest(parts=[UserPromptPart(content=user_request.message)]),
             ModelResponse(parts=[TextPart(content=response)]),
