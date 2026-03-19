@@ -7,6 +7,7 @@ from typing import Optional
 from pydantic import BaseModel
 from backend.chatbot.interface.business_chat_interface import business_chat
 from backend.db.cache_utils import get_inbox
+from backend.db.db_utils import get_order_by_id
 from backend.struct import BusinessRequest
 from datetime import datetime
 
@@ -69,14 +70,20 @@ async def get_logistics_inbox(logistic_id: str):
 
 @router.get("/orders/{order_id}/tracking")
 async def get_order_tracking(order_id: str):
-    """
-    Get tracking information for an order.
-    """
-    # TODO: Implement order tracking
+    """Get tracking information for an order from the database."""
+    order = await get_order_by_id(order_id)
+    if not order:
+        return {"error": "Order not found", "order_id": order_id}
     return {
-        "order_id": order_id,
-        "status": "pending",
-        "tracking_number": None,
-        "estimated_delivery": None
+        "order_id": str(order["id"]),
+        "order_number": order.get("order_number"),
+        "status": order.get("status", "pending"),
+        "tracking_number": order.get("tracking_number"),
+        "logistic_id": str(order["logistic_id"]) if order.get("logistic_id") else None,
+        "delivery_address": order.get("delivery_address"),
+        "delivery_city": order.get("delivery_city"),
+        "delivery_state": order.get("delivery_state"),
+        "metadata": order.get("metadata"),
+        "updated_at": order.get("updated_at"),
     }
 

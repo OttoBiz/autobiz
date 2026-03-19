@@ -21,6 +21,8 @@ async def get_products(
     category: str = None,
     min_price: float = None,
     max_price: float = None,
+    exclude_business_id: str = None,
+    limit: int = 50,
 ) -> List[Dict[str, Any]]:
     """
     Search products with optional filters.
@@ -31,6 +33,8 @@ async def get_products(
         category: Filter by category
         min_price: Minimum price filter
         max_price: Maximum price filter
+        exclude_business_id: Exclude products from this business (for cross-sell)
+        limit: Max results
 
     Returns:
         List of product dictionaries
@@ -49,6 +53,11 @@ async def get_products(
     if business_id:
         query += f" AND business_id = ${param_count}::uuid"
         params.append(business_id)
+        param_count += 1
+
+    if exclude_business_id:
+        query += f" AND business_id != ${param_count}::uuid"
+        params.append(exclude_business_id)
         param_count += 1
 
     if name:
@@ -71,7 +80,8 @@ async def get_products(
         params.append(max_price)
         param_count += 1
 
-    query += " ORDER BY created_at DESC"
+    query += f" ORDER BY created_at DESC LIMIT ${param_count}"
+    params.append(limit)
 
     try:
         async with pool.acquire() as conn:

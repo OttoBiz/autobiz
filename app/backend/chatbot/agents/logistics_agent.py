@@ -11,6 +11,7 @@ from pydantic_ai import RunContext
 from backend.chatbot.agents.central_agent import run_central_agent
 from backend.chatbot.agents.central_agent_utils import create_structured_input
 from backend.chatbot.utils.agent_utils import get_or_create_user_state, save_user_state
+from backend.db.db_utils import get_order_by_id
 from backend.struct import Customer, Vendor
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
@@ -38,6 +39,7 @@ logistics_agent_base = BaseAgent(
 
 **TOOLS**
 - get_order_for_product: Get order_id for a purchased product from processes. Pass order_id to notify_central_agent for context.
+- get_order_tracking: Get order status, tracking number, and delivery details from the database.
 - get_product_from_cache: Identify which product the customer is asking about.
 - notify_central_agent: Request info from vendor/logistics. Include order_id and product_name when available.
 
@@ -65,6 +67,26 @@ async def get_order_for_product(
         if proc.get("order_id"):
             return {"order_id": proc["order_id"], "product_name": pname}
     return {"order_id": None, "product_name": pname}
+
+
+@logistics_agent.tool
+async def get_order_tracking(
+    ctx: RunContext[LogisticsDeps],
+    order_id: str,
+) -> Dict[str, Any]:
+    """Get order status, tracking number, and delivery details. Use order_id from get_order_for_product."""
+    order = await get_order_by_id(order_id)
+    if not order:
+        return {"error": "Order not found", "order_id": order_id}
+    return {
+        "order_id": str(order["id"]),
+        "order_number": order.get("order_number"),
+        "status": order.get("status"),
+        "tracking_number": order.get("tracking_number"),
+        "delivery_address": order.get("delivery_address"),
+        "delivery_city": order.get("delivery_city"),
+        "delivery_state": order.get("delivery_state"),
+    }
 
 
 @logistics_agent.tool
