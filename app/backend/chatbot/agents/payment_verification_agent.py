@@ -76,13 +76,14 @@ async def notify_central_payment_confirmed(
     ctx: RunContext[PaymentVerificationDeps],
     product_name: str,
     amount: float,
+    quantity: int = 1,
     delivery_address: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Notify central agent that payment is confirmed. Central agent will create order in DB."""
     agent_input = await create_structured_input(
         sender="Agent",
         recipient="Agent",
-        message=f"Payment confirmed. Create order: product={product_name}, amount=${amount}. "
+        message=f"Payment confirmed. Create order: product={product_name}, quantity={quantity}, amount=${amount}. "
         f"Delivery address: {delivery_address or 'To be collected'}",
         customer=Customer(id=ctx.deps.user_id),
         business=Vendor(id=ctx.deps.business_id),

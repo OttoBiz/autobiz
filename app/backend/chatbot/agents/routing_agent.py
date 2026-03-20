@@ -69,12 +69,12 @@ async def route_conversation(
     )
     context = f"Business: {business_name}" if business_name else ""
     if order_context:
-        context += f"\nKnown orders (product -> order_id): {order_context}"
+        context += f"\nOngoing orders (product -> order_id): {order_context}"
     prompt = f"""{context}
 
-Current user message: {message}
+Current user message: {message} """
 
-Determine the conversation stage and extract relevant information (product_name, order_id when applicable)."""
+# Determine the conversation stage, provide a respon and extract relevant information (product_name, order_id when applicable)."""
     
     result = await routing_agent.run(prompt, deps=deps, message_history=chat_history)
     return result.output

@@ -254,9 +254,10 @@ async def run_product_agent(
     response = result.output
 
     # Update user state with serializable chat history
-    user_state["chat_history"].extend([
-    ModelRequest(parts=[UserPromptPart(content=customer_message)]),
-    ModelResponse(parts=[TextPart(content=response)])])
+    user_state.setdefault("chat_history", []).extend([
+        ModelRequest(parts=[UserPromptPart(content=customer_message)]),
+        ModelResponse(parts=[TextPart(content=response)]),
+    ])
 
     await save_user_state(user_id, business_id, user_state)
 
