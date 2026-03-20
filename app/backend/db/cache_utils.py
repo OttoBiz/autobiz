@@ -32,9 +32,19 @@ async def get_user_state(user_id, vendor_id, session_id=None):
         return {}
 
 
+def _serialize_user_state(user_state: dict) -> dict:
+    """Convert user_state to JSON-serializable form (chat_history may contain pydantic_ai objects)."""
+    state = dict(user_state)
+    chat_history = state.get("chat_history")
+    if chat_history and any(not isinstance(m, dict) for m in chat_history):
+        state["chat_history"] = ModelMessagesTypeAdapter.dump_python(chat_history, mode="json")
+    return state
+
+
 async def modify_user_state(user_id, vendor_id, user_state, session_id=None):
     try:
-        redis_conn.set(f"{user_id}:{vendor_id}", user_state)
+        serializable = _serialize_user_state(user_state)
+        redis_conn.set(f"{user_id}:{vendor_id}", serializable)
     except Exception:
         logger.error(
             "redis_set_failed | user_id=%s vendor_id=%s",
