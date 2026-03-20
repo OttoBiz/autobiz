@@ -14,17 +14,13 @@ router = APIRouter(prefix="/business", tags=["business"])
 
 
 class BusinessMessageRequest(BaseModel):
-    """Business message request. user_id/product_name/order_id = reply context when responding to inbox."""
-    user_id: str
-    vendor_id: str
+    """Business/logistics message. Reply context extracted by agent from chat history + recent_inbox."""
+    vendor_id: Optional[str] = ""
     logistic_id: Optional[str] = ""
     session_id: str
     sender: str
     message: str
-    product_name: Optional[str] = ""
-    product_price: Optional[str] = ""
-    message_type: str
-    order_id: Optional[str] = None
+    recent_inbox: Optional[list] = None  # Inbox messages displayed (for agent context)
     api_key: Optional[str] = None
     msg_date_time: Optional[str] = None
 
@@ -34,21 +30,14 @@ async def business_chat_endpoint(
     request: BusinessMessageRequest,
     background_tasks: BackgroundTasks
 ):
-    """
-    Handle business owner chat messages.
-    Allows businesses to interact with the system and respond to customer inquiries.
-    """
+    """Handle business/logistics chat. Agent extracts reply context from chat history."""
     business_request = BusinessRequest(
-        user_id=request.user_id,
-        vendor_id=request.vendor_id,
+        vendor_id=request.vendor_id or "",
         logistic_id=request.logistic_id or "",
         session_id=request.session_id,
         sender=request.sender,
         message=request.message,
-        product_name=request.product_name or "",
-        product_price=request.product_price,
-        message_type=request.message_type,
-        order_id=request.order_id,
+        recent_inbox=request.recent_inbox,
         msg_date_time=request.msg_date_time or datetime.now()
     )
     
@@ -56,7 +45,7 @@ async def business_chat_endpoint(
     
     return {
         "message": response or "Message processed",
-        "vendor_id": request.vendor_id
+        "vendor_id": request.vendor_id or request.logistic_id or "",
     }
 
 
