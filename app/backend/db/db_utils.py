@@ -347,6 +347,7 @@ async def create_order(
     user_id: str,
     business_id: str,
     total_amount: float,
+    quantity: int = 1,
     delivery_address: str = None,
     delivery_city: str = None,
     delivery_state: str = None,
@@ -359,23 +360,24 @@ async def create_order(
         user_id: Customer UUID
         business_id: Vendor UUID
         total_amount: Order total
-        delivery_address: Delivery address (optional, can copy from user)
+        quantity: Quantity ordered (default 1)
+        delivery_address: Delivery address (optional)
         delivery_city: Delivery city
         delivery_state: Delivery state
-        metadata: JSONB metadata (product items, notes, etc.)
+        metadata: JSONB metadata (product_name, etc.)
 
     Returns:
         Created order dictionary
     """
     pool = await get_db()
-
-    # Generate order number (simple format: ORD-YYYYMMDD-XXXX)
     import random
     from datetime import datetime
 
     order_number = (
         f"ORD-{datetime.now().strftime('%Y%m%d')}-{random.randint(1000, 9999)}"
     )
+    meta = metadata or {}
+    meta.setdefault("quantity", quantity)
 
     query = """
         INSERT INTO orders (
@@ -400,7 +402,7 @@ async def create_order(
             delivery_address,
             delivery_city,
             delivery_state,
-            metadata or {},
+            meta,
         )
         return dict(row)
 

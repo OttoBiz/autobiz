@@ -174,11 +174,12 @@ Vendor/Logistics receives inbox message with context (customer_id, product_name,
 | Endpoint | Purpose |
 |----------|---------|
 | `POST /api/v1/customer/chat` | Customer message (JSON or FormData with files) |
+| `GET /api/v1/customer/inbox/{user_id}` | Poll customer inbox (order updates, delivery notifications) |
 | `POST /api/v1/business/chat` | Vendor message (with optional reply context) |
 | `GET /api/v1/business/inbox/{vendor_id}` | Poll vendor inbox |
 | `POST /api/v1/logistics/chat` | Logistics message |
 | `GET /api/v1/logistics/inbox/{logistic_id}` | Poll logistics inbox |
-| `GET /api/v1/logistics/orders/{order_id}/tracking` | Order tracking (placeholder) |
+| `GET /api/v1/logistics/orders/{order_id}/tracking` | Order tracking (status, tracking_number, delivery details) |
 
 ---
 
@@ -235,10 +236,5 @@ Vendor/Logistics receives inbox message with context (customer_id, product_name,
 |------|--------|-------|
 | **Payment link verification** | Placeholder | `verify_payment_link` needs Paystack (or similar) API integration |
 | **Payment link generation** | Placeholder | `fetch_payment_link` in product agent not implemented |
-| **Order tracking** | Placeholder | `GET /logistics/orders/{order_id}/tracking` returns stub data |
-| **Cross-selling** | Partial | `upsell_products` has TODO for cross-selling from other businesses |
-| **Ads Marketing stage** | No dedicated agent | Routing identifies stage but no handler |
 | **WhatsApp integration** | Optional | `whatsapp.send_message` called but may not be configured |
 | **End-to-end tests** | Sparse | Test conversations have TODO for actual agent calls |
-| **Delivery status updates** | Manual | No automated flow from logistics to update order status to `delivered` |
-| **Customer inbox** | One-way | Central agent pushes to vendor/logistics inbox; customer notifications may rely on chat response only |
