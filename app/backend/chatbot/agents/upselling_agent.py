@@ -160,14 +160,22 @@ Provide a friendly, persuasive recommendation."""
 
 
 def format_conversation(messages: List) -> str:
-    """Format conversation messages for prompt"""
+    """Format conversation messages for prompt. Handles both dicts and pydantic_ai ModelRequest/ModelResponse."""
     if not messages:
         return ""
-    
+
     formatted = []
     for msg in messages:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
+        if isinstance(msg, dict):
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+        else:
+            # pydantic_ai ModelRequest (user) or ModelResponse (assistant)
+            role = "user" if getattr(msg, "kind", None) == "request" else "assistant"
+            parts = getattr(msg, "parts", [])
+            content = " ".join(
+                getattr(p, "content", str(p)) for p in parts
+            ).strip() if parts else ""
         formatted.append(f"{role}: {content}")
-    
+
     return "\n".join(formatted)
