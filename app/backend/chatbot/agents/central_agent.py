@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, Field
 
 from backend.chatbot.agents.central_agent_utils import Customer, Logistics, Product, Vendor
+from backend.logging_config import get_logger
 from backend.db.cache_utils import get_user_state, modify_user_state, push_to_inbox
 from backend.db.db_utils import (
     create_order as db_create_order,
@@ -27,6 +28,8 @@ from pydantic_ai import RunContext
 
 from .base_agent import BaseAgent
 
+logger = get_logger(__name__)
+
 
 class CentralAgentResponse(BaseModel):
     """Structured response from central agent"""
@@ -37,11 +40,14 @@ class CentralAgentResponse(BaseModel):
     )
     message: str = Field(..., description="Message to send")
     recipient: Union[
-        Literal["ProductAgent", "PaymentAgent", "LogisticAgent"],
+        # Literal["ProductAgent", "PaymentAgent", "LogisticAgent"],
         Literal["Customer", "Vendor", "Logistics"],
-    ] = Field(..., description="Message recipient")
+    ] = Field(
+        ...,
+        description="Who receives this message. Customer=relay product info/payment/delivery to customer. Vendor=ask vendor for confirmation. Logistics=coordinate shipping.",
+    )
     sender: Union[
-        Literal["ProductAgent", "PaymentAgent", "LogisticAgent"],
+        # Literal["ProductAgent", "PaymentAgent", "LogisticAgent"],
         Literal["Customer", "Vendor", "Logistics"],
     ] = Field(..., description="Message sender")
 
@@ -86,7 +92,12 @@ Coordinate communication between customers, vendors, and logistics. Confirm paym
 - get_order_info: Read order from DB or processes cache.
 - update_order_status: Update order status (shipped, delivered, cancelled). Call when vendor/logistics confirms delivery.
 - mark_task_finished: Add completed activity to finished_tasks. Call when payment confirmed, order created, delivery arranged, etc.
-- get_delivery_address, get_logistics_info, get_contact_info: Fetch context for coordination.
+- get_delivery_address, get_logistics_info, get_contact_info, get_business_bank_details: Fetch context for coordination.
+
+**RECIPIENT RULES (critical)**
+- recipient=Customer: When the message is FOR the customer — relaying product availability, prices, payment link, bank details, delivery request, or answering their inquiry. Examples: "We have the item available", "Here are the payment details", "Please share your delivery address".
+- recipient=Vendor: When asking the vendor for confirmation, availability check, or a reply. Examples: "Confirm payment received", "Do you have this in stock?".
+- recipient=Logistics: When coordinating with logistics (shipping, tracking, delivery).
 
 **RULES**
 - Create order only after payment confirmation. Update finished_tasks when tasks complete.
@@ -112,6 +123,7 @@ async def create_order(
     ctx: RunContext[CentralAgentDeps],
     product_name: str,
     total_amount: float,
+    quantity: int = 1,
     delivery_address: Optional[str] = None,
     delivery_city: Optional[str] = None,
     delivery_state: Optional[str] = None,
@@ -127,10 +139,11 @@ async def create_order(
             user_id=customer_id,
             business_id=business_id,
             total_amount=total_amount,
+            quantity=quantity,
             delivery_address=delivery_address,
             delivery_city=delivery_city,
             delivery_state=delivery_state,
-            metadata={"product_name": product_name},
+            metadata={"product_name": product_name, "quantity": quantity},
         )
         order_id = str(order["id"])
         order_number = order["order_number"]
@@ -142,12 +155,19 @@ async def create_order(
         processes[product_name].update({
             "order_id": order_id,
             "order_number": order_number,
+            "quantity": quantity,
             "customer_address": delivery_address,
             "status": "pending",
         })
         user_state["processes"] = processes
         await modify_user_state(customer_id, business_id, user_state)
 
+        logger.info(
+            "central_agent | order_created | order_number=%s product=%s customer=%s",
+            order_number,
+            product_name,
+            customer_id,
+        )
         return {
             "order_id": order_id,
             "order_number": order_number,
@@ -298,6 +318,39 @@ async def get_contact_info(
         return {"error": str(e)}
 
 
+@central_agent.tool
+async def get_business_bank_details(ctx: RunContext[CentralAgentDeps]) -> Dict[str, Any]:
+    """Get vendor bank account details for payment. Fetches from cache or DB if not present."""
+    business_id = _business_id(ctx)
+    if not business_id:
+        return {"error": "No business context"}
+
+    customer_id = _customer_id(ctx)
+    user_state = await get_user_state(customer_id, business_id) or {}
+    business_info = user_state.get("business_information", {})
+
+    has_bank = (
+        business_info.get("bank_name")
+        or business_info.get("bank_account_number")
+        or business_info.get("bank_account_name")
+    )
+    if not has_bank:
+        business_info = await get_business_info(business_id) or {}
+        user_state["business_information"] = business_info
+        await modify_user_state(customer_id, business_id, user_state)
+        if business_info:
+            logger.info(
+                "central_agent | bank_details_fetched | business_id=%s",
+                business_id,
+            )
+
+    return {
+        "bank_name": business_info.get("bank_name", ""),
+        "bank_account_number": business_info.get("bank_account_number", ""),
+        "bank_account_name": business_info.get("bank_account_name", ""),
+    }
+
+
 async def run_central_agent(
     event_message: CentralAgentInput,
     user_state: Optional[Dict[str, Any]] = None,
@@ -342,11 +395,23 @@ async def run_central_agent(
         {"role": "user", "name": event_message.sender, "content": event_message.message}
     )
 
+    logger.info(
+        "central_agent | run_start | customer=%s business=%s sender=%s msg_len=%d",
+        customer_id,
+        business_id,
+        event_message.sender,
+        len(event_message.message or ""),
+    )
     result = await central_agent.run(
         f"Context: {json.dumps(comm_history[-10:])}",
         deps=deps,
     )
     response = result.output
+    logger.info(
+        "central_agent | run_done | recipient=%s next_step=%s",
+        response.recipient,
+        response.next_step[:60] if response.next_step else "",
+    )
 
     comm_history.append(
         {"role": "assistant", "name": response.sender, "content": response.message}
@@ -367,8 +432,26 @@ async def run_central_agent(
         recipient_id = customer_id
 
     if recipient_id:
+        msg = response.message
+        if recipient_lower in ("vendor", "logistics") and (customer_id or product_name or event_message.order_id):
+            parts = []
+            if customer_id:
+                parts.append(f"Customer: {customer_id}")
+            if product_name:
+                parts.append(f"Product: {product_name}")
+            order_num = event_message.order_id
+            if not order_num and customer_id and business_id:
+                user_state = await get_user_state(customer_id, business_id) or {}
+                for _pn, proc in (user_state.get("processes") or {}).items():
+                    if proc.get("order_id"):
+                        order_num = proc.get("order_number") or proc.get("order_id")
+                        break
+            if order_num:
+                parts.append(f"Order: {order_num}")
+            if parts:
+                msg = f"[{' | '.join(parts)}] {msg}"
         inbox_payload = {
-            "message": response.message,
+            "message": msg,
             "sender": response.sender,
             "recipient": response.recipient,
         }
@@ -378,8 +461,13 @@ async def run_central_agent(
             inbox_payload["product_name"] = product_name
         if event_message.order_id:
             inbox_payload["order_id"] = event_message.order_id
-        if recipient_lower == "customer" and business_id:
+        if business_id:
             inbox_payload["business_id"] = business_id
+        logger.info(
+            "central_agent | inbox_push | recipient_id=%s sender=%s",
+            recipient_id,
+            response.sender,
+        )
         await push_to_inbox(recipient_id, inbox_payload)
 
     try:
