@@ -139,6 +139,34 @@ export default function Page() {
   }, [logisticsMessages])
 
   useEffect(() => {
+    if (!selectedUser || !selectedBusiness) return
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/v1/customer/inbox/${selectedUser.id}`)
+        const data = await res.json()
+        if (data.messages?.length > 0) {
+          const relevant = data.messages.filter(
+            (m: { business_id?: string }) =>
+              !m.business_id || m.business_id === selectedBusiness?.id
+          )
+          const incoming = relevant.map(
+            (m: { message: string; sender?: string; business_id?: string }, i: number) => ({
+              id: `customer-inbox-${Date.now()}-${i}`,
+              content: m.message,
+              sender: "ai" as const,
+              timestamp: new Date(),
+              business_id: m.business_id,
+              _inbox: true,
+            })
+          )
+          if (incoming.length > 0) setCustomerMessages((prev) => [...prev, ...incoming])
+        }
+      } catch (_) {}
+    }, 3000)
+    return () => clearInterval(interval)
+  }, [selectedUser, selectedBusiness])
+
+  useEffect(() => {
     if (!selectedBusiness && !selectedLogistics) return
 
     const interval = setInterval(async () => {
