@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel
 
@@ -99,16 +99,13 @@ class UserRequest(BaseModel):
 
 
 class BusinessRequest(BaseModel):
-    user_id: str  # customer_id when replying to a specific thread
-    vendor_id: str
-    logistic_id: str
+    """Request from business/logistics. Reply context is extracted by the agent from chat history."""
+    vendor_id: str = ""  # Set when business is chatting
+    logistic_id: str = ""  # Set when logistics is chatting
     session_id: str
-    sender: str
+    sender: str  # "business" or "logistics"
     message: str
-    product_name: str
-    product_price: Optional[str]
-    message_type: str
-    order_id: Optional[str] = None  # for reply context
+    recent_inbox: Optional[List[Dict[str, Any]]] = None  # Inbox messages displayed in UI (for context extraction)
     msg_date_time: Optional[Union[datetime, str]] = None
 
 
