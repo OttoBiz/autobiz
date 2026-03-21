@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any, Awaitable, Callable, Literal, NamedTuple
+from typing import Any, Awaitable, Callable, List, Literal, NamedTuple, Optional
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
@@ -9,6 +9,7 @@ from pydantic_ai.models import KnownModelName
 class AgentDeps(BaseModel):
     user_id: str
     business_id: str
+    chat_history: Optional[List[Any]] = None
     state: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -30,28 +31,39 @@ async def _not_implemented(deps: AgentDeps, prompt: str) -> dict[str, Any]:
     return {"error": "subagent not implemented yet"}
 
 
-SUBAGENTS: dict[str, SubagentDef] = {
-    "product": SubagentDef(
-        description="Look up product info, pricing, availability, and payment links for this business.",
-        handler=_not_implemented,
-    ),
-    "payment": SubagentDef(
-        description="Verify a payment via receipt or payment link. Match amounts against known products.",
-        handler=_not_implemented,
-    ),
-    "logistics": SubagentDef(
-        description="Track orders, get delivery status, collect delivery addresses.",
-        handler=_not_implemented,
-    ),
-    "customer_relation": SubagentDef(
-        description="Handle complaints, feedback, and escalation decisions.",
-        handler=_not_implemented,
-    ),
-    "outbound": SubagentDef(
-        description="Contact vendor or logistics. Returns immediately — runs in background. Use when you need human confirmation or info the system doesn't have.",
-        handler=_not_implemented,
-    ),
-}
+def _register_handlers() -> dict[str, SubagentDef]:
+    from backend.chatbot.agents.handlers import (
+        handle_customer_relation,
+        handle_logistics,
+        handle_payment,
+        handle_product,
+    )
+
+    return {
+        "product": SubagentDef(
+            description="Look up product info, pricing, availability, and payment links for this business.",
+            handler=handle_product,
+        ),
+        "payment": SubagentDef(
+            description="Verify a payment via receipt or payment link. Match amounts against known products.",
+            handler=handle_payment,
+        ),
+        "logistics": SubagentDef(
+            description="Track orders, get delivery status, collect delivery addresses.",
+            handler=handle_logistics,
+        ),
+        "customer_relation": SubagentDef(
+            description="Handle complaints, feedback, and escalation decisions.",
+            handler=handle_customer_relation,
+        ),
+        "outbound": SubagentDef(
+            description="Contact vendor or logistics. Returns immediately — runs in background. Use when you need human confirmation or info the system doesn't have.",
+            handler=_not_implemented,
+        ),
+    }
+
+
+SUBAGENTS: dict[str, SubagentDef] = _register_handlers()
 
 
 model: KnownModelName = "openai:gpt-5.2-chat-latest"

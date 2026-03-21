@@ -4,48 +4,30 @@ Logistics Agent - Handles customer logistics and delivery inquiries
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import BackgroundTasks
-from pydantic import BaseModel
 from pydantic_ai import RunContext
 
 from backend.chatbot.agents.central_agent import run_central_agent
 from backend.chatbot.agents.central_agent_utils import create_structured_input
-from backend.chatbot.utils.agent_utils import get_or_create_user_state, save_user_state
+from backend.chatbot.agents.main_agent import AgentDeps
 from backend.db.db_utils import get_order_by_id
 from backend.struct import Customer, Vendor
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
 from .base_agent import BaseAgent
 
 
-class LogisticsDeps(BaseModel):
-    """Dependencies for logistics agent"""
-
-    user_id: str
-    business_id: str
-    product_name: Optional[str] = None
-    products_cache: Optional[Dict[str, Any]] = None
-    processes: Optional[Dict[str, Any]] = None
-
-
-# Initialize logistics agent
 logistics_agent_base = BaseAgent(
     system_prompt="""You are a logistics coordination agent for delivery and shipping.
 
 **YOUR JOB**
 - Help customers track deliveries and understand shipping status.
 - Collect delivery addresses for order fulfillment.
-- Coordinate with vendor/logistics via notify_central_agent. Always pass order_id when available (from get_order_for_product) for streamlined coordination.
+- Coordinate with vendor/logistics via notify_central_agent. Always pass order_id when available.
 
 **TOOLS**
-- get_order_for_product: Get order_id for a purchased product from processes. Pass order_id to notify_central_agent for context.
-- get_order_tracking: Get order status, tracking number, and delivery details from the database.
-- get_product_from_cache: Identify which product the customer is asking about.
-- notify_central_agent: Request info from vendor/logistics. Include order_id and product_name when available.
-
-**OBJECTIVE**
-- Ensure delivery clarity. Use order_id to give central agent full context.""",
-    deps_type=LogisticsDeps,
+- get_order_for_product: Get order_id for a purchased product from processes.
+- get_order_tracking: Get order status, tracking number, and delivery details.
+- notify_central_agent: Request info from vendor/logistics. Include order_id and product_name when available.""",
+    deps_type=AgentDeps,
 )
 
 logistics_agent = logistics_agent_base.agent
@@ -53,28 +35,27 @@ logistics_agent = logistics_agent_base.agent
 
 @logistics_agent.tool
 async def get_order_for_product(
-    ctx: RunContext[LogisticsDeps],
+    ctx: RunContext[AgentDeps],
     product_name: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Get order_id for a purchased product from processes. Pass order_id to notify_central_agent."""
-    processes = ctx.deps.processes or {}
-    pname = product_name or ctx.deps.product_name
-    if pname and pname in processes:
-        oid = processes[pname].get("order_id")
+    """Get order_id for a purchased product from processes."""
+    processes = ctx.deps.state.get("processes", {})
+    if product_name and product_name in processes:
+        oid = processes[product_name].get("order_id")
         if oid:
-            return {"order_id": oid, "product_name": pname}
+            return {"order_id": oid, "product_name": product_name}
     for pname, proc in processes.items():
         if proc.get("order_id"):
             return {"order_id": proc["order_id"], "product_name": pname}
-    return {"order_id": None, "product_name": pname}
+    return {"order_id": None, "product_name": product_name}
 
 
 @logistics_agent.tool
 async def get_order_tracking(
-    ctx: RunContext[LogisticsDeps],
+    ctx: RunContext[AgentDeps],
     order_id: str,
 ) -> Dict[str, Any]:
-    """Get order status, tracking number, and delivery details. Use order_id from get_order_for_product."""
+    """Get order status, tracking number, and delivery details."""
     order = await get_order_by_id(order_id)
     if not order:
         return {"error": "Order not found", "order_id": order_id}
@@ -90,30 +71,15 @@ async def get_order_tracking(
 
 
 @logistics_agent.tool
-async def get_product_from_cache(
-    ctx: RunContext[LogisticsDeps],
-) -> List[Dict[str, Any]]:
-    """Get products from cache to identify which product the customer is asking about for delivery."""
-    cache = ctx.deps.products_cache or {}
-    for key, data in cache.items():
-        results = data.get("retrieved_results", [])
-        if results:
-            return [{"name": p.get("name", p.get("product_name")), "price": p.get("price")} for p in results]
-    return []
-
-
-@logistics_agent.tool
 async def notify_central_agent(
-    ctx: RunContext[LogisticsDeps],
+    ctx: RunContext[AgentDeps],
     message: str,
     recipient: str = "Vendor",
     order_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Notify central agent. Pass order_id when available (from get_order_for_product) for better context."""
+    """Notify central agent. Pass order_id when available for better context."""
     try:
-        full_msg = message
-        if order_id:
-            full_msg = f"[Order ID: {order_id}] {message}"
+        full_msg = f"[Order ID: {order_id}] {message}" if order_id else message
         agent_input = await create_structured_input(
             sender="Agent",
             recipient=recipient,
@@ -123,61 +89,6 @@ async def notify_central_agent(
             order_id=order_id,
         )
         await run_central_agent(event_message=agent_input)
-        return {"status": "sent", "message": "Request sent. Customer will be updated when we receive a response."}
+        return {"status": "sent", "message": "Request sent. Awaiting response."}
     except Exception as e:
         return {"status": "error", "message": str(e)}
-
-
-async def run_logistics_agent(
-    customer_message: str,
-    user_id: str,
-    business_id: str,
-    product_name: Optional[str] = None,
-    user_state: Optional[Dict[str, Any]] = None,
-    background_tasks: Optional[BackgroundTasks] = None,
-    debug: bool = False,
-    **kwargs,
-) -> str:
-    """
-    Run logistics agent to handle delivery and shipping inquiries.
-
-    Args:
-        customer_message: Customer message about logistics/delivery
-        user_id: User ID
-        business_id: Business ID
-        product_name: Product being discussed (from routing agent)
-        user_state: Optional user state dict
-        background_tasks: Background tasks
-        debug: Debug mode
-
-    Returns:
-        Response message string
-    """
-    if not user_state:
-        user_state = await get_or_create_user_state(user_id, business_id)
-
-    products_cache = user_state.get("products", {})
-    processes = user_state.get("processes", {})
-    product_context = f"\nProduct for delivery: {product_name}" if product_name else ""
-    order_id = kwargs.get("order_id")
-    order_ctx = f"\nOrder ID: {order_id}" if order_id else ""
-
-    deps = LogisticsDeps(
-        user_id=user_id,
-        business_id=business_id,
-        product_name=product_name,
-        products_cache=products_cache,
-        processes=processes,
-    )
-
-    result = await logistics_agent.run(customer_message + product_context + order_ctx, deps=deps)
-    response = result.output
-
-    user_state.setdefault("chat_history", []).extend([
-        ModelRequest(parts=[UserPromptPart(content=customer_message)]),
-        ModelResponse(parts=[TextPart(content=response)]),
-    ])
-
-    await save_user_state(user_id, business_id, user_state)
-
-    return response

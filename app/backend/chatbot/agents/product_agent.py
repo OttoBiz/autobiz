@@ -7,23 +7,25 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 from pydantic_ai import RunContext
-
-from backend.chatbot.agents.upselling_agent import run_upselling_agent
-from backend.chatbot.agents.central_agent import run_central_agent
-from backend.chatbot.agents.central_agent_utils import create_structured_input
-from backend.chatbot.utils.agent_utils import get_or_create_user_state, save_user_state
-from backend.db.cache_utils import get_user_state
-from backend.db.db_utils import get_products
-from backend.modules.products import get_product_images, get_products_by_business
-from backend.struct import Customer, Vendor
-
-from .base_agent import BaseAgent
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     TextPart,
     UserPromptPart,
 )
+
+from backend.chatbot.agents.central_agent import run_central_agent
+from backend.chatbot.agents.central_agent_utils import create_structured_input
+from backend.chatbot.agents.main_agent import AgentDeps
+from backend.chatbot.agents.upselling_agent import run_upselling_agent
+from backend.chatbot.utils.agent_utils import get_or_create_user_state, save_user_state
+from backend.db.cache_utils import get_user_state
+from backend.db.db_utils import get_products
+from backend.modules.products import get_product_images
+from backend.struct import Customer, Vendor
+
+from .base_agent import BaseAgent
+
 
 class ProductInfo(BaseModel):
     """Product information structure"""
@@ -33,14 +35,6 @@ class ProductInfo(BaseModel):
     items_in_stock: int
     description: Optional[str] = None
     category: Optional[str] = None
-
-
-class ProductAgentDeps(BaseModel):
-    """Dependencies for product agent"""
-
-    user_id: str
-    business_id: str
-    chat_history: Optional[List[Any]] = None
 
 
 # Initialize product agent
@@ -54,7 +48,7 @@ RULES:
 - When a customer wants to purchase, fetch the payment link or provide bank transfer details.
 - If information is missing (no products listed, no payment details set up), call notify_vendor to send a message directly to the vendor — NEVER ask the customer to contact the owner manually.
 - Keep responses concise and conversational.""",
-    deps_type=ProductAgentDeps,
+    deps_type=AgentDeps,
 )
 
 product_agent = product_agent_base.agent
@@ -62,16 +56,18 @@ product_agent = product_agent_base.agent
 
 @product_agent.tool
 async def get_product_info(
-    ctx: RunContext[ProductAgentDeps], product_name: Optional[str] = None, category: Optional[str] = None
+    ctx: RunContext[AgentDeps],
+    product_name: Optional[str] = None,
+    category: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Get relevant products for this vendor's business (per customer's enquiry) from the database. 
+    """Get relevant products for this vendor's business (per customer's enquiry) from the database.
     Call with no product_name to list all products."""
-    
+
     try:
         products = await get_products(
             business_id=ctx.deps.business_id,
-            name=product_name if product_name else None,
-            category=category,
+            name=product_name if product_name else "",
+            category=category if category else "",
         )
         for product in products:
             if product.get("id"):
@@ -84,7 +80,7 @@ async def get_product_info(
 
 @product_agent.tool
 async def fetch_payment_link(
-    ctx: RunContext[ProductAgentDeps],
+    ctx: RunContext[AgentDeps],
     product_id: Optional[str] = None,
     amount: Optional[float] = None,
 ) -> Optional[str]:
@@ -95,7 +91,7 @@ async def fetch_payment_link(
 
 @product_agent.tool
 async def get_business_payment_info(
-    ctx: RunContext[ProductAgentDeps],
+    ctx: RunContext[AgentDeps],
 ) -> Dict[str, str]:
     """Get business payment information (bank account details)"""
     user_state = await get_user_state(ctx.deps.user_id, ctx.deps.business_id)
@@ -111,10 +107,10 @@ async def get_business_payment_info(
 
 @product_agent.tool
 async def notify_vendor(
-    ctx: RunContext[ProductAgentDeps],
+    ctx: RunContext[AgentDeps],
     message: str,
 ) -> Dict[str, Any]:
-    """Send a message to the vendor via the central agent. 
+    """Send a message to the vendor via the central agent.
     Use this when you are unable to find/provide any information concerning a product or the business (per customer's request)."""
     try:
         agent_input = await create_structured_input(
@@ -125,14 +121,17 @@ async def notify_vendor(
             business=Vendor(id=ctx.deps.business_id),
         )
         await run_central_agent(event_message=agent_input)
-        return {"status": "vendor_notified", "message": "Message sent to vendor. The customer will be updated when the vendor responds."}
+        return {
+            "status": "vendor_notified",
+            "message": "Message sent to vendor. The customer will be updated when the vendor responds.",
+        }
     except Exception as e:
         return {"status": "error", "message": f"Could not reach vendor: {e}"}
 
 
 @product_agent.tool
 async def upsell_products(
-    ctx: RunContext[ProductAgentDeps],
+    ctx: RunContext[AgentDeps],
     product_name: str,
     category: Optional[str] = None,
     intent: str = "enquiry",
@@ -198,12 +197,18 @@ async def run_product_agent(
         if business_info.get("bank_name"):
             bank_details.append(f"Bank Name: {business_info.get('bank_name')}")
         if business_info.get("bank_account_name"):
-            bank_details.append(f"Account Name: {business_info.get('bank_account_name')}")
+            bank_details.append(
+                f"Account Name: {business_info.get('bank_account_name')}"
+            )
         if business_info.get("bank_account_number"):
-            bank_details.append(f"Account Number: {business_info.get('bank_account_number')}")
+            bank_details.append(
+                f"Account Number: {business_info.get('bank_account_number')}"
+            )
 
         if bank_details:
-            dynamic_prompt = "\n\n**Business Payment Details:**\n" + "\n".join(bank_details)
+            dynamic_prompt = "\n\n**Business Payment Details:**\n" + "\n".join(
+                bank_details
+            )
             dynamic_prompt += "\n\nIf payment link is not available, provide these bank details for bank transfer."
 
     # Prepare prompt
@@ -217,7 +222,11 @@ async def run_product_agent(
     if not product_cache.get("db_queried", False):
         name_filter = product_name if product_name.strip() != "NONE" else None
         try:
-            products = await get_products(name=name_filter, category=product_category or None, business_id=business_id)
+            products = await get_products(
+                name=name_filter if name_filter else "",
+                category=product_category,
+                business_id=business_id,
+            )
         except Exception:
             products = []
         product_cache = {"retrieved_results": products, "db_queried": True}
@@ -237,10 +246,12 @@ async def run_product_agent(
         prompt_parts.append("\nNo products found in this vendor's inventory.")
 
     if intent == "purchase":
-        prompt_parts.append("\nCustomer intent: Purchase - try to fetch payment link first. If None, provide bank transfer details.")
+        prompt_parts.append(
+            "\nCustomer intent: Purchase - try to fetch payment link first. If None, provide bank transfer details."
+        )
 
     # Create dependencies
-    deps = ProductAgentDeps(
+    deps = AgentDeps(
         user_id=user_id or "",
         business_id=business_id or "",
         chat_history=chat_history,
@@ -254,10 +265,12 @@ async def run_product_agent(
     response = result.output
 
     # Update user state with serializable chat history
-    user_state.setdefault("chat_history", []).extend([
-        ModelRequest(parts=[UserPromptPart(content=customer_message)]),
-        ModelResponse(parts=[TextPart(content=response)]),
-    ])
+    user_state.setdefault("chat_history", []).extend(
+        [
+            ModelRequest(parts=[UserPromptPart(content=customer_message)]),
+            ModelResponse(parts=[TextPart(content=response)]),
+        ]
+    )
 
     await save_user_state(user_id, business_id, user_state)
 
