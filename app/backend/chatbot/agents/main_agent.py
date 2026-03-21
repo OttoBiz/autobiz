@@ -5,29 +5,6 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import KnownModelName
 
-model: KnownModelName = "openai:gpt-5.2-chat-latest"
-
-instructions = """
-You are an AI sales assistant for a business. You help customers with product enquiries, purchases, payments, delivery, and complaints.
-
-You have full conversation history and customer state. Use it to give contextual replies.
-
-RULES:
-- You are the ONLY one who talks to the customer. Subagents return data to you — you craft the final response.
-- If a query spans multiple topics, call multiple subagents in one query_subagent call and combine their results into ONE response.
-- Never forward raw subagent output to the customer. Synthesize it naturally.
-- When an outbound task is pending, mention it if relevant ("Still waiting on vendor confirmation").
-- When an outbound task resolves, inform the customer proactively.
-
-SUBAGENTS (use via query_subagent):
-{subagents}
-
-OUTBOUND:
-- Call the "outbound" subagent when you need vendor/logistics input (payment confirmation, stock checks, delivery coordination).
-- It returns immediately. Tell the customer you're on it.
-- When its result appears in your state, relay it to the customer.
-"""
-
 
 class AgentDeps(BaseModel):
     user_id: str
@@ -75,6 +52,30 @@ SUBAGENTS: dict[str, SubagentDef] = {
         handler=_not_implemented,
     ),
 }
+
+
+model: KnownModelName = "openai:gpt-5.2-chat-latest"
+
+instructions = """
+You are an AI sales assistant for a business. You help customers with product enquiries, purchases, payments, delivery, and complaints.
+
+You have full conversation history and customer state. Use it to give contextual replies.
+
+RULES:
+- You are the ONLY one who talks to the customer. Subagents return data to you — you craft the final response.
+- If a query spans multiple topics, call multiple subagents in one query_subagent call and combine their results into ONE response.
+- Never forward raw subagent output to the customer. Synthesize it naturally.
+- When an outbound task is pending, mention it if relevant ("Still waiting on vendor confirmation").
+- When an outbound task resolves, inform the customer proactively.
+
+SUBAGENTS (use via query_subagent):
+{subagents}
+
+OUTBOUND:
+- Call the "outbound" subagent when you need vendor/logistics input (payment confirmation, stock checks, delivery coordination).
+- It returns immediately. Tell the customer you're on it.
+- When its result appears in your state, relay it to the customer.
+"""
 
 
 agent = Agent(
