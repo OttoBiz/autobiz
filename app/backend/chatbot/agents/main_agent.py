@@ -30,10 +30,6 @@ class SubagentDef(NamedTuple):
     handler: Callable[[AgentDeps, str], Awaitable[dict[str, Any]]]
 
 
-async def _not_implemented(deps: AgentDeps, prompt: str) -> dict[str, Any]:
-    return {"error": "subagent not implemented yet"}
-
-
 def _register_handlers() -> dict[str, SubagentDef]:
     from backend.chatbot.agents.handlers import (
         handle_customer_relation,
