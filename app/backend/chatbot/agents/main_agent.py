@@ -5,12 +5,15 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import KnownModelName
 
+from backend.chatbot.agents.outbound import OutboundDeps
+
 
 class AgentDeps(BaseModel):
     user_id: str
     business_id: str
     chat_history: Optional[List[Any]] = None
     state: dict[str, Any] = Field(default_factory=dict)
+    outbound: List[OutboundDeps] = Field(default_factory=list)
 
 
 class Task(BaseModel):
@@ -35,6 +38,7 @@ def _register_handlers() -> dict[str, SubagentDef]:
     from backend.chatbot.agents.handlers import (
         handle_customer_relation,
         handle_logistics,
+        handle_outbound,
         handle_payment,
         handle_product,
     )
@@ -58,7 +62,7 @@ def _register_handlers() -> dict[str, SubagentDef]:
         ),
         "outbound": SubagentDef(
             description="Contact vendor or logistics. Returns immediately — runs in background. Use when you need human confirmation or info the system doesn't have.",
-            handler=_not_implemented,
+            handler=handle_outbound,
         ),
     }
 
