@@ -36,10 +36,10 @@ RULES:
 - If the vendor declines or cannot help, still call mark_completed with the negative outcome.
 """
 
-hooks = Hooks()
+_hooks = Hooks()
 
 
-@hooks.on.after_tool_execute(tools=["mark_completed"])
+@_hooks.on.after_tool_execute(tools=["mark_completed"])
 async def on_mark_completed(
     ctx: RunContext[OutboundDeps],
     /,
@@ -49,13 +49,13 @@ async def on_mark_completed(
     args: dict[str, Any],
     result: Any,
 ) -> Any:
-    from backend.chatbot.agents.utils import notify_main_agent
+    from backend.chatbot.agents import hooks
 
-    await notify_main_agent(ctx.deps)
+    await hooks.notify_main_agent(ctx.deps)
     return result
 
 
-outbound_agent = Agent(model=model, deps_type=OutboundDeps, capabilities=[hooks])  # type: ignore[arg-type]
+outbound_agent = Agent(model=model, deps_type=OutboundDeps, capabilities=[_hooks])  # type: ignore[arg-type]
 
 
 @outbound_agent.instructions
