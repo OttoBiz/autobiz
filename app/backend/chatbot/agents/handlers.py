@@ -32,9 +32,12 @@ async def handle_customer_relation(deps: AgentDeps, prompt: str) -> dict[str, An
 
 
 async def _run_outbound(prompt: str, outbound_deps: OutboundDeps) -> None:
-    """Run outbound agent in background. On completion, resolution is written to outbound_deps."""
+    """Run outbound agent in background.
+
+    On completion the after_tool_execute hook on mark_completed fires
+    notify_main_agent, which triggers a system-initiated main agent run.
+    """
     await outbound_agent.run(prompt, deps=outbound_deps)
-    # TODO: trigger hook to notify main agent thread
 
 
 async def handle_outbound(deps: AgentDeps, prompt: str) -> dict[str, Any]:
@@ -45,6 +48,7 @@ async def handle_outbound(deps: AgentDeps, prompt: str) -> dict[str, Any]:
     outbound_deps = OutboundDeps(
         task_key=task_key,
         customer_id=deps.user_id,
+        business_id=deps.business_id,
         business_name=business_name,
     )
 

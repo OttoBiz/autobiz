@@ -1,7 +1,9 @@
 from typing import Any
 
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, RunContext, ToolDefinition
+from pydantic_ai.capabilities import Hooks
+from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.models import KnownModelName
 
 
@@ -12,6 +14,7 @@ class OutboundDeps(BaseModel):
     customer_id: str = Field(
         description="ID of the customer who triggered this outbound request."
     )
+    business_id: str = Field(default="")
     business_name: str = Field(default="")
     resolution: dict[str, Any] = Field(
         default_factory=dict,
@@ -33,10 +36,26 @@ RULES:
 - If the vendor declines or cannot help, still call mark_completed with the negative outcome.
 """
 
-outbound_agent = Agent(
-    model=model,
-    deps_type=OutboundDeps,
-)
+hooks = Hooks()
+
+
+@hooks.on.after_tool_execute(tools=["mark_completed"])
+async def on_mark_completed(
+    ctx: RunContext[OutboundDeps],
+    /,
+    *,
+    call: ToolCallPart,
+    tool_def: ToolDefinition,
+    args: dict[str, Any],
+    result: Any,
+) -> Any:
+    from backend.chatbot.agents.utils import notify_main_agent
+
+    await notify_main_agent(ctx.deps)
+    return result
+
+
+outbound_agent = Agent(model=model, deps_type=OutboundDeps, capabilities=[hooks])  # type: ignore[arg-type]
 
 
 @outbound_agent.instructions
