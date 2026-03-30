@@ -34,7 +34,6 @@ RULES:
 """
 
 outbound_agent = Agent(
-    instructions=instructions,
     model=model,
     deps_type=OutboundDeps,
 )
