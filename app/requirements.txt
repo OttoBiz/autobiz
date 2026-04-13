@@ -3,7 +3,7 @@ uvicorn==0.30.1
 fastapi==0.111.0
 
 # AI/ML Libraries
-pydantic-ai>=0.0.14
+pydantic-ai-slim[google,anthropic,openai,logfire]==1.73.0
 pydantic>=2.7.4
 
 # Database
@@ -47,5 +47,5 @@ Pillow>=10.0.0
 pytesseract>=0.3.10
 aiofiles==25.1.0
 
-# Logging
-logfire==4.29.0
+# Logging & Observability
+logfire[fastapi]==4.29.0

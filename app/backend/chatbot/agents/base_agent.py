@@ -6,8 +6,7 @@ All agents inherit from this base class which provides common functionality.
 import os
 import logfire
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Union
-from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 from pydantic_ai import Agent
 
@@ -22,13 +21,7 @@ from pydantic_ai.models.openai import OpenAIModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.google_gla import GoogleGLAProvider
 from pydantic_ai.providers.openai import OpenAIProvider
-from pydantic_ai.messages import (
-    ModelRequest,
-    SystemPromptPart,
-    ModelResponse,
-    TextPart,
-    UserPromptPart,
-)
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
 from backend.config import config
 
@@ -60,6 +53,7 @@ class BaseAgent:
         deps_type: Optional[type] = None,
         output_type: Optional[type] = None,
         tools: Optional[List[Any]] = None,
+        model_settings: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize base agent with model selection.
@@ -89,10 +83,11 @@ class BaseAgent:
         if deps_type:
             agent_kwargs["deps_type"] = deps_type
         if output_type:
-            agent_kwargs["result_type"] = output_type
+            agent_kwargs["output_type"] = output_type
         if tools:
             agent_kwargs["tools"] = tools
-
+        if model_settings:
+            agent_kwargs["model_settings"] = model_settings
         self.agent = Agent(self.model, **agent_kwargs)
 
     def _select_model(self, model_name: str, api_key: Optional[str] = None):
@@ -165,64 +160,3 @@ class BaseAgent:
         return self.agent.run_sync(
             prompt, deps=deps, message_history=message_history, **kwargs
         )
-
-    def add_data(self, data: Union[List[Any], Dict[str, Any]], chat_history: Dict[Any, Any], **kwargs) -> str:
-        context_parts = []
-        
-        # Get current datetime
-        current_datetime = datetime.now()
-        
-        # Format date with ordinal suffix (1st, 2nd, 3rd, 4th, etc.)
-        day = current_datetime.day
-        if 10 <= day % 100 <= 20:
-            suffix = 'th'
-        else:
-            suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
-        
-        # Format date: "Monday, 25th November 2025"
-        month_names = [
-            'January', 'February', 'March', 'April', 'May', 'June',
-            'July', 'August', 'September', 'October', 'November', 'December'
-        ]
-        day_names = [
-            'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
-        ]
-        day_of_week = day_names[current_datetime.weekday()]
-        formatted_date = f"{day_of_week}, {day}{suffix} {month_names[current_datetime.month - 1]} {current_datetime.year}"
-        
-        # Format time in 12-hour format with am/pm: "8:30pm"
-        hour = current_datetime.hour
-        minute = current_datetime.minute
-        if hour == 0:
-            formatted_hour = 12
-            period = 'am'
-        elif hour < 12:
-            formatted_hour = hour
-            period = 'am'
-        elif hour == 12:
-            formatted_hour = 12
-            period = 'pm'
-        else:
-            formatted_hour = hour - 12
-            period = 'pm'
-        
-        formatted_time = f"{formatted_hour}:{minute:02d}{period}"
-        
-        # Add date and time to context
-        context_parts.append(f"Today's Date: {formatted_date}")
-        context_parts.append(f"Today's Time: {formatted_time}")
-        
-        # Add user information
-        if data:
-            context_parts.append(str(data))
-            
-        for key, value in kwargs.items():
-            context_parts.append(f"{key.replace('_', ' ').title()}: {value}")
-            # context_parts.append(f"{key.replace('_', ' ').title()}: {value}")
-                
-        if chat_history:
-            chat_history[0].parts[0].content = f"{self.system_prompt}\n\n" + ("\n").join(context_parts) 
-        else:
-            chat_history =   [ModelRequest(parts=[SystemPromptPart(content=f"{self.system_prompt}\n\n" + ("\n").join(context_parts))])]
-        
-        return chat_history

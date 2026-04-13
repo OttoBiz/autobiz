@@ -16,4 +16,5 @@ def verification(request: Request):
 @router.post("/webhook")
 async def notification(request: Request, background_task: BackgroundTasks):
     response = await whatsapp.handle_webhook(request, background_task)
-    return PlainTextResponse(response)
+    status = 403 if response == "Invalid signature" else 200
+    return PlainTextResponse(response, status_code=status)

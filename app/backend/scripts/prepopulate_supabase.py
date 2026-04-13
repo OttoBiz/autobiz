@@ -87,7 +87,7 @@ def prepopulate_products():
                     product_name=fake.word().capitalize() + " " + fake.word(),
                     product_description=fake.text(),
                     product_category=random.choice(["Electronics", "Fashion", "Cosmetics", "Gadgets"]),
-                    price=round(random.uniform(10, 500), 2),
+                    price=round(random.uniform(5, 1000), 2),
                     items_in_stock=random.randint(0, 100),
                     tags=fake.word() + ", " + fake.word()
                 )

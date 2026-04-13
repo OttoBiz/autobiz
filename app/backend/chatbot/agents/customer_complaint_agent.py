@@ -7,8 +7,16 @@ from typing import Any, Dict, Optional
 
 from fastapi import BackgroundTasks
 from pydantic import BaseModel
+from pydantic_ai import RunContext
 
+from backend.chatbot.agents.central_agent_utils import (
+    coerce_entity,
+    create_structured_input,
+    ensure_central_process,
+)
 from backend.chatbot.utils.agent_utils import get_or_create_user_state, save_user_state
+from backend.db.cache_utils import get_user_state, modify_user_state
+from backend.struct import Customer, EntityType, Product, TaskType, Vendor
 
 from .base_agent import BaseAgent
 from pydantic_ai.messages import (
@@ -23,27 +31,66 @@ class CustomerComplaintDeps(BaseModel):
 
     user_id: str
     business_id: str
+    product_name: Optional[str] = None
 
 
 # Initialize customer complaint agent
 customer_complaint_agent_base = BaseAgent(
-    system_prompt="""You are a customer service agent that handles customer complaints and feedback.
+    system_prompt="""You are the **complaints specialist**: empathetic, fair, de-escalation first.
 
-**YOUR JOB**
-- Collect information about complaints/feedback and try to resolve issues.
-- Refer customers to human agents when:
-  - Issue is too complex
-  - Customer demands refund
-  - Product return or exchange is requested
-  - Customer demands to speak with vendor directly
+**Workflow**
+1. Acknowledge the customer's frustration. Restate the issue to confirm understanding.
+2. Propose a concrete next step within policy (exchange, refund timeline, investigation).
+3. If the issue requires vendor/logistics action (refunds, chargebacks, defective items, returns), call `notify_central_agent` to escalate with a clear summary.
 
-**OBJECTIVE**
-- Resolve customer complaints efficiently.
-- Escalate to human agents when necessary.""",
+**Rules**
+- Never be defensive. Short apologies where appropriate; give clear timelines.
+- Do not promise refunds or replacements you cannot authorize — escalate instead.""",
     deps_type=CustomerComplaintDeps,
 )
 
 customer_complaint_agent = customer_complaint_agent_base.agent
+
+
+@customer_complaint_agent.tool
+async def notify_central_agent(
+    ctx: RunContext[CustomerComplaintDeps],
+    message: str,
+    recipient: str = "Vendor",
+    product_name: str = "",
+) -> Dict[str, Any]:
+    """Escalate complaint to vendor or logistics via the central agent."""
+    try:
+        from backend.chatbot.agents.central_agent import run_central_agent
+
+        pname = product_name or ctx.deps.product_name or ""
+        us = await get_user_state(ctx.deps.user_id, ctx.deps.business_id) or {}
+        pid = ensure_central_process(
+            us,
+            task_type=TaskType.COMPLAINT,
+            customer_id=ctx.deps.user_id,
+            vendor_id=ctx.deps.business_id,
+            product_name=pname,
+        )
+        await modify_user_state(ctx.deps.user_id, ctx.deps.business_id, us)
+        agent_input = await create_structured_input(
+            sender=EntityType.AGENT,
+            recipient=coerce_entity(recipient),
+            message=message,
+            customer=Customer(id=ctx.deps.user_id),
+            business=Vendor(id=ctx.deps.business_id),
+            product=Product(id="", name=pname, quantity=1, price=0.0) if pname else None,
+            process_id=pid,
+            task_type=TaskType.COMPLAINT,
+        )
+        await run_central_agent(
+            event_message=agent_input,
+            user_state=us,
+            caller_agent="customer_complaint_agent.notify_central_agent",
+        )
+        return {"status": "sent", "message": "Complaint escalated. Customer will be updated when we receive a response."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 async def run_customer_complaint_agent(
@@ -54,6 +101,7 @@ async def run_customer_complaint_agent(
     user_state: Optional[Dict[str, Any]] = None,
     background_tasks: Optional[BackgroundTasks] = None,
     debug: bool = False,
+    append_chat_history: bool = True,
     **kwargs,
 ) -> tuple[str, Dict[str, Any]]:
     """
@@ -74,20 +122,19 @@ async def run_customer_complaint_agent(
     if not user_state:
         user_state = await get_or_create_user_state(user_id, business_id)
 
-    deps = CustomerComplaintDeps(user_id=user_id, business_id=business_id)
+    deps = CustomerComplaintDeps(user_id=user_id, business_id=business_id, product_name=product_name or "")
 
-    prompt = f"""Customer complaint: {customer_message}
-Product: {product_name}
-
-Address this complaint and provide resolution or escalate to human agent if needed."""
+    product_ctx = f"\nProduct: {product_name}" if product_name else ""
+    prompt = f"Customer complaint: {customer_message}{product_ctx}"
 
     result = await customer_complaint_agent.run(prompt, deps=deps)
     response = result.output
 
-    # Update user state
-    user_state["chat_history"].extend([
-    ModelRequest(parts=[UserPromptPart(content=customer_message)]),
-    ModelResponse(parts=[TextPart(content=response)])])
+    if append_chat_history:
+        user_state.setdefault("chat_history", []).extend([
+            ModelRequest(parts=[UserPromptPart(content=customer_message)]),
+            ModelResponse(parts=[TextPart(content=response)]),
+        ])
 
     await save_user_state(user_id, business_id, user_state)
 

@@ -53,8 +53,7 @@ class BusinessRequest(BaseModel):
     product_name: str
     product_price: str
     user_id: str
-    vendor_id: str
-    logistic_id: str
+    business_id: str
     message_type: str
 
 
@@ -93,7 +92,7 @@ class WhatsappBot:
 
             if not self.verify_signature(body, signature):
                 logger.error("Invalid signature")
-                return "Invalid signature", 403
+                return "Invalid signature"
 
             try:
                 data = json.loads(body)
@@ -308,15 +307,15 @@ class WhatsappBot:
             return True  # Allow in development
 
         if signature.startswith("sha256="):
-            sha256 = hmac.new(
+            expected = hmac.new(
                 self.app_secret.encode("utf-8"), request_body, hashlib.sha256
             ).hexdigest()
-            return sha256 == signature[7:]
+            return hmac.compare_digest(expected, signature[7:])
         elif signature.startswith("sha1="):
-            sha1 = hmac.new(
+            expected = hmac.new(
                 self.app_secret.encode("utf-8"), request_body, hashlib.sha1
             ).hexdigest()
-            return sha1 == signature[5:]
+            return hmac.compare_digest(expected, signature[5:])
         return False
 
 

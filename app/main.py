@@ -3,7 +3,7 @@ Main FastAPI application for Ottobiz
 """
 import asyncio
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
@@ -11,7 +11,7 @@ import logging
 import os
 
 # Import routers
-from backend.api.routers import customer, business, logistics, analytics, inventory, supply_chain
+from backend.api.routers import customer, business, logistics, analytics, inventory, supply_chain, session, payments
 from backend.whatsapp.routers import router as whatsapp_router
 
 # Import legacy endpoints for backward compatibility
@@ -20,6 +20,9 @@ from backend.chatbot.interface.business_chat_interface import business_chat
 from backend.struct import UserRequest, BusinessRequest
 
 load_dotenv()
+
+import logfire
+logfire.configure(send_to_logfire="if-token-present")
 
 # Import database connection for lifecycle management
 try:
@@ -44,6 +47,22 @@ app = FastAPI(
     description="Automated Business Platform API",
     version="1.0.0"
 )
+
+logfire.instrument_fastapi(app)
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    from fastapi.responses import JSONResponse
+    if isinstance(exc, HTTPException):
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    logging.exception("Unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error."})
+
+
+# Rate limiting (applied first, before CORS)
+from backend.api.middleware import RateLimitMiddleware
+app.add_middleware(RateLimitMiddleware)
 
 # CORS middleware
 app.add_middleware(
@@ -101,6 +120,8 @@ app.include_router(logistics.router, prefix="/api/v1")
 app.include_router(analytics.router, prefix="/api/v1")
 app.include_router(inventory.router, prefix="/api/v1")
 app.include_router(supply_chain.router, prefix="/api/v1")
+app.include_router(session.router, prefix="/api/v1")
+app.include_router(payments.router, prefix="/api/v1")
 app.include_router(whatsapp_router, prefix="/whatsapp")
 
 # Mount static files for uploads
@@ -145,7 +166,10 @@ async def health_check():
             "logistics": "/api/v1/logistics",
             "analytics": "/api/v1/analytics",
             "inventory": "/api/v1/inventory",
-            "supply_chain": "/api/v1/supply-chain"
+            "supply_chain": "/api/v1/supply-chain",
+            "session": "/api/v1/session/clear",
+            "paystack_webhook": "/api/v1/payments/paystack/webhook",
+            "paystack_callback": "/api/v1/payments/paystack/callback",
         }
     }
 

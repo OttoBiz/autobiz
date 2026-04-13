@@ -3,6 +3,7 @@ Database population: run migrations and seed with dummy data.
 Uses hardcoded UUIDs matching frontend predefined businesses.
 """
 import csv
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -33,6 +34,18 @@ FRONTEND_LOGISTICS_IDS = {
     "Quick Ship": "00000000-0000-0000-0002-000000000003",
 }
 
+# Vendor with catalog but no bank / Paystack keys — used by AI e2e tests (payment-unavailable scenario).
+# Keep UUID in sync with `backend.tests.ai_tests.constants.AI_TEST_NOPAY_VENDOR_ID`.
+AI_TEST_NOPAY_VENDOR_ID = "00000000-0000-0000-0001-0000000000aa"
+
+# Test bank details for selected vendors (override CSV / dummy on each startup seed).
+SEEDED_VENDOR_BANK = {
+    "Donrey Fashion": ("Guarantee Trust Bank", "0116042270", "jeffrey otoibhi"),
+    "Manny Gadgets": ("Providus Bank", "6506842487", "jeffrey otoibhi"),
+    "Junae Cosmetics": ("Providus Bank", "6506842487", "jeffrey otoibhi"),
+    "Tesla Tech": ("Ecobank", "4251015814", "jeffrey otoibhi"),
+}
+
 # Map dummy data filenames to frontend business names
 DUMMY_FILE_TO_BUSINESS = {
     "donrey_fashion": "Donrey Fashion",
@@ -49,6 +62,22 @@ DUMMY_DATA_DIR = Path(__file__).resolve().parent.parent / "dummy_data"
 def _or_default(val: str | None, default: str) -> str:
     """Return val if non-empty, else default."""
     return (val or "").strip() or default
+
+
+def _stable_price_ngn(business_id: str, product_name: str) -> float:
+    """Deterministic price in [5, 1000] NGN for stable seeds (all dummy catalog items)."""
+    h = hashlib.md5(f"{business_id}:{product_name}".encode()).hexdigest()
+    return float(5 + (int(h[:8], 16) % 996))
+
+
+def _apply_seeded_vendor_bank(row: tuple) -> tuple:
+    """If this business row is a seeded vendor, replace bank fields."""
+    lst = list(row)
+    name = lst[1]
+    if name in SEEDED_VENDOR_BANK:
+        bn, num, acc = SEEDED_VENDOR_BANK[name]
+        lst[10], lst[11], lst[12] = bn, num, acc
+    return tuple(lst)
 
 
 def _dummy_business_fields(slug: str, seed: int = 0) -> dict:
@@ -128,12 +157,14 @@ def _business_row(uuid: str, name: str, row: dict | None, dummy: dict, business_
             _or_default(row.get("Bank name"), dummy["bank_name"]),
             _or_default(row.get("Bank account number"), dummy["bank_account_number"]),
             _or_default(row.get("Bank account name"), dummy["bank_account_name"]),
+            "NGN",
         )
     return (
         uuid, name, "{}", business_type,
         dummy["phone_number"], dummy["email"], dummy["ig_page"],
         dummy["facebook_page"], dummy["twitter_page"], dummy["tiktok"],
         dummy["bank_name"], dummy["bank_account_number"], dummy["bank_account_name"],
+        "NGN",
     )
 
 
@@ -172,12 +203,17 @@ async def _load_businesses(pool) -> None:
         key = name.lower().replace(" ", "_")
         row = table_by_key.get(key)
         dummy = _dummy_business_fields(name, seed=idx + 10)
-        rows_to_insert.append(_business_row(uuid, name, row, dummy, "vendor"))
+        rows_to_insert.append(_apply_seeded_vendor_bank(_business_row(uuid, name, row, dummy, "vendor")))
 
     for idx, (name, uuid) in enumerate(FRONTEND_LOGISTICS_IDS.items()):
         dummy = _dummy_business_fields(name, seed=idx + 20)
         rows_to_insert.append(_business_row(uuid, name, None, dummy, "logistics"))
 
+    vendor_logistic_pairs = [
+        (FRONTEND_BUSINESS_IDS["Donrey Fashion"], FRONTEND_LOGISTICS_IDS["Fast Delivery Co"]),
+        (FRONTEND_BUSINESS_IDS["Manny Gadgets"], FRONTEND_LOGISTICS_IDS["Express Logistics"]),
+        (FRONTEND_BUSINESS_IDS["Junae Cosmetics"], FRONTEND_LOGISTICS_IDS["Quick Ship"]),
+    ]
     async with pool.acquire() as conn:
         await conn.execute("TRUNCATE businesses CASCADE")
         for r in rows_to_insert:
@@ -186,10 +222,16 @@ async def _load_businesses(pool) -> None:
                 INSERT INTO businesses (
                     id, name, product_schema, business_type, phone_number, email,
                     ig_page, facebook_page, twitter_page, tiktok,
-                    bank_name, bank_account_number, bank_account_name
-                ) VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                    bank_name, bank_account_number, bank_account_name, currency
+                ) VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                 """,
                 *r,
+            )
+        for vid, lid in vendor_logistic_pairs:
+            await conn.execute(
+                "UPDATE businesses SET partner_logistic_id = $2::uuid WHERE id = $1::uuid",
+                vid,
+                lid,
             )
 
 
@@ -270,11 +312,13 @@ async def _load_products(pool) -> None:
 
     async with pool.acquire() as conn:
         for r in all_rows:
-            business_id, name, desc, price, stock, category, attrs = r
+            business_id, name, desc, _, stock, category, attrs = r
+            price = _stable_price_ngn(business_id, name)
             await conn.execute(
                 """
-                INSERT INTO products (business_id, name, description, price, stock_quantity, category, attributes)
-                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+                INSERT INTO products (
+                    business_id, name, description, price, stock_quantity, category, attributes, currency
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
                 """,
                 business_id,
                 name,
@@ -283,7 +327,40 @@ async def _load_products(pool) -> None:
                 stock,
                 category or None,
                 json.dumps(attrs) if attrs else "{}",
+                "NGN",
             )
+
+
+async def _load_ai_test_nopay_vendor(pool) -> None:
+    """Seed a vendor with products but NULL bank fields for payment-missing E2E tests."""
+    vid = AI_TEST_NOPAY_VENDOR_ID
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO businesses (
+                id, name, product_schema, business_type, tier,
+                phone_number, email, ig_page, facebook_page, twitter_page, tiktok,
+                bank_name, bank_account_number, bank_account_name, currency
+            ) VALUES (
+                $1::uuid, 'NoPay Test Shop', '{}'::jsonb, 'vendor', 'free',
+                '+2347990000001', 'nopay_test@example.com',
+                'nopay_test_shop', '', '', '',
+                NULL, NULL, NULL, 'NGN'
+            )
+            """,
+            vid,
+        )
+        be_price = _stable_price_ngn(vid, "Budget Earbuds")
+        await conn.execute(
+            """
+            INSERT INTO products (
+                business_id, name, description, price, stock_quantity, category, attributes, currency
+            )
+            VALUES ($1::uuid, 'Budget Earbuds', 'Inexpensive earbuds for payment-flow testing', $2, 50, 'Accessory', '{}'::jsonb, 'NGN')
+            """,
+            vid,
+            be_price,
+        )
 
 
 async def populate_db_on_startup() -> None:
@@ -298,6 +375,7 @@ async def populate_db_on_startup() -> None:
         await _load_users(pool)
         await _load_businesses(pool)
         await _load_products(pool)
+        await _load_ai_test_nopay_vendor(pool)
         logging.info("Database populated successfully")
     except Exception as e:
         logging.error(f"populate_db_on_startup failed: {e}")

@@ -3,19 +3,28 @@ Product Agent - Handles product inquiries and purchases
 Converted to pydantic_ai
 """
 
+import uuid
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 from pydantic_ai import RunContext
 
-from backend.chatbot.agents.upselling_agent import run_upselling_agent
 from backend.chatbot.agents.central_agent import run_central_agent
-from backend.chatbot.agents.central_agent_utils import create_structured_input
+from backend.chatbot.agents.central_agent_utils import (
+    create_structured_input,
+    ensure_central_process,
+)
 from backend.chatbot.utils.agent_utils import get_or_create_user_state, save_user_state
-from backend.db.cache_utils import get_user_state
-from backend.db.db_utils import get_products
+from backend.db.cache_utils import get_user_state, modify_user_state
+from backend.config import BASE_URL, PAYSTACK_DEFAULT_CURRENCY
+from backend.db.db_utils import get_business_info, get_product_by_id, get_products
+from backend.payments.paystack_client import (
+    amount_to_kobo,
+    initialize_transaction,
+    persist_paystack_reference,
+)
 from backend.modules.products import get_product_images, get_products_by_business
-from backend.struct import Customer, Vendor
+from backend.struct import Customer, EntityType, Product, TaskType, Vendor
 
 from .base_agent import BaseAgent
 from pydantic_ai.messages import (
@@ -45,15 +54,17 @@ class ProductAgentDeps(BaseModel):
 
 # Initialize product agent
 product_agent_base = BaseAgent(
-    system_prompt="""You are a vendor assistant. Your ONLY source of product information is the get_product_info tool.
+    system_prompt="""You are the **product specialist** for this store.
 
-RULES:
-- ALWAYS call get_product_info before answering any product question. Never invent or assume products.
-- Call get_product_info with no arguments to list all available products.
-- Only mention products that are returned by the tool. If the tool returns nothing, say the vendor has no matching products.
-- When a customer wants to purchase, fetch the payment link or provide bank transfer details.
-- If information is missing (no products listed, no payment details set up), call notify_vendor to send a message directly to the vendor — NEVER ask the customer to contact the owner manually.
-- Keep responses concise and conversational.""",
+**Workflow**
+1. ALWAYS call `get_product_info` before answering. Never invent stock, price, or availability.
+2. No product_name given → list what the tool returns (concise bullets, max 8). Customer-facing: name + price only; no raw IDs or stock counts unless they ask.
+3. Purchase intent → call `fetch_payment_link`. If it returns ok=false or no payment_url, call `get_business_payment_info` and present bank-transfer details clearly.
+4. When Paystack succeeds: give the customer the payment link AND the reference (needed for verification after paying, especially from WhatsApp).
+5. **No row matches the customer's exact ask** (empty tool result, or nothing that matches model/color/SKU they stated) → **immediately** call `notify_vendor` with the customer's exact request; then reply in 1–2 short sentences that you're checking with the store, and mention at most one or two real alternatives from tool results if any—no multi-option menus.
+6. Missing catalog or payment setup → call `notify_vendor`. Never tell the customer to email the owner, visit an external website, or leave the app.
+
+**Tone**: Helpful expert, concise, confident. Short chat lines. Acknowledge buy signals naturally.""",
     deps_type=ProductAgentDeps,
 )
 
@@ -64,20 +75,33 @@ product_agent = product_agent_base.agent
 async def get_product_info(
     ctx: RunContext[ProductAgentDeps], product_name: Optional[str] = None, category: Optional[str] = None
 ) -> List[Dict[str, Any]]:
-    """Get relevant products for this vendor's business (per customer's enquiry) from the database. 
-    Call with no product_name to list all products."""
-    
+    """Up to 8 matching products: id, name, price, stock, category, short description; image_urls only for the first row (max 2 URLs)."""
     try:
         products = await get_products(
             business_id=ctx.deps.business_id,
             name=product_name if product_name else None,
             category=category,
+            limit=8,
         )
-        for product in products:
-            if product.get("id"):
-                images = await get_product_images(product["id"])
-                product["image_urls"] = images
-        return products
+        out: List[Dict[str, Any]] = []
+        for i, p in enumerate(products or []):
+            slim: Dict[str, Any] = {
+                "id": str(p.get("id", "")),
+                "name": p.get("name"),
+                "price": p.get("price"),
+                "currency": p.get("currency"),
+                "stock_quantity": p.get("stock_quantity"),
+                "category": p.get("category"),
+            }
+            desc = (p.get("description") or "").strip()
+            if desc:
+                slim["description"] = desc[:240]
+            if i == 0 and p.get("id"):
+                imgs = await get_product_images(p["id"])
+                if imgs:
+                    slim["image_urls"] = imgs[:2]
+            out.append(slim)
+        return out
     except Exception as e:
         return [{"error": f"Could not fetch products: {e}"}]
 
@@ -87,10 +111,87 @@ async def fetch_payment_link(
     ctx: RunContext[ProductAgentDeps],
     product_id: Optional[str] = None,
     amount: Optional[float] = None,
-) -> Optional[str]:
-    """Fetch payment link for product purchase. Returns None if not available (use bank transfer instead)."""
-    # TODO: Integrate with Paystack or other payment gateway
-    return None
+) -> Dict[str, Any]:
+    """Create a Paystack payment page for this vendor. Returns payment_url, reference, and ok flag; on failure ok=false."""
+    user_state = await get_user_state(ctx.deps.user_id, ctx.deps.business_id) or {}
+    biz = user_state.get("business_information") or {}
+    secret = (biz.get("paystack_secret_key") or "").strip()
+    if not secret:
+        bi = await get_business_info(ctx.deps.business_id)
+        if bi:
+            user_state["business_information"] = bi
+            biz = bi
+            secret = (biz.get("paystack_secret_key") or "").strip()
+    if not secret:
+        return {
+            "ok": False,
+            "payment_url": None,
+            "reference": None,
+            "message": "Paystack is not configured for this store (no secret key). Use bank transfer.",
+        }
+
+    amt_major: Optional[float] = None
+    pid = (product_id or "").strip() or None
+    if amount is not None and float(amount) > 0:
+        amt_major = float(amount)
+    elif pid:
+        row = await get_product_by_id(pid)
+        if row and row.get("price") is not None:
+            amt_major = float(row["price"])
+    if amt_major is None or amt_major <= 0:
+        return {
+            "ok": False,
+            "payment_url": None,
+            "reference": None,
+            "message": "Need a valid amount or product_id with a price.",
+        }
+
+    reference = f"OBZ{uuid.uuid4().hex[:20]}"
+    email = (user_state.get("customer_email") or "").strip() or f"{ctx.deps.user_id}@customers.ottobiz.app"
+    callback_url = f"{BASE_URL.rstrip('/')}/api/v1/payments/paystack/callback"
+    meta = {
+        "user_id": str(ctx.deps.user_id),
+        "business_id": str(ctx.deps.business_id),
+        "product_id": str(pid or ""),
+    }
+    init = await initialize_transaction(
+        secret_key=secret,
+        email=email,
+        amount_kobo=amount_to_kobo(amt_major),
+        reference=reference,
+        callback_url=callback_url,
+        metadata=meta,
+        currency=PAYSTACK_DEFAULT_CURRENCY,
+    )
+    if not init.get("ok"):
+        return {
+            "ok": False,
+            "payment_url": None,
+            "reference": None,
+            "message": init.get("message", "Could not start Paystack checkout."),
+        }
+
+    ref = str(init.get("reference") or reference)
+    url = init.get("authorization_url")
+    pending = user_state.setdefault("pending_paystack", {})
+    pending[ref] = {
+        "amount": amt_major,
+        "product_id": pid,
+        "payment_url": url,
+        "currency": PAYSTACK_DEFAULT_CURRENCY,
+    }
+    user_state["last_paystack_reference"] = ref
+    await modify_user_state(ctx.deps.user_id, ctx.deps.business_id, user_state)
+    persist_paystack_reference(ref, ctx.deps.user_id, ctx.deps.business_id, pid, amt_major)
+
+    return {
+        "ok": True,
+        "payment_url": url,
+        "reference": ref,
+        "amount": amt_major,
+        "currency": PAYSTACK_DEFAULT_CURRENCY,
+        "message": "Share the link with the customer and tell them the reference for payment confirmation.",
+    }
 
 
 @product_agent.tool
@@ -113,40 +214,37 @@ async def get_business_payment_info(
 async def notify_vendor(
     ctx: RunContext[ProductAgentDeps],
     message: str,
+    product_name: str = "",
 ) -> Dict[str, Any]:
-    """Send a message to the vendor via the central agent. 
-    Use this when you are unable to find/provide any information concerning a product or the business (per customer's request)."""
+    """Pushes a request to the **vendor inbox** via the central agent. Use when: catalog has no match for what the customer asked, stock/price unknown, or payment setup missing. Pass a single clear sentence for `message` (what the customer wants + any specs)."""
     try:
+        user_state = await get_user_state(ctx.deps.user_id, ctx.deps.business_id) or {}
+        pid = ensure_central_process(
+            user_state,
+            task_type=TaskType.PRODUCT_ENQUIRY,
+            customer_id=ctx.deps.user_id,
+            vendor_id=ctx.deps.business_id,
+            product_name=product_name,
+        )
+        await modify_user_state(ctx.deps.user_id, ctx.deps.business_id, user_state)
         agent_input = await create_structured_input(
-            sender="Agent",
-            recipient="Vendor",
+            sender=EntityType.AGENT,
+            recipient=EntityType.VENDOR,
             message=message,
             customer=Customer(id=ctx.deps.user_id),
             business=Vendor(id=ctx.deps.business_id),
+            product=Product(id="", name=product_name, quantity=1, price=0.0) if product_name else None,
+            process_id=pid,
+            task_type=TaskType.PRODUCT_ENQUIRY,
         )
-        await run_central_agent(event_message=agent_input)
+        await run_central_agent(
+            event_message=agent_input,
+            user_state=user_state,
+            caller_agent="product_agent.notify_vendor",
+        )
         return {"status": "vendor_notified", "message": "Message sent to vendor. The customer will be updated when the vendor responds."}
     except Exception as e:
         return {"status": "error", "message": f"Could not reach vendor: {e}"}
-
-
-@product_agent.tool
-async def upsell_products(
-    ctx: RunContext[ProductAgentDeps],
-    product_name: str,
-    category: Optional[str] = None,
-    intent: str = "enquiry",
-    **kwargs,
-) -> str:
-    """Upsell similar or complementary products (including from other businesses) when product not found."""
-    return await run_upselling_agent(
-        product_name,
-        intent=intent,
-        conversation_messages=ctx.deps.chat_history,
-        business_id=ctx.deps.business_id,
-        category=category,
-        **kwargs,
-    )
 
 
 async def run_product_agent(
@@ -158,7 +256,9 @@ async def run_product_agent(
     business_id: str = "",
     user_state: Optional[Dict[str, Any]] = None,
     api_key: Optional[str] = None,
+    product_attributes_json: Optional[str] = None,
     debug: bool = False,
+    append_chat_history: bool = True,
 ) -> tuple[str, Dict[str, Any]]:
     """
     Run product agent to handle customer product inquiries.
@@ -208,19 +308,24 @@ async def run_product_agent(
 
     # Prepare prompt
     prompt_parts = [f"Customer message: {customer_message}"]
+    if product_attributes_json and product_attributes_json.strip():
+        prompt_parts.append(
+            f"\nProduct image / attribute hints (JSON): {product_attributes_json.strip()}"
+        )
 
     # Always fetch products for this vendor — use product_name filter when specific, else fetch all
+    name_filter = product_name if product_name.strip() != "NONE" else None
     cache_key = product_name if product_name.strip() != "NONE" else "__all__"
     products_cache = user_state.get("products", {})
     product_cache = products_cache.get(cache_key, {})
 
     if not product_cache.get("db_queried", False):
-        name_filter = product_name if product_name.strip() != "NONE" else None
         try:
             products = await get_products(name=name_filter, category=product_category or None, business_id=business_id)
         except Exception:
             products = []
-        product_cache = {"retrieved_results": products, "db_queried": True}
+        import time
+        product_cache = {"retrieved_results": products, "db_queried": True, "_ts": time.time()}
         user_state.setdefault("products", {})[cache_key] = product_cache
 
     products = product_cache.get("retrieved_results", [])
@@ -236,8 +341,16 @@ async def run_product_agent(
     else:
         prompt_parts.append("\nNo products found in this vendor's inventory.")
 
+    if name_filter:
+        prompt_parts.append(
+            "\n**Rule:** If this list is empty OR no item matches the customer's exact product (model, color, storage, etc.), "
+            "you MUST call `notify_vendor` with their exact request, then answer the customer briefly."
+        )
+
     if intent == "purchase":
-        prompt_parts.append("\nCustomer intent: Purchase - try to fetch payment link first. If None, provide bank transfer details.")
+        prompt_parts.append(
+            "\nCustomer intent: Purchase - call fetch_payment_link first. If ok=false, provide bank transfer details."
+        )
 
     # Create dependencies
     deps = ProductAgentDeps(
@@ -253,11 +366,11 @@ async def run_product_agent(
 
     response = result.output
 
-    # Update user state with serializable chat history
-    user_state.setdefault("chat_history", []).extend([
-        ModelRequest(parts=[UserPromptPart(content=customer_message)]),
-        ModelResponse(parts=[TextPart(content=response)]),
-    ])
+    if append_chat_history:
+        user_state.setdefault("chat_history", []).extend([
+            ModelRequest(parts=[UserPromptPart(content=customer_message)]),
+            ModelResponse(parts=[TextPart(content=response)]),
+        ])
 
     await save_user_state(user_id, business_id, user_state)
 

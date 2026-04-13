@@ -2,6 +2,8 @@
 Business Chat Interface - Handles business owner interactions
 Converted to Pydantic AI with analytics and inventory tools
 """
+import uuid
+import logfire
 from fastapi import BackgroundTasks
 from typing import Optional, Dict, Any, List
 from pydantic_ai import RunContext
@@ -9,14 +11,26 @@ from backend.chatbot.agents.base_agent import BaseAgent
 from backend.chatbot.agents.central_agent import run_central_agent
 from backend.chatbot.agents.central_agent_utils import create_structured_input
 from backend.chatbot.utils.agent_utils import format_chat_history
-from backend.db.cache_utils import get_user_state, modify_user_state
+from backend.db.cache_utils import get_party_state, get_user_state, modify_party_state, modify_user_state
 from backend.db.db_utils import (
+    add_product as db_add_product,
     get_business_analytics,
+    get_business_info,
     get_inventory,
     update_product_stock,
-    get_low_stock_products
+    get_low_stock_products,
 )
-from backend.struct import BusinessRequest, CentralAgentInput, Customer, Vendor, Product
+from backend.struct import (
+    BusinessRequest,
+    CentralAgentInput,
+    Customer,
+    EntityType,
+    Logistics,
+    Product,
+    TaskType,
+    Vendor,
+)
+from backend.chatbot.agents.central_agent_utils import ensure_central_process
 from pydantic import BaseModel, Field
 from pydantic_ai.messages import (
     ModelRequest,
@@ -25,50 +39,101 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
+from backend.logging_config import get_logger
+from backend.chatbot.utils.agent_trace_stdout import agent_stdout, format_message_history_for_stdout
+from typing import Union
+
+logger = get_logger(__name__)
+
+
+async def _get_business_info(business_id: str) -> Optional[str]:
+    """Resolve `businesses.business_type` (e.g. vendor, logistics, service). None if not found."""
+    row = await get_business_info((business_id or "").strip())
+    if not row:
+        return None, None
+    bt = (row.get("business_type") or "").strip()
+    return row, bt or None 
+
 class BusinessChatDeps(BaseModel):
     """Dependencies for business chat"""
     business_id: str
     logistic_id: str = ""
-    api_key: Optional[str] = None
-
+    customer_id: Optional[str] = None
 
 class ReplyContext(BaseModel):
     """Reply context extracted from chat history when business is replying about a customer/order/product."""
-    customer_id: Optional[str] = None
-    vendor_id: Optional[str] = None  # Business/vendor for the order (when logistics replying)
-    product_id: Optional[str] = None
-    product_name: Optional[str] = None
+    customer_id: str
+    process_id: Optional[str] = None
+    task_type: Optional[str] = None
+    vendor_id: str # Business/vendor for the order (when logistics replying)
+    logistic_id: Optional[str] = None # Logistics/logistics company for the order (when business replying)
+    product_id: str
+    product_name: str
     order_id: Optional[str] = None
     order_number: Optional[str] = None
+    price: Optional[float] = None
     quantity: Optional[int] = None
     product_attributes: Optional[Dict[str, Any]] = None
 
 
 class OutputBusinessChat(BaseModel):
     """Output for business chat. Agent extracts reply_context from chat history when applicable."""
-    response: Optional[str] = Field(default=None, description="Response to business owner (or None if routing to central)")
-    for_central_agent: bool = False
-    message_for_central: Optional[str] = Field(default=None, description="Message to send to central agent if for_central_agent")
-    reply_context: Optional[ReplyContext] = Field(default=None, description="Extracted from chat: customer_id, product_name, order_id when replying about a specific thread")
-    
+    for_central_agent: bool = Field(
+        default=False,
+        description=(
+            "True when this turn must go through the central coordinator (inbox replies, shopper updates, vendor↔logistics relay). "
+            "MUST be True if recipient is Customer—there is no direct channel to the shopper from this chat."
+        ),
+    )
+    reply_context: Optional[ReplyContext] = Field(
+        default=None,
+        description="Required for inbox/coordination turns: customer_id, process_id from thread markers; vendor_id should match the store UUID when known. Must be accurate and precise.",
+    )
+    confidence_score: Optional[float] = Field(
+        default=None,
+        description="Confidence score for the reply context. 0.0 to 1.0.",
+    )
+    recipient: EntityType = Field(
+        description="Who should receive the **next** coordination step: Customer | Vendor | Logistics | Agent. set to None if you are responding directly back to the entity you are chatting with."
+    )
+    response: Optional[str] = Field(
+        default=None,
+        description="If for_central_agent True: exact message for central agent to relay (e.g. to Customer). If appropriate message for vendor/logistics UI based on the context.",
+    )
+
+
+def _forward_via_central(out: OutputBusinessChat) -> bool:
+    """Shopper-bound turns must use central; the model sometimes omits for_central_agent."""
+    if out.for_central_agent:
+        return True
+    rc = out.reply_context
+    if out.recipient == EntityType.CUSTOMER and rc and (rc.customer_id or "").strip():
+        return True
+    return False
+
+
 # Initialize business chat agent
 business_chat_agent_base = BaseAgent(
-    system_prompt="""You are an AI assistant for business owners and logistics.
+    system_prompt="""**ROLE AND PURPOSE**
+You are ottobiz AI, the primary AI Business Assistant dedicated to serving businesses (i.e **Vendors** (`vendor_id`) and **Logistics Providers**). You have a dual logic flow mode: 
+1. providing direct business operational support
+2. acting as a communications bridge between vendors/logistic businesses and external agents/customers.
 
-**YOUR JOB**
-1. Help with business analytics, inventory, and product availability (use tools).
-2. When the business/logistics is replying about a customer, order, or product: extract reply_context from the chat history (inbox messages include [Customer: X | Product: Y | Order: Z]) and route to central agent.
+**MODE 1: DIRECT BUSINESS SUPPORT (Default Mode)**
+You provide direct, localized assistance to vendor or logistic businesses queries or questions.
+* **Capabilities:** Business analytics, supply chain predictions, inventory management, updating their product in the database, low stock alerts, and executing system updates (e.g., updating product stock quantities).
+* **Action:** Process these requests directly within the current chat context.
 
-**EXTRACTING REPLY CONTEXT**
-- Chat history contains inbox messages with structured context: [Customer: {id} | Product: {name} | Order: {id/number}]
-- When the user's message is a reply (e.g. "Yes confirmed", "Shipped", "Delivered"), extract customer_id, product_name, order_id from the most recent relevant inbox message.
-- Set for_central_agent=True and populate reply_context with extracted values.
-- Set message_for_central to the user's message (or a clear paraphrase).
+**MODE 2: CROSS-PARTY COORDINATION (Thread Handoff)**
+Sometimes, the business's message is a response to a third-party's message (which contains a Process ID). This means the business (vendor/logistics) needs to coordinate with another party (e.g. customer, another vendor, logistics company). 
+In this case, you will act as an effective relay, passing the message to the relevant party (e.g. customer, vendor, logistics or AI agent).
+Inbox lines use markers like `Customer:`, `Process:`, `Task:`. You can use this information to determine the context reference of the last business's message.
 
-**RULES**
-- If the user is querying analytics/inventory: respond directly, for_central_agent=False.
-- If the user is replying to an inbox message about a customer/order: extract context, for_central_agent=True, reply_context filled.
-- Be professional and concise.""",
+**Hard rules**
+- If `recipient` is **Customer**→ set **`for_central_agent = True`**, fill **ReplyContext** (`customer_id`, `process_id`, `product_name` from the thread), and put the shopper-facing text in **`response`** (central relays it).
+- If the vendor/logistics only answers internal business ops with no cross-party relay → `for_central_agent = False`, recipient= None.
+
+Optional `task_type` when the thread names it; `recipient` Vendor/Logistics is for coordination between those parties (still `for_central_agent = True`).""",
     deps_type=BusinessChatDeps,
     output_type=OutputBusinessChat
 )
@@ -83,24 +148,73 @@ async def get_business_analytics_tool(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Get business analytics for business including sales, orders, revenue, and top products"""
+    """Sales/order aggregates and up to 5 top products (compact)."""
     try:
-        return await get_business_analytics(ctx.deps.business_id, start_date=start_date, end_date=end_date)
+        data = await get_business_analytics(ctx.deps.business_id, start_date=start_date, end_date=end_date)
+        tp = data.get("top_products") or []
+        if isinstance(tp, list) and len(tp) > 5:
+            data = {**data, "top_products": tp[:5]}
+        return data
     except Exception as e:
         return {"error": f"Analytics unavailable: {e}", "sales": {}, "orders": {}, "top_products": []}
 
 
 # Inventory Management Tools
+def _slim_inventory_row(r: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": str(r.get("id", "")),
+        "name": r.get("name"),
+        "sku": r.get("sku"),
+        "price": r.get("price"),
+        "currency": r.get("currency"),
+        "stock_quantity": r.get("stock_quantity"),
+        "category": r.get("category"),
+    }
+
+
 @business_chat_agent.tool
 async def get_inventory_info(
     ctx: RunContext[BusinessChatDeps]
 ) -> List[Dict[str, Any]]:
-    """Get current inventory information including stock levels and status"""
+    """Current inventory (compact rows, capped)."""
     try:
-        return await get_inventory(ctx.deps.business_id)
+        rows = await get_inventory(ctx.deps.business_id)
+        return [_slim_inventory_row(dict(x)) for x in (rows or [])[:50]]
     except Exception as e:
         return [{"error": f"Inventory unavailable: {e}"}]
 
+@business_chat_agent.tool
+async def add_product_to_inventory(
+    ctx: RunContext[BusinessChatDeps],
+    product_name: str,
+    price: float,
+    quantity: int,
+    description: str = "",
+    category: str = "",
+    product_attributes: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Add a new product to the inventory"""
+    try:
+        result = await db_add_product(
+            business_id=ctx.deps.business_id,
+            name=product_name,
+            price=price,
+            stock_quantity=quantity,
+            description=description,
+            category=category,
+            attributes=product_attributes,
+        )
+        if not result:
+            return {"error": "Could not add product"}
+        return {
+            "success": True,
+            "product_id": str(result.get("id", "")),
+            "name": result.get("name"),
+            "price": result.get("price"),
+            "stock_quantity": result.get("stock_quantity"),
+        }
+    except Exception as e:
+        return {"error": f"Add product failed: {e}"}
 
 @business_chat_agent.tool
 async def update_product_availability(
@@ -108,12 +222,16 @@ async def update_product_availability(
     product_id: str,
     stock_quantity: int
 ) -> Dict[str, Any]:
-    """Update product stock quantity/availability"""
+    """Update product stock quantity/availability when business confirm that more stock is available"""
     try:
         updated = await update_product_stock(product_id, stock_quantity)
         if not updated:
             return {"error": "Product not found"}
-        return {"success": True, "product": updated, "message": f"Stock updated to {stock_quantity} units"}
+        return {
+            "success": True,
+            "product_id": str(updated.get("id", "")),
+            "stock_quantity": updated.get("stock_quantity"),
+        }
     except Exception as e:
         return {"error": f"Update failed: {e}"}
 
@@ -123,96 +241,210 @@ async def get_low_stock_alerts(
     ctx: RunContext[BusinessChatDeps],
     threshold: int = 10
 ) -> List[Dict[str, Any]]:
-    """Get products with low stock levels that need restocking"""
+    """Products at or below stock threshold (compact, capped)."""
     try:
-        return await get_low_stock_products(ctx.deps.business_id, threshold)
+        rows = await get_low_stock_products(ctx.deps.business_id, threshold)
+        return [_slim_inventory_row(dict(x)) for x in (rows or [])[:25]]
     except Exception as e:
         return [{"error": f"Low stock check unavailable: {e}"}]
 
+async def _get_logistic_id_for_business(business_id: Union[str, uuid.UUID], user_state: Dict[str, Any]) -> Optional[str]:
+    """Get the logistic_id for a business"""
+    logistic_id = user_state.get("logistic_id")
+    if logistic_id:
+        return logistic_id
+    ## if logistic_id from state is none, check if business has a logistic company (logistic_id) attached to it in the business db table. if not , for now randomly assign a logistic company with it.
+    # log the logistic id and its source (business_id or randomly assigned)
+    # return the logistic_id 
+    user_state["logistic_id"] = logistic_id
+    return logistic_id , user_state
 
 async def business_chat(
     business_request: BusinessRequest,
     background_tasks: BackgroundTasks,
-    api_key: Optional[str] = None,
     debug: bool = False
 ) -> Optional[str]:
     """
     Handle business/logistics chat. Agent extracts reply context from chat history.
     """
-    state_key_id = business_request.logistic_id or business_request.vendor_id
+    state_key_id = (business_request.business_id or "").strip()
     if not state_key_id:
-        return "Error: vendor_id or logistic_id required"
-    user_state = await get_user_state(state_key_id, state_key_id) or {}
-    if "chat_history" not in user_state:
-        user_state["chat_history"] = []
+        raise ValueError("Not a vaild business. Valid business_id is required")
+    with logfire.span("business_chat", party_id=state_key_id):
+        return await _business_chat_inner(business_request, background_tasks, debug, state_key_id)
 
-    vendor_id = business_request.vendor_id or business_request.logistic_id
-    chat_history = list(user_state.get("chat_history", []))
-    recent_inbox = business_request.recent_inbox or []
-    for m in recent_inbox:
-        content = m.get("message", "")
-        ctx_parts = []
-        if m.get("customer_id"):
-            ctx_parts.append(f"Customer: {m['customer_id']}")
-        if m.get("product_name"):
-            ctx_parts.append(f"Product: {m['product_name']}")
-        if m.get("order_id"):
-            ctx_parts.append(f"Order: {m['order_id']}")
-        if m.get("business_id"):
-            ctx_parts.append(f"Vendor: {m['business_id']}")
-        if ctx_parts:
-            content = f"[{' | '.join(ctx_parts)}] {content}"
-        chat_history.append(ModelRequest(parts=[UserPromptPart(content="[Inbox]")]))
-        chat_history.append(ModelResponse(parts=[TextPart(content=content)]))
-    result = await business_chat_agent.run(
-        business_request.message,
-        deps=BusinessChatDeps(
-            business_id=vendor_id,
-            logistic_id=business_request.logistic_id,
-            api_key=api_key,
-        ),
-        message_history=chat_history,
-    )
 
-    user_state["chat_history"].append(
-        ModelRequest(parts=[UserPromptPart(content=business_request.message)])
-    )
+async def _business_chat_inner(
+    business_request,
+    background_tasks: BackgroundTasks,
+    debug: bool,
+    state_key_id: str,
+) -> Optional[str]:
+    try:
+        business_user_state = await get_party_state(state_key_id) or {}
+        if "chat_history" not in business_user_state:
+            business_user_state["chat_history"] = []
 
-    if not result.output.for_central_agent:
-        response = result.output.response or "How can I help?"
-        user_state["chat_history"].append(
-            ModelResponse(parts=[TextPart(content=response)])
+        business_info, business_type = await _get_business_info(state_key_id)
+        business_is_logistics = (business_type or "").lower() == "logistics"
+        logistic_id, business_user_state = state_key_id if business_is_logistics else await _get_logistic_id_for_business(state_key_id, business_user_state)
+        
+        chat_history = list(business_user_state.get("chat_history", []))
+
+        agent_stdout(
+            f"business_chat chat_history BEFORE agent.run (party_id={state_key_id})",
+            format_message_history_for_stdout(chat_history),
         )
-        await modify_user_state(state_key_id, state_key_id, user_state)
-        return response
-
-    rc = result.output.reply_context
-    msg = result.output.message_for_central or business_request.message
-    if not rc or not rc.customer_id:
-        user_state["chat_history"].append(
-            ModelResponse(parts=[TextPart(content="I need more context. Which customer or order is this about? Please reply to the specific inbox message.")])
+        agent_stdout("business_chat_agent input", business_request.message)
+        ## add additonal context as instructions conatin information about the business you are chatting with using the state_key_id which should be a business_id
+        business_info = f"Business information: {business_info}" if business_is_logistics else f"Business information: {business_info}, Logistics information: {logistic_id}"
+        
+        result = await business_chat_agent.run(
+            business_request.message,
+            deps=BusinessChatDeps(
+                business_id=state_key_id,
+                logistic_id=logistic_id,
+            ),
+            message_history=chat_history,
+            instructions=business_info,
         )
-        await modify_user_state(state_key_id, state_key_id, user_state)
-        return "Could not determine which customer/order you're replying to. Please ensure you're replying in the context of an inbox message."
+        _bc_out = result.output
+        coerced_central = _forward_via_central(_bc_out) and not _bc_out.for_central_agent
+        if coerced_central:
+            logger.info(
+                "business_chat | routing_fix recipient=Customer with reply_context → central "
+                "(model had for_central_agent=False)"
+            )
 
-    biz_id = rc.vendor_id or vendor_id
-    agent_input = await create_structured_input(
-        sender="Vendor" if not business_request.logistic_id else "Logistics",
-        recipient="Agent",
-        message=msg,
-        customer=Customer(id=rc.customer_id),
-        business=Vendor(id=biz_id),
-        product=Product(id=rc.product_id or "", name=rc.product_name or "", quantity=rc.quantity or 1, price=0, has_paid=False) if rc.product_name else None,
-        order_id=rc.order_id or None,
-    )
-    central_user_state = await get_user_state(rc.customer_id, biz_id) or {}
+        agent_stdout(
+            "business_chat_agent output",
+            f"for_central_agent={_bc_out.for_central_agent} forward_via_central={_forward_via_central(_bc_out)}\n"
+            f"recipient={_bc_out.recipient}\n"
+            f"reply_context={_bc_out.reply_context}\n"
+            f"response={_bc_out.response}",
+        )
 
-    background_tasks.add_task(
-        run_central_agent,
-        agent_input,
-        central_user_state,
-        vendor_only=True,
-        debug=debug,
-    )
-    await modify_user_state(state_key_id, state_key_id, user_state)
-    return "Message processed. Coordinating with relevant parties."
+        if not _forward_via_central(_bc_out):
+            business_user_state["chat_history"].append(
+                ModelRequest(parts=[UserPromptPart(content=business_request.message)])
+            )
+            response = result.output.response
+            business_user_state["chat_history"].append(
+                ModelResponse(parts=[TextPart(content=response)])
+            )
+            await modify_party_state(state_key_id, business_user_state)
+            agent_stdout(
+                f"business_chat chat_history AFTER persist (party_id={state_key_id})",
+                format_message_history_for_stdout(business_user_state.get("chat_history")),
+            )
+            return response
+
+        rc = _bc_out.reply_context
+        msg = _bc_out.response
+
+        if not rc or not rc.customer_id or (rc.confidence_score or 0.0) < 0.5:
+            business_user_state["chat_history"].append(
+                ModelRequest(parts=[UserPromptPart(content=business_request.message)])
+            )
+            response = "I need more context. Which customer or order is this about? Please reply to the specific inbox message. Please ensure you're replying in the context of an inbox message."
+            business_user_state["chat_history"].append(
+                ModelResponse(parts=[TextPart(content=response)])
+            )
+            await modify_party_state(state_key_id, business_user_state)
+            agent_stdout(
+                f"business_chat chat_history AFTER persist (party_id={state_key_id})",
+                format_message_history_for_stdout(business_user_state.get("chat_history")),
+            )
+            return response
+
+        biz_id = rc.vendor_id if business_is_logistics else state_key_id
+
+        central_user_state = await get_user_state(rc.customer_id, biz_id) or {}
+        tt = TaskType.UNKNOWN
+        if rc.task_type:
+            for t in TaskType:
+                if t.value == rc.task_type or t.name == rc.task_type:
+                    tt = t
+                    break
+        pid = (rc.process_id or "").strip() or ensure_central_process(
+            central_user_state,
+            task_type=tt,
+            customer_id=rc.customer_id,
+            vendor_id=biz_id,
+            product_name=rc.product_name or "",
+            order_id=rc.order_id,
+        )
+        # await modify_user_state(rc.customer_id, biz_id, central_user_state)
+
+        logistic = (
+            Logistics(id=rc.logistic_id if not business_is_logistics else state_key_id, name=None, phone=None)
+        )
+        
+        agent_input = await create_structured_input(
+            sender="Logistics" if business_is_logistics else "Vendor",
+            recipient=_bc_out.recipient,
+            message=msg,
+            customer=Customer(id=rc.customer_id),
+            business=Vendor(id=biz_id),
+            logistic=logistic,
+            product=Product(id=rc.product_id or "", name=rc.product_name or "", quantity=rc.quantity or 1, price=rc.price or 0, metadata=rc.product_attributes or None, has_paid=False if not rc.order_id else True) if rc.product_name else None,
+            order_id=rc.order_id or None,
+            process_id=pid,
+            task_type=tt,
+        )
+
+        _ttp = tt.value if hasattr(tt, "value") else str(tt)
+        _mp = (msg or "")[:2000]
+        logger.info(
+            "business_chat_central_forward | party_id=%s customer_id=%s process_id=%s task_type=%s "
+            "recipient=%s message_preview=%r",
+            state_key_id,
+            rc.customer_id,
+            pid,
+            _ttp,
+            _bc_out.recipient,
+            _mp,
+        )
+        
+        logfire.info(
+            "business_chat_central_forward",
+            party_id=state_key_id,
+            customer_id=rc.customer_id,
+            process_id=pid,
+            task_type=_ttp,
+            recipient=str(_bc_out.recipient),
+            message_preview=_mp,
+        )
+        
+        await run_central_agent(
+            agent_input,
+            central_user_state,
+            vendor_only=True,
+            debug=debug,
+            caller_agent="business_chat_interface",
+        )
+        
+        # Reload so party chat_history includes central appends; then persist this user turn only.
+        business_user_state = await get_party_state(state_key_id) or business_user_state
+        
+        placeholder_message = f"Message  for: \n process-id : {pid}\n customer-id: {rc.customer_id}\n product: {rc.product_name or ""}.\n Coordinating with relevant parties."
+        
+        business_user_state.setdefault("chat_history", [])
+        business_user_state["chat_history"].append(
+            ModelRequest(parts=[UserPromptPart(content=business_request.message)]),
+            ModelResponse(parts=[TextPart(content=placeholder_message)])
+        )
+        
+        await modify_party_state(state_key_id, business_user_state)
+        
+        agent_stdout(
+            f"business_chat chat_history AFTER run_central_agent + persist (party_id={state_key_id})",
+            format_message_history_for_stdout(business_user_state.get("chat_history")),
+        )
+        return placeholder_message
+    
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.exception("business_chat failed | party_id=%s error=%s", state_key_id, e)
+        return "An error occurred while processing your message."

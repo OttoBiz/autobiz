@@ -1,5 +1,11 @@
 from backend.logging_config import get_logger
-from pydantic_ai.messages import ModelMessagesTypeAdapter
+from pydantic_ai.messages import (
+    ModelMessagesTypeAdapter,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
 
 from .cache import Cache
 from .config import REDIS_SERVER_HOST, REDIS_SERVER_PASSWORD, REDIS_SERVER_PORT
@@ -14,13 +20,8 @@ redis_conn = Cache(
 async def get_user_state(user_id, vendor_id, session_id=None):
     try:
         user_state = redis_conn.get(f"{user_id}:{vendor_id}")
-        if user_state and "chat_history" in user_state:
-            raw = user_state["chat_history"]
-            if raw and isinstance(raw[0], dict):
-                try:
-                    user_state["chat_history"] = ModelMessagesTypeAdapter.validate_python(raw)
-                except Exception:
-                    user_state["chat_history"] = []
+        if user_state:
+            _hydrate_chat_history_if_needed(user_state)
         return user_state
     except Exception:
         logger.error(
@@ -66,6 +67,51 @@ async def delete_user_state(user_id, vendor_id):
         )
 
 
+def _hydrate_chat_history_if_needed(user_state: dict) -> None:
+    if not user_state or "chat_history" not in user_state:
+        return
+    raw = user_state["chat_history"]
+    if raw and isinstance(raw[0], dict):
+        try:
+            user_state["chat_history"] = ModelMessagesTypeAdapter.validate_python(raw)
+        except Exception:
+            user_state["chat_history"] = []
+
+
+async def get_party_state(party_id: str) -> dict:
+    """Redis key = party_id only (vendor or logistics chat state)."""
+    if not party_id:
+        return {}
+    try:
+        user_state = redis_conn.get(party_id)
+        if not user_state:
+            return {}
+        _hydrate_chat_history_if_needed(user_state)
+        return user_state
+    except Exception:
+        logger.error("redis_party_get_failed | party_id=%s", party_id, exc_info=True)
+        return {}
+
+
+async def modify_party_state(party_id: str, user_state: dict) -> None:
+    if not party_id:
+        return
+    try:
+        serializable = _serialize_user_state(user_state)
+        redis_conn.set(party_id, serializable)
+    except Exception:
+        logger.error("redis_party_set_failed | party_id=%s", party_id, exc_info=True)
+
+
+async def delete_party_state(party_id: str) -> None:
+    if not party_id:
+        return
+    try:
+        redis_conn.delete(party_id)
+    except Exception:
+        logger.error("redis_party_delete_failed | party_id=%s", party_id, exc_info=True)
+
+
 async def push_to_inbox(recipient_id: str, message: dict) -> None:
     try:
         redis_conn.push_to_list(f"inbox:{recipient_id}", message)
@@ -79,3 +125,41 @@ async def get_inbox(recipient_id: str) -> list:
     except Exception:
         logger.error("inbox_get_failed | recipient_id=%s", recipient_id, exc_info=True)
         return []
+
+
+async def delete_inbox_key(recipient_id: str) -> None:
+    """Remove pending inbox list for a recipient (simulation reset)."""
+    if not recipient_id:
+        return
+    try:
+        redis_conn.delete(f"inbox:{recipient_id}")
+    except Exception:
+        logger.error("inbox_delete_failed | recipient_id=%s", recipient_id, exc_info=True)
+
+
+async def append_inbox_turn_to_customer_pair(
+    customer_id: str,
+    business_id: str,
+    message_text: str,
+) -> None:
+    """Persist central outbound on customer–vendor Redis key user_id:vendor_id."""
+    if not customer_id or not business_id or not message_text:
+        return
+    user_state = await get_user_state(customer_id, business_id) or {}
+    history = list(user_state.get("chat_history") or [])
+    history.append(ModelRequest(parts=[UserPromptPart(content="[Central agent]")]))
+    history.append(ModelResponse(parts=[TextPart(content=message_text)]))
+    user_state["chat_history"] = history
+    await modify_user_state(customer_id, business_id, user_state)
+
+
+async def append_inbox_turn_to_party_state(party_id: str, message_text: str) -> None:
+    """Persist central outbound on single-key Redis state (vendor_id or logistic_id)."""
+    if not party_id or not message_text:
+        return
+    user_state = await get_party_state(party_id) or {}
+    history = list(user_state.get("chat_history") or [])
+    history.append(ModelRequest(parts=[UserPromptPart(content="[Central agent]")]))
+    history.append(ModelResponse(parts=[TextPart(content=message_text)]))
+    user_state["chat_history"] = history
+    await modify_party_state(party_id, user_state)

@@ -1,115 +1,183 @@
 """
-File Handler - Handles file uploads and processing
+Upload pipeline: S3 only → media_processing_agent (structured output) → DB → batch for chat layer.
+No local disk persistence; no PIL/file_processor in this path.
 """
+from __future__ import annotations
+
 import asyncio
 import os
 import uuid
-from typing import List, Dict, Any, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
 from fastapi import UploadFile
-from backend.chatbot.utils.file_processor import process_file
-from backend.chatbot.agents.media_processing_agent import process_receipt_image, process_document, process_image
+
+from backend.chatbot.agents.media_processing_agent import (
+    ProcessedUploadOutput,
+    UploadKind,
+    analyze_upload_for_conversation,
+)
+from backend.config import (
+    AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY,
+    AWS_S3_BUCKET,
+    AWS_S3_REGION,
+    SAVE_UPLOADS_TO_S3,
+)
+from backend.db.db_utils import insert_conversation_uploaded_file
 
 
-async def save_file(file_content: bytes, filename: str, business_id: str, user_id: str) -> str:
-    """
-    Save uploaded file and return URL/path.
-    
-    Args:
-        file_content: File bytes
-        filename: Original filename
-        business_id: Business ID
-        user_id: User ID
-        
-    Returns:
-        File URL or path
-    """
-    import aiofiles
-    
-    # Create directory structure
-    upload_dir = f"uploads/{business_id}/{user_id}"
-    os.makedirs(upload_dir, exist_ok=True)
-    
-    # Generate unique filename
-    file_ext = os.path.splitext(filename)[1]
-    unique_filename = f"{uuid.uuid4()}{file_ext}"
-    file_path = os.path.join(upload_dir, unique_filename)
-    
-    # Save file asynchronously
-    async with aiofiles.open(file_path, "wb") as f:
-        await f.write(file_content)
-    
-    # Return file path (in production, upload to cloud storage and return URL)
-    # For now, return URL that can be accessed via static file serving
-    # In production, replace with actual cloud storage URL
-    base_url = os.getenv("BASE_URL", "http://localhost:8000")
-    return f"{base_url}/uploads/{business_id}/{user_id}/{unique_filename}"
+def _s3_key(business_id: str, user_id: str, filename: str) -> str:
+    ext = os.path.splitext(filename)[1] or ".bin"
+    return f"uploads/{business_id}/{user_id}/{uuid.uuid4()}{ext}"
+
+
+def _upload_s3_sync(content: bytes, key: str) -> Optional[str]:
+    if not (
+        SAVE_UPLOADS_TO_S3
+        and AWS_S3_BUCKET
+        and AWS_ACCESS_KEY_ID
+        and AWS_SECRET_ACCESS_KEY
+    ):
+        return None
+    try:
+        import boto3  # type: ignore
+    except ImportError:
+        return None
+    try:
+        client = boto3.client(
+            "s3",
+            region_name=AWS_S3_REGION,
+            aws_access_key_id=AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+        )
+        client.put_object(Bucket=AWS_S3_BUCKET, Key=key, Body=content)
+        return f"https://{AWS_S3_BUCKET}.s3.{AWS_S3_REGION}.amazonaws.com/{key}"
+    except Exception:
+        return None
+
+
+def _require_s3_url(content: bytes, key: str) -> str:
+    url = _upload_s3_sync(content, key)
+    if not url:
+        raise RuntimeError(
+            "File uploads require S3: set SAVE_UPLOADS_TO_S3=true, AWS_S3_BUCKET, "
+            "AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_REGION; install boto3."
+        )
+    return url
 
 
 async def _process_single_file(
     file: UploadFile,
     business_id: str,
     user_id: str,
-    expected_product: Optional[str],
-    expected_amount: Optional[float],
 ) -> Dict[str, Any]:
-    """Process a single file. Used for parallel execution."""
+    raw_name = file.filename or "upload"
     file_content = await file.read()
     await file.seek(0)
     content_type = file.content_type or "application/octet-stream"
 
-    parse_result = await process_file(file_content, file.filename, content_type)
-    file_url = await save_file(file_content, file.filename, business_id, user_id)
-
-    result: Dict[str, Any] = {
-        "filename": file.filename,
-        "file_url": file_url,
-        "content_type": content_type,
-        "initial_parse": parse_result,
-    }
-
-    use_ai = (
-        parse_result.get("poorly_parsed")
-        or not parse_result.get("success")
-        or (content_type.startswith("image/") and not parse_result.get("content"))
+    public_url = await asyncio.to_thread(
+        _require_s3_url,
+        file_content,
+        _s3_key(business_id, user_id, raw_name),
     )
-    if use_ai:
-        try:
-            if content_type.startswith("image/"):
-                media_result = (
-                    await process_receipt_image(file_url, expected_product, expected_amount)
-                    if (expected_product or expected_amount)
-                    else await process_image(file_url, task="general")
-                )
-                result["media_processing"] = media_result
-                result["extracted_content"] = media_result.get("extracted_data") or media_result.get("analysis")
-            elif content_type == "application/pdf":
-                media_result = await process_document(file_url, task="extract_text")
-                result["media_processing"] = media_result
-                result["extracted_content"] = media_result.get("content")
-        except Exception as e:
-            result["media_processing_error"] = str(e)
-            result["extracted_content"] = parse_result.get("content", "")
-    else:
-        result["extracted_content"] = parse_result.get("content", "") or ""
 
-    return result
+    structured: ProcessedUploadOutput = await analyze_upload_for_conversation(
+        public_url,
+        content_type,
+        filename=raw_name,
+    )
+
+    kind = structured.file_content_type
+
+    text_for_db = (structured.extracted_content or "").strip()
+    desc = (structured.description or raw_name).strip()
+
+    file_id = await insert_conversation_uploaded_file(
+        user_id,
+        business_id,
+        file_url=public_url,
+        file_content_type=kind,
+        description=desc,
+        text_content=text_for_db,
+    )
+
+    uploaded_at = datetime.now(timezone.utc).isoformat()
+    receipt_payload = (
+        structured.receipt.model_dump() if structured.receipt is not None else None
+    )
+
+    return {
+        "filename": raw_name,
+        "file_id": file_id,
+        "file_url": public_url,
+        "mime_type": content_type,
+        "file_content_type": kind,
+        "description": desc,
+        "extracted_content": text_for_db,
+        "receipt": receipt_payload,
+        # "structured": structured.model_dump(),
+        "product_attributes": dict(structured.product_attributes or {}),
+        "uploaded_at": uploaded_at,
+    }
 
 
 async def process_uploaded_files(
     files: List[UploadFile],
     business_id: str,
     user_id: str,
-    expected_product: Optional[str] = None,
-    expected_amount: Optional[float] = None,
-) -> List[Dict[str, Any]]:
+) -> Dict[str, Any]:
     """
-    Process uploaded files in parallel.
+    Parallel S3 + media agent per file.
+
+    Returns:
+        items: full per-file dicts
+        uploaded_file_refs: metadata for user_state.uploaded_files
+        receipt_data: combined receipt text for payment_verification_agent (single str, or None)
+        non_receipt_attachment_lines: prompt lines for product/others only (no receipt body)
+
+    Note: every file's extracted_content is persisted to DB via insert_conversation_uploaded_file.
+    Receipt text is isolated from non-receipt attachment lines to avoid confusing product/general agents.
     """
     if not files:
-        return []
+        return {
+            "items": [],
+            "uploaded_file_refs": [],
+            "receipt_data": None,
+            "non_receipt_attachment_lines": [],
+        }
 
-    tasks = [
-        _process_single_file(f, business_id, user_id, expected_product, expected_amount)
-        for f in files
-    ]
-    return list(await asyncio.gather(*tasks))
+    tasks = [_process_single_file(f, business_id, user_id) for f in files]
+    items: List[Dict[str, Any]] = list(await asyncio.gather(*tasks))
+
+    uploaded_file_refs: List[Dict[str, Any]] = []
+    receipt_parts: List[str] = []
+    non_receipt_lines: List[str] = []
+
+    for it in items:
+        uploaded_file_refs.append(
+            {
+                "file_id": it["file_id"],
+                "filename": it["filename"],
+                "file_content_type": it["file_content_type"],
+                "description": (it["description"] or "")[:100],
+                "uploaded_at": it["uploaded_at"],
+            }
+        )
+        if it["file_content_type"] == UploadKind.receipt:
+            tx = (it.get("extracted_content") or "").strip()
+            if tx:
+                receipt_parts.append(tx)
+        else:
+            non_receipt_lines.append(
+                f"- id={it['file_id']} name={it['filename']} type={it['file_content_type']}: "
+                f"{(it.get('description') or '')}"
+            )
+
+    return {
+        "items": items,
+        "uploaded_file_refs": uploaded_file_refs,
+        "receipt_data": "\n\n---\n\n".join(receipt_parts) if receipt_parts else None,
+        "non_receipt_attachment_lines": non_receipt_lines,
+    }

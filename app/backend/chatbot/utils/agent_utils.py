@@ -108,3 +108,4 @@ def format_chat_history(chat_history: List[Dict]) -> str:
     
     return "\n".join(formatted)
 
+

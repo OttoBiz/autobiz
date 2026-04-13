@@ -1,0 +1,73 @@
+{
+  "_description": "Example of a customer-vendor Redis state at key {user_id}:{vendor_id}",
+
+  "chat_history": [
+    {"kind": "request", "parts": [{"part_kind": "user-prompt", "content": "[Conversation summary]\nCustomer asked about leather bags and was shown options..."}]},
+    {"kind": "request", "parts": [{"part_kind": "user-prompt", "content": "How much is the brown leather tote?"}]},
+    {"kind": "response", "parts": [{"part_kind": "text", "content": "The brown leather tote is $45. We have 12 in stock."}]}
+  ],
+
+  "business_information": {
+    "id": "00000000-0000-0000-0001-000000000001",
+    "name": "Bella Bags",
+    "business_type": "retail",
+    "tier": "gold",
+    "phone_number": "+2348001234567",
+    "email": "hello@bellabags.com",
+    "bank_name": "GTBank",
+    "bank_account_name": "Bella Bags Ltd",
+    "bank_account_number": "0123456789"
+  },
+
+  "products": {
+    "leather bag": {
+      "retrieved_results": [
+        {
+          "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+          "name": "Brown Leather Tote",
+          "price": 45.0,
+          "stock_quantity": 12,
+          "category": "bags"
+        }
+      ],
+      "db_queried": true,
+      "_ts": 1712188800.0
+    }
+  },
+
+  "products_discussed": ["Brown Leather Tote"],
+
+  "processes": {
+    "550e8400-e29b-41d4-a716-446655440000": {
+      "task_type": "Payment Verification",
+      "product_name": "Brown Leather Tote",
+      "order_id": "11111111-2222-3333-4444-555555555555",
+      "order_number": "ORD-20260404-1234",
+      "quantity": 1,
+      "customer_address": "12 Marina Road, Lagos",
+      "status": "pending",
+      "tracking_number": null,
+      "communication_history": [
+        {"role": "agent", "name": "Agent", "content": "Payment confirmed. Create order."},
+        {"role": "agent", "name": "Agent", "content": "Order ORD-20260404-1234 created."}
+      ],
+      "finished_tasks": ["Payment confirmed", "Order created"]
+    }
+  },
+
+  "uploaded_files": [
+    {
+      "file_id": "99999999-8888-7777-6666-555555555555",
+      "filename": "receipt.jpg",
+      "file_content_type": "image/jpeg",
+      "description": "Bank transfer receipt"
+    }
+  ],
+
+  "file_text_cache": {
+    "99999999-8888-7777-6666-555555555555": "GTBank transfer of N45,000 to Bella Bags Ltd..."
+  },
+
+  "receipt_data": "Amount: N45,000; Bank: GTBank; Ref: TRF-20260404-001",
+  "receipt_texts": ["Transfer of N45,000 from John Doe to Bella Bags Ltd, GTBank, Ref TRF-20260404-001"]
+}

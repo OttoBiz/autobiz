@@ -2,6 +2,7 @@
 
 import type React from "react"
 import { useState, useRef, useEffect } from "react"
+import { ChatMessageBody } from "@/components/chat-message-body"
 import {
   Send,
   Mic,
@@ -20,6 +21,7 @@ import {
   FileText,
   ShoppingCart,
   Users,
+  RotateCcw,
 } from "lucide-react"
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000"
@@ -96,7 +98,7 @@ export default function Page() {
   const [logisticsMessages, setLogisticsMessages] = useState<ChatMessage[]>([
     {
       id: "welcome-logistics",
-      content: "Select a logistics company to start chatting.",
+      content: "Logistics is linked automatically when you pick a business.",
       sender: "ai",
       timestamp: new Date(),
     },
@@ -137,6 +139,39 @@ export default function Page() {
   useEffect(() => {
     scrollToBottom(logisticsMessagesEndRef)
   }, [logisticsMessages])
+
+  useEffect(() => {
+    if (!selectedBusiness) {
+      setSelectedLogistics(null)
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch(
+          `${BACKEND_URL}/api/v1/business/delivery-partner/${selectedBusiness.id}`,
+        )
+        if (!res.ok) return
+        const j = await res.json()
+        if (cancelled) return
+        const id = j.partner_logistic_id as string | undefined
+        const name = j.partner_name as string | undefined
+        if (id) {
+          const persona =
+            predefinedLogistics.find((p) => p.id === id) ?? { id, name: name || id }
+          setSelectedLogistics(persona)
+        } else {
+          setSelectedLogistics(null)
+        }
+        setLogisticsSessionId(crypto.randomUUID())
+      } catch {
+        if (!cancelled) setSelectedLogistics(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [selectedBusiness])
 
   useEffect(() => {
     if (!selectedUser || !selectedBusiness) return
@@ -316,27 +351,14 @@ export default function Page() {
     setIsBusinessLoading(true)
 
     try {
-      const recentInbox = businessMessages
-        .filter((m) => m._inbox && (m.customer_id || m.product_name || m.order_id))
-        .slice(-10)
-        .map((m) => ({
-          message: (m as { _rawMessage?: string })._rawMessage ?? m.content,
-          sender: "Agent",
-          customer_id: m.customer_id,
-          product_name: m.product_name,
-          order_id: m.order_id,
-          business_id: m.business_id,
-        }))
       const response = await fetch(`${BACKEND_URL}/api/v1/business/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          vendor_id: selectedBusiness.id,
-          logistic_id: "",
+          business_id: selectedBusiness.id,
           session_id: businessSessionId,
           sender: "business",
           message: message,
-          recent_inbox: recentInbox,
           api_key: apiKey || undefined,
         }),
       })
@@ -374,27 +396,14 @@ export default function Page() {
     setIsLogisticsLoading(true)
 
     try {
-      const recentInbox = logisticsMessages
-        .filter((m) => m._inbox && (m.customer_id || m.product_name || m.order_id))
-        .slice(-10)
-        .map((m) => ({
-          message: (m as { _rawMessage?: string })._rawMessage ?? m.content,
-          sender: "Agent",
-          customer_id: m.customer_id,
-          product_name: m.product_name,
-          order_id: m.order_id,
-          business_id: m.business_id,
-        }))
       const response = await fetch(`${BACKEND_URL}/api/v1/logistics/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          vendor_id: selectedBusiness?.id || "",
-          logistic_id: selectedLogistics.id,
+          business_id: selectedLogistics.id,
           session_id: logisticsSessionId,
           sender: "logistics",
           message: message,
-          recent_inbox: recentInbox,
           api_key: apiKey || undefined,
         }),
       })
@@ -488,6 +497,54 @@ export default function Page() {
     }
   }
 
+  const handleClearRedisSession = async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/v1/session/clear`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: selectedUser?.id ?? null,
+          vendor_id: selectedBusiness?.id ?? null,
+          logistic_id: selectedLogistics?.id ?? null,
+        }),
+      })
+      if (!res.ok) {
+        const t = await res.text()
+        throw new Error(t || res.statusText)
+      }
+      setCustomerMessages([
+        {
+          id: "welcome-customer",
+          content: "Hello! Select a user and business to start chatting.",
+          sender: "ai",
+          timestamp: new Date(),
+        },
+      ])
+      setBusinessMessages([
+        {
+          id: "welcome-business",
+          content: "Select a business to start chatting.",
+          sender: "ai",
+          timestamp: new Date(),
+        },
+      ])
+      setLogisticsMessages([
+        {
+          id: "welcome-logistics",
+          content: "Select a logistics company to start chatting.",
+          sender: "ai",
+          timestamp: new Date(),
+        },
+      ])
+      setCustomerSessionId(crypto.randomUUID())
+      setBusinessSessionId(crypto.randomUUID())
+      setLogisticsSessionId(crypto.randomUUID())
+      alert("Redis cleared for selected personas; chat panes reset.")
+    } catch (e) {
+      alert(`Clear session failed: ${e instanceof Error ? e.message : "Unknown error"}`)
+    }
+  }
+
   const handleSupplyChain = async () => {
     if (!selectedBusiness) {
       alert("Please select a business first")
@@ -536,6 +593,15 @@ export default function Page() {
               </div>
             </div>
             <div className="flex items-center space-x-4">
+              <button
+                type="button"
+                onClick={handleClearRedisSession}
+                className="flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg border border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100 transition-colors"
+                title="Clears Redis state and inbox for selected user, business, and logistics personas"
+              >
+                <RotateCcw className="w-4 h-4" />
+                Clear Redis session
+              </button>
               <div className="bg-white rounded-lg p-3 border border-gray-200">
                 <div className="flex items-center space-x-2">
                   <Key className="w-4 h-4 text-gray-500" />
@@ -602,26 +668,29 @@ export default function Page() {
             </div>
           </div>
 
-          {/* Logistics Persona */}
+          {/* Linked logistics (auto from backend when a business is selected) */}
           <div className="bg-white rounded-lg shadow-md p-4">
             <div className="flex items-center space-x-2 mb-3">
               <Truck className="w-5 h-5 text-orange-600" />
-              <h3 className="font-semibold text-gray-800">Logistics Persona</h3>
+              <h3 className="font-semibold text-gray-800">Linked logistics</h3>
             </div>
+            <p className="text-xs text-gray-500 mb-2">
+              DB partner when configured; otherwise a random registered carrier for simulation.
+            </p>
             <div className="grid grid-cols-2 gap-2 max-h-32 overflow-y-auto">
               {predefinedLogistics.map((logistics) => (
-                <button
+                <div
                   key={logistics.id}
-                  onClick={() => { setSelectedLogistics(logistics); setLogisticsSessionId(crypto.randomUUID()) }}
-                  className={`p-2 rounded text-sm transition-all ${
+                  className={`p-2 rounded text-sm ${
                     selectedLogistics?.id === logistics.id
                       ? "bg-orange-500 text-white"
-                      : "bg-gray-100 hover:bg-gray-200"
+                      : "bg-gray-100 text-gray-600"
                   }`}
                 >
                   {logistics.name}
-                </button>
+                </div>
               ))}
+            </div>
           </div>
         </div>
       </div>
@@ -647,7 +716,7 @@ export default function Page() {
                           : "bg-gray-100 text-gray-800"
                       }`}
                     >
-                    {msg.content}
+                    <ChatMessageBody content={msg.content} invert={msg.sender === "user"} />
                   </div>
                   </div>
                 ))}
@@ -741,7 +810,7 @@ export default function Page() {
                         : "bg-gray-100 text-gray-800"
                     }`}
                   >
-                    {msg.content}
+                    <ChatMessageBody content={msg.content} invert={msg.sender === "user"} />
                   </div>
                 </div>
               ))}
@@ -793,7 +862,7 @@ export default function Page() {
                         : "bg-gray-100 text-gray-800"
                     }`}
                   >
-                    {msg.content}
+                    <ChatMessageBody content={msg.content} invert={msg.sender === "user"} />
                   </div>
                 </div>
               ))}

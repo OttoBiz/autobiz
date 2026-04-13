@@ -4,12 +4,16 @@ Database utility functions using asyncpg for async PostgreSQL operations.
 Migrated from SQLAlchemy to asyncpg for better async performance and simpler queries.
 """
 
+import uuid
 from typing import Any, Dict, List, Optional
 
 from backend.db.connection import get_db
 from backend.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+# Effective ISO 4217 code: product override, else business default.
+_EFF_CURRENCY = "COALESCE(NULLIF(TRIM(p.currency), ''), b.currency, 'NGN')"
 
 
 ## PRODUCT FUNCTIONS
@@ -41,46 +45,48 @@ async def get_products(
     """
     pool = await get_db()
 
-    query = """
-        SELECT id, business_id, name, description, price, stock_quantity,
-               sku, category, attributes, is_active, created_at, updated_at
-        FROM products
-        WHERE is_active = true
+    query = f"""
+        SELECT p.id, p.business_id, p.name, p.description, p.price, p.stock_quantity,
+               p.sku, p.category, p.attributes, p.is_active, p.created_at, p.updated_at,
+               {_EFF_CURRENCY} AS currency
+        FROM products p
+        INNER JOIN businesses b ON b.id = p.business_id
+        WHERE p.is_active = true
     """
     params = []
     param_count = 1
 
     if business_id:
-        query += f" AND business_id = ${param_count}::uuid"
+        query += f" AND p.business_id = ${param_count}::uuid"
         params.append(business_id)
         param_count += 1
 
     if exclude_business_id:
-        query += f" AND business_id != ${param_count}::uuid"
+        query += f" AND p.business_id != ${param_count}::uuid"
         params.append(exclude_business_id)
         param_count += 1
 
     if name:
-        query += f" AND (name ILIKE ${param_count} OR description ILIKE ${param_count} OR category ILIKE ${param_count})"
+        query += f" AND (p.name ILIKE ${param_count} OR p.description ILIKE ${param_count} OR p.category ILIKE ${param_count})"
         params.append(f"%{name}%")
         param_count += 1
 
     if category:
-        query += f" AND category ILIKE ${param_count}"
+        query += f" AND p.category ILIKE ${param_count}"
         params.append(f"%{category}%")
         param_count += 1
 
     if min_price is not None:
-        query += f" AND price >= ${param_count}"
+        query += f" AND p.price >= ${param_count}"
         params.append(min_price)
         param_count += 1
 
     if max_price is not None:
-        query += f" AND price <= ${param_count}"
+        query += f" AND p.price <= ${param_count}"
         params.append(max_price)
         param_count += 1
 
-    query += f" ORDER BY created_at DESC LIMIT ${param_count}"
+    query += f" ORDER BY p.created_at DESC LIMIT ${param_count}"
     params.append(limit)
 
     try:
@@ -92,6 +98,65 @@ async def get_products(
             "get_products_failed | business_id=%s name=%s",
             business_id,
             name,
+            exc_info=True,
+        )
+        return []
+
+
+async def browse_available_products(
+    business_id: str,
+    *,
+    limit: int = 8,
+    mode: str = "top_stock",
+    search: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    In-stock products for conversational browse: random sample or highest stock first.
+
+    Args:
+        business_id: Vendor UUID
+        limit: Max rows (capped at 50)
+        mode: "top_stock" | "random"
+        search: Optional ILIKE filter on name, description, category (user enquiry)
+    """
+    if mode not in ("top_stock", "random"):
+        mode = "top_stock"
+    lim = max(1, min(int(limit), 50))
+    pool = await get_db()
+    order_sql = (
+        "ORDER BY RANDOM()" if mode == "random" else "ORDER BY p.stock_quantity DESC NULLS LAST"
+    )
+    base = f"""
+        SELECT p.id, p.business_id, p.name, p.description, p.price, p.stock_quantity,
+               p.sku, p.category, p.attributes, p.is_active, p.created_at, p.updated_at,
+               {_EFF_CURRENCY} AS currency
+        FROM products p
+        INNER JOIN businesses b ON b.id = p.business_id
+        WHERE p.is_active = true
+          AND p.business_id = $1::uuid
+          AND COALESCE(p.stock_quantity, 0) > 0
+    """
+    try:
+        async with pool.acquire() as conn:
+            if search and search.strip():
+                q = (
+                    base
+                    + " AND (p.name ILIKE $3 OR p.description ILIKE $3 OR p.category ILIKE $3) "
+                    + order_sql
+                    + " LIMIT $2"
+                )
+                rows = await conn.fetch(
+                    q, business_id, lim, f"%{search.strip()}%"
+                )
+            else:
+                q = base + " " + order_sql + " LIMIT $2"
+                rows = await conn.fetch(q, business_id, lim)
+            return [dict(row) for row in rows]
+    except Exception:
+        logger.error(
+            "browse_available_products_failed | business_id=%s mode=%s",
+            business_id,
+            mode,
             exc_info=True,
         )
         return []
@@ -114,24 +179,26 @@ async def search_products(
     """
     pool = await get_db()
 
-    sql_query = """
-        SELECT id, business_id, name, description, price, stock_quantity,
-               sku, category, attributes, is_active, created_at, updated_at
-        FROM products
-        WHERE is_active = true
-          AND (name ILIKE $1 OR description ILIKE $1 OR category ILIKE $1)
+    sql_query = f"""
+        SELECT p.id, p.business_id, p.name, p.description, p.price, p.stock_quantity,
+               p.sku, p.category, p.attributes, p.is_active, p.created_at, p.updated_at,
+               {_EFF_CURRENCY} AS currency
+        FROM products p
+        INNER JOIN businesses b ON b.id = p.business_id
+        WHERE p.is_active = true
+          AND (p.name ILIKE $1 OR p.description ILIKE $1 OR p.category ILIKE $1)
     """
 
     params = [f"%{query}%"]
     param_count = 2
 
     if business_id:
-        sql_query += f" AND business_id = ${param_count}::uuid"
+        sql_query += f" AND p.business_id = ${param_count}::uuid"
         params.append(business_id)
         param_count += 1
 
     sql_query += (
-        f" ORDER BY created_at DESC LIMIT ${param_count} OFFSET ${param_count + 1}"
+        f" ORDER BY p.created_at DESC LIMIT ${param_count} OFFSET ${param_count + 1}"
     )
     params.extend([limit, offset])
 
@@ -153,11 +220,13 @@ async def get_product_by_id(product_id: str) -> Optional[Dict[str, Any]]:
     """Get a product by ID."""
     pool = await get_db()
 
-    query = """
-        SELECT id, business_id, name, description, price, stock_quantity,
-               sku, category, attributes, is_active, created_at, updated_at
-        FROM products
-        WHERE id = $1::uuid
+    query = f"""
+        SELECT p.id, p.business_id, p.name, p.description, p.price, p.stock_quantity,
+               p.sku, p.category, p.attributes, p.is_active, p.created_at, p.updated_at,
+               {_EFF_CURRENCY} AS currency
+        FROM products p
+        INNER JOIN businesses b ON b.id = p.business_id
+        WHERE p.id = $1::uuid
     """
 
     async with pool.acquire() as conn:
@@ -166,6 +235,14 @@ async def get_product_by_id(product_id: str) -> Optional[Dict[str, Any]]:
 
 
 ## BUSINESS FUNCTIONS
+
+
+def _is_uuid_str(s: str) -> bool:
+    try:
+        uuid.UUID(str(s).strip())
+        return True
+    except (ValueError, TypeError, AttributeError):
+        return False
 
 
 async def get_business_info(business_id: str) -> Optional[Dict[str, Any]]:
@@ -179,28 +256,52 @@ async def get_business_info(business_id: str) -> Optional[Dict[str, Any]]:
         Business dictionary or None
     """
     pool = await get_db()
+    if not business_id or not str(business_id).strip():
+        return None
 
-    query = """
-        SELECT id, name, business_type, tier, phone_number, email,
-               ig_page, facebook_page, twitter_page, tiktok,
-               bank_name, bank_account_number, bank_account_name,
-               paystack_public_key, paystack_secret_key,
-               human_agent_phone, human_agent_email,
-               product_schema, created_at, updated_at
-        FROM businesses
-        WHERE id = $1::uuid
-           OR ig_page ILIKE $2
-           OR facebook_page ILIKE $2
-           OR twitter_page ILIKE $2
-           OR tiktok ILIKE $2
-           OR phone_number ILIKE $2
-           OR email ILIKE $2
-        LIMIT 1
-    """
+    bid = str(business_id).strip()
+
+    if _is_uuid_str(bid):
+        query = """
+            SELECT id, name, business_type, tier, phone_number, email,
+                   ig_page, facebook_page, twitter_page, tiktok,
+                   bank_name, bank_account_number, bank_account_name,
+                   paystack_public_key, paystack_secret_key,
+                   human_agent_phone, human_agent_email,
+                   product_schema, currency, partner_logistic_id, created_at, updated_at
+            FROM businesses
+            WHERE id = $1::uuid
+               OR ig_page ILIKE $2
+               OR facebook_page ILIKE $2
+               OR twitter_page ILIKE $2
+               OR tiktok ILIKE $2
+               OR phone_number ILIKE $2
+               OR email ILIKE $2
+            LIMIT 1
+        """
+        params = (bid, bid)
+    else:
+        query = """
+            SELECT id, name, business_type, tier, phone_number, email,
+                   ig_page, facebook_page, twitter_page, tiktok,
+                   bank_name, bank_account_number, bank_account_name,
+                   paystack_public_key, paystack_secret_key,
+                   human_agent_phone, human_agent_email,
+                   product_schema, currency, partner_logistic_id, created_at, updated_at
+            FROM businesses
+            WHERE ig_page ILIKE $1
+               OR facebook_page ILIKE $1
+               OR twitter_page ILIKE $1
+               OR tiktok ILIKE $1
+               OR phone_number ILIKE $1
+               OR email ILIKE $1
+            LIMIT 1
+        """
+        params = (bid,)
 
     try:
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(query, business_id, business_id)
+            row = await conn.fetchrow(query, *params)
             return dict(row) if row else None
     except Exception:
         logger.error(
@@ -227,7 +328,7 @@ async def get_business_by_handle(handle: str) -> Optional[Dict[str, Any]]:
                bank_name, bank_account_number, bank_account_name,
                paystack_public_key, paystack_secret_key,
                human_agent_phone, human_agent_email,
-               product_schema, created_at, updated_at
+               product_schema, currency, partner_logistic_id, created_at, updated_at
         FROM businesses
         WHERE ig_page ILIKE $1
            OR facebook_page ILIKE $1
@@ -255,6 +356,16 @@ async def get_logistics_companies(limit: int = 10) -> List[Dict[str, Any]]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, limit)
         return [dict(row) for row in rows]
+
+
+async def pick_random_logistics_company_id(limit: int = 20) -> Optional[str]:
+    """Return a random registered logistics business id, or None."""
+    rows = await get_logistics_companies(limit=limit)
+    if not rows:
+        return None
+    import random
+
+    return str(random.choice(rows)["id"])
 
 
 ## USER FUNCTIONS
@@ -797,18 +908,20 @@ async def get_inventory(business_id: str) -> List[Dict[str, Any]]:
     """
     pool = await get_db()
 
-    query = """
+    query = f"""
         SELECT
-            id, name, description, price, stock_quantity,
-            sku, category, is_active,
+            p.id, p.name, p.description, p.price, p.stock_quantity,
+            p.sku, p.category, p.is_active,
+            {_EFF_CURRENCY} AS currency,
             CASE
-                WHEN stock_quantity <= 0 THEN 'out_of_stock'
-                WHEN stock_quantity <= 10 THEN 'low_stock'
+                WHEN p.stock_quantity <= 0 THEN 'out_of_stock'
+                WHEN p.stock_quantity <= 10 THEN 'low_stock'
                 ELSE 'in_stock'
             END as stock_status
-        FROM products
-        WHERE business_id = $1::uuid AND is_active = true
-        ORDER BY stock_quantity ASC, name ASC
+        FROM products p
+        INNER JOIN businesses b ON b.id = p.business_id
+        WHERE p.business_id = $1::uuid AND p.is_active = true
+        ORDER BY p.stock_quantity ASC, p.name ASC
     """
 
     async with pool.acquire() as conn:
@@ -859,15 +972,132 @@ async def get_low_stock_products(
     """
     pool = await get_db()
 
-    query = """
-        SELECT id, name, stock_quantity, sku, category
-        FROM products
-        WHERE business_id = $1::uuid
-          AND stock_quantity <= $2
-          AND is_active = true
-        ORDER BY stock_quantity ASC
+    query = f"""
+        SELECT p.id, p.name, p.stock_quantity, p.sku, p.category,
+               {_EFF_CURRENCY} AS currency
+        FROM products p
+        INNER JOIN businesses b ON b.id = p.business_id
+        WHERE p.business_id = $1::uuid
+          AND p.stock_quantity <= $2
+          AND p.is_active = true
+        ORDER BY p.stock_quantity ASC
     """
 
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, business_id, threshold)
         return [dict(row) for row in rows]
+
+
+async def add_product(
+    business_id: str,
+    name: str,
+    price: float,
+    stock_quantity: int = 0,
+    description: str = "",
+    category: str = "",
+    sku: str = "",
+    attributes: Optional[dict] = None,
+    currency: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Insert a new product into the catalog. Returns the created product row."""
+    pool = await get_db()
+    import json as _json
+    cur = (currency or "").strip() or None
+    query = """
+        INSERT INTO products AS p (business_id, name, description, price, stock_quantity, sku, category, attributes, currency)
+        VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
+        RETURNING p.id, p.business_id, p.name, p.description, p.price, p.stock_quantity,
+                  p.sku, p.category, p.attributes, p.is_active, p.created_at, p.updated_at,
+                  COALESCE(p.currency, (SELECT b.currency FROM businesses b WHERE b.id = p.business_id), 'NGN') AS currency
+    """
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                query,
+                business_id, name, description, price, stock_quantity,
+                sku or None, category or None,
+                _json.dumps(attributes) if attributes else "{}",
+                cur,
+            )
+            return dict(row) if row else None
+    except Exception:
+        logger.error("add_product_failed | business_id=%s name=%s", business_id, name, exc_info=True)
+        return None
+
+
+async def upsert_chat_summary(
+    user_id: str,
+    business_id: str,
+    summary: str,
+    messages_summarized: int,
+) -> None:
+    """Insert or update the running chat summary for a user-vendor pair."""
+    pool = await get_db()
+    query = """
+        INSERT INTO chat_history_summaries (user_id, business_id, summary, messages_summarized)
+        VALUES ($1::uuid, $2::uuid, $3, $4)
+        ON CONFLICT (user_id, business_id) DO UPDATE SET
+            summary = EXCLUDED.summary,
+            messages_summarized = chat_history_summaries.messages_summarized + EXCLUDED.messages_summarized,
+            updated_at = NOW()
+    """
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(query, user_id, business_id, summary, messages_summarized)
+    except Exception:
+        logger.error("upsert_chat_summary_failed | user=%s biz=%s", user_id, business_id, exc_info=True)
+
+
+async def get_chat_summary(user_id: str, business_id: str) -> Optional[str]:
+    """Retrieve the stored chat summary for a user-vendor pair."""
+    pool = await get_db()
+    query = """
+        SELECT summary FROM chat_history_summaries
+        WHERE user_id = $1::uuid AND business_id = $2::uuid
+        LIMIT 1
+    """
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(query, user_id, business_id)
+            return row["summary"] if row else None
+    except Exception:
+        logger.error("get_chat_summary_failed | user=%s biz=%s", user_id, business_id, exc_info=True)
+        return None
+
+
+async def insert_conversation_uploaded_file(
+    user_id: str,
+    business_id: str,
+    *,
+    file_url: Optional[str],
+    file_content_type: str,
+    description: str,
+    text_content: str,
+) -> str:
+    """Insert row; returns new file id as str."""
+    pool = await get_db()
+    q = """
+        INSERT INTO conversation_uploaded_files
+            (user_id, business_id, file_url, file_content_type, description, text_content)
+        VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6)
+        RETURNING id::text
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            q, user_id, business_id, file_url, file_content_type, description, text_content
+        )
+        return row["id"] if row else ""
+
+
+async def get_conversation_uploaded_file(
+    file_id: str, user_id: str, business_id: str
+) -> Optional[Dict[str, Any]]:
+    pool = await get_db()
+    q = """
+        SELECT id::text AS id, file_url, file_content_type, description, text_content, created_at
+        FROM conversation_uploaded_files
+        WHERE id = $1::uuid AND user_id = $2::uuid AND business_id = $3::uuid
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(q, file_id, user_id, business_id)
+        return dict(row) if row else None

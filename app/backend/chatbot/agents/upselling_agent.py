@@ -1,41 +1,102 @@
 """
-Upselling Agent - Recommends complementary and alternative products
-Converted to pydantic_ai
+Upselling: alternate / complementary options when the enquired product is unavailable.
+Post-purchase marketing lives in ads_marketing_agent.
 """
 from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel
-from pydantic_ai import Agent, RunContext
-from .base_agent import BaseAgent
+from pydantic_ai import RunContext
+
+from backend.chatbot.agents.base_agent import BaseAgent
+from backend.chatbot.utils.agent_utils import check_tier_access
+from backend.db.db_utils import get_business_info, get_products
 from backend.modules.products import get_product_images
 from backend.modules.products import search_products
-from backend.db.db_utils import get_products
 
 
 class UpsellingAgentDeps(BaseModel):
-    """Dependencies for upselling agent"""
     business_id: str
     api_key: Optional[str] = None
+    upsell_tier_eligible: bool = None
 
 
-# Initialize upselling agent
+async def _business_upsell_allowed(business_id: str, user_state: Optional[Dict[str, Any]]) -> bool:
+    tier = None
+    if user_state:
+        tier = (user_state.get("business_information") or {}).get("tier")
+    if tier is None and business_id:
+        info = await get_business_info(business_id) or {}
+        tier = info.get("tier")
+    t = (str(tier) if tier is not None else "free").lower()
+    return await check_tier_access(t, "upselling")
+
+
+async def search_related_products(
+    business_id: str,
+    product_name: str,
+    category: Optional[str] = None,
+    limit: int = 5,
+) -> List[Dict[str, Any]]:
+    products = await search_products(
+        product_name, business_id=business_id, category=category, limit=limit
+    )
+    for product in products:
+        if product.get("id"):
+            images = await get_product_images(product["id"])
+            product["image_urls"] = images
+    return products
+
+
+async def search_cross_sell_products(
+    business_id: str,
+    upsell_tier_eligible: bool,
+    product_category: str,
+    limit: int = 5,
+) -> List[Dict[str, Any]]:
+    if not upsell_tier_eligible:
+        return [
+            {
+                "error": "plan_restricted",
+                "message": "Cross-store recommendations are not enabled for this seller's subscription tier.",
+            }
+        ]
+    products = await get_products(
+        category=product_category,
+        exclude_business_id=business_id or None,
+        limit=limit,
+    )
+    for p in products:
+        if p.get("id"):
+            images = await get_product_images(p["id"])
+            p["image_urls"] = images
+    return products
+
+
+async def search_complementary_same_store(
+    business_id: str,
+    product_category: str,
+    limit: int = 3,
+) -> List[Dict[str, Any]]:
+    return await get_products(
+        business_id=business_id or None,
+        category=product_category,
+        limit=limit,
+    )
+
+
 upselling_agent_base = BaseAgent(
-    system_prompt="""You're an AI upselling and marketing agent.
+    system_prompt="""You are the **substitution specialist** — called only when the customer's desired product is unavailable (out of stock, not carried, or cannot be fulfilled).
 
-**OBJECTIVE**
-- Upsell and drive sales of similar or complementary products to customers.
+**Workflow**
+1. Call `get_related_products` with the unavailable product name to find same-store alternatives.
+2. Call `get_complementary_products` for items that complement what the customer wanted.
+3. If cross-store is allowed (tool will enforce tier), call `get_cross_sell_products` for one external option.
 
-**MODE OF OPERATION**
-After a customer's purchase or inquiry:
-1. Identify complementary or alternative products.
-2. Suggest these items, emphasizing benefits and compatibility.
-3. Use persuasive language, but respect customer preferences.
-4. Offer bundle deals or discounts when appropriate.
-5. Adapt recommendations based on customer responses.
-6. Aim to enhance customer's experience and increase sales.
-7. Be friendly, knowledgeable, and focused on customer satisfaction.
-
-Keep responses concise and conversational.""",
-    deps_type=UpsellingAgentDeps
+**Rules**
+- Acknowledge the gap briefly. Offer up to 2 strong substitutes with clear reasons.
+- Same-store first, cross-store only if tier allows. Never suggest other vendors otherwise.
+- No hard sell.""",
+    deps_type=UpsellingAgentDeps,
 )
 
 upselling_agent = upselling_agent_base.agent
@@ -46,18 +107,11 @@ async def get_related_products(
     ctx: RunContext[UpsellingAgentDeps],
     product_name: str,
     category: Optional[str] = None,
-    limit: int = 5
+    limit: int = 5,
 ) -> List[Dict[str, Any]]:
-    """Get related products from database with multimodal support"""
-    products = await search_products(product_name, business_id=ctx.deps.business_id, category=category, limit=limit)
-    
-    # Add image URLs for multimodal retrieval
-    for product in products:
-        if product.get("id"):
-            images = await get_product_images(product["id"])
-            product["image_urls"] = images
-    
-    return products
+    return await search_related_products(
+        ctx.deps.business_id, product_name, category, limit
+    )
 
 
 @upselling_agent.tool
@@ -66,17 +120,12 @@ async def get_cross_sell_products(
     product_category: str,
     limit: int = 5,
 ) -> List[Dict[str, Any]]:
-    """Get cross-sell products from other businesses (excludes current vendor)."""
-    products = await get_products(
-        category=product_category,
-        exclude_business_id=ctx.deps.business_id or None,
-        limit=limit,
+    return await search_cross_sell_products(
+        ctx.deps.business_id,
+        ctx.deps.upsell_tier_eligible,
+        product_category,
+        limit,
     )
-    for p in products:
-        if p.get("id"):
-            images = await get_product_images(p["id"])
-            p["image_urls"] = images
-    return products
 
 
 @upselling_agent.tool
@@ -85,82 +134,44 @@ async def get_complementary_products(
     product_category: str,
     limit: int = 3,
 ) -> List[Dict[str, Any]]:
-    """Get complementary products in the same category from this business."""
-    products = await get_products(
-        business_id=ctx.deps.business_id or None,
-        category=product_category,
-        limit=limit,
+    return await search_complementary_same_store(
+        ctx.deps.business_id, product_category, limit
     )
-    return products
-
-
-async def run_ads_marketing_agent(
-    customer_message: str,
-    product_name: Optional[str] = None,
-    business_id: str = None,
-    user_state: Optional[Dict[str, Any]] = None,
-    **kwargs,
-) -> str:
-    """Run upselling agent for Ads/Marketing stage. Promotes products and offers."""
-    deps = UpsellingAgentDeps(business_id=business_id or "", api_key=kwargs.get("api_key"))
-    chat_history = (user_state or {}).get("chat_history", []) if user_state else []
-    instruction = "The customer is interested in promotions or marketing. Suggest relevant products, deals, or complementary items from this business. Be persuasive but helpful."
-    prompt = f"""Customer message: {customer_message}
-Product context: {product_name or "General interest"}
-
-Instruction: {instruction}
-
-{format_conversation(chat_history[-6:]) if chat_history else ""}
-
-Provide a friendly, persuasive marketing response."""
-    result = await upselling_agent.run(prompt, deps=deps)
-    return result.output
 
 
 async def run_upselling_agent(
     product: str,
-    intent: str = "inquired",
     conversation_messages: Optional[List] = None,
     business_id: str = None,
     api_key: Optional[str] = None,
-    **kwargs
+    situation_summary: str = "",
+    user_state: Optional[Dict[str, Any]] = None,
+    **kwargs,
 ) -> str:
-    """
-    Run upselling agent to recommend products.
-    
-    Args:
-        product: Product name that was purchased/inquired
-        intent: Intent - "purchased" or "inquired"
-        conversation_messages: Previous conversation messages
-        business_id: Business ID
-        api_key: Optional API key
-        
-    Returns:
-        Upselling response message
-    """
+    eligible = await _business_upsell_allowed(business_id or "", user_state)
     deps = UpsellingAgentDeps(
         business_id=business_id or "",
-        api_key=api_key
+        api_key=api_key,
+        upsell_tier_eligible=eligible,
     )
-    
-    if intent == "purchased":
-        instruction = "This item was purchased. Suggest, market and upsell persuasively only the best (at most 2) complementary products that can be used alongside the bought product(s)."
-    else:
-        instruction = "This item was inquired but not available. Suggest, market and upsell persuasively only the top 2 direct/complete alternative products to buy."
-    
-    prompt = f"""Product: {product}
-Instruction: {instruction}
+    extra = f"\nSituation: {situation_summary}" if situation_summary else ""
+    scope = (
+        "Cross-store allowed where tools permit."
+        if eligible
+        else "Same-store only; no other vendors."
+    )
+    prompt = f"""Unavailable or unfulfillable focus product: {product}
+Instruction: Suggest substitutes and close complements. {scope}{extra}
 
-{format_conversation(conversation_messages) if conversation_messages else ''}
+Conversation snippet:
+{format_conversation(conversation_messages) if conversation_messages else ""}
 
-Provide a friendly, persuasive recommendation."""
-    
+Reply concisely."""
     result = await upselling_agent.run(prompt, deps=deps)
     return result.output
 
 
 def format_conversation(messages: List) -> str:
-    """Format conversation messages for prompt. Handles both dicts and pydantic_ai ModelRequest/ModelResponse."""
     if not messages:
         return ""
 
@@ -170,12 +181,13 @@ def format_conversation(messages: List) -> str:
             role = msg.get("role", "user")
             content = msg.get("content", "")
         else:
-            # pydantic_ai ModelRequest (user) or ModelResponse (assistant)
             role = "user" if getattr(msg, "kind", None) == "request" else "assistant"
             parts = getattr(msg, "parts", [])
-            content = " ".join(
-                getattr(p, "content", str(p)) for p in parts
-            ).strip() if parts else ""
+            content = (
+                " ".join(getattr(p, "content", str(p)) for p in parts).strip()
+                if parts
+                else ""
+            )
         formatted.append(f"{role}: {content}")
 
     return "\n".join(formatted)

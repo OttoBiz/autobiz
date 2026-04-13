@@ -35,6 +35,14 @@ PAYMENT_METHODS = ["bank_transfer", "paystack", "cash"]
 ORDER_STATUSES = ["pending", "payment_verified", "shipped", "delivered", "cancelled"]
 TRANSACTION_STATUSES = ["pending", "verified", "failed"]
 
+# Aligns with `backend.db.populate.SEEDED_VENDOR_BANK` for manual prepopulate runs.
+VENDOR_BANK_SEED = {
+    "Donrey Fashion": ("Guarantee Trust Bank", "0116042270", "jeffrey otoibhi"),
+    "Manny Gadgets": ("Providus Bank", "6506842487", "jeffrey otoibhi"),
+    "Junae Cosmetics": ("Providus Bank", "6506842487", "jeffrey otoibhi"),
+    "Tesla Tech": ("Ecobank", "4251015814", "jeffrey otoibhi"),
+}
+
 
 # ---------------------------------------------------------------------------
 # Data generation
@@ -104,26 +112,31 @@ def generate_businesses(count=8):
 
     businesses = []
     for name, btype, tier in vendor_configs + logistics_configs:
-        businesses.append(
-            {
-                "id": str(uuid.uuid5(NS, name)),
-                "name": name,
-                "business_type": btype,
-                "tier": tier,
-                "phone_number": _nigerian_phone(),
-                "email": f"{name.lower().replace(' ', '')}@example.com",
-                "ig_page": f"@{name.lower().replace(' ', '_')}",
-                "facebook_page": name,
-                "bank_name": random.choice(
-                    ["GTBank", "Access Bank", "Zenith Bank", "UBA", "First Bank"]
-                ),
-                "bank_account_number": "".join(
-                    [str(random.randint(0, 9)) for _ in range(10)]
-                ),
-                "bank_account_name": name,
-                "product_schema": json.dumps({}),
-            }
-        )
+        rec = {
+            "id": str(uuid.uuid5(NS, name)),
+            "name": name,
+            "business_type": btype,
+            "tier": tier,
+            "phone_number": _nigerian_phone(),
+            "email": f"{name.lower().replace(' ', '')}@example.com",
+            "ig_page": f"@{name.lower().replace(' ', '_')}",
+            "facebook_page": name,
+            "bank_name": random.choice(
+                ["GTBank", "Access Bank", "Zenith Bank", "UBA", "First Bank"]
+            ),
+            "bank_account_number": "".join(
+                [str(random.randint(0, 9)) for _ in range(10)]
+            ),
+            "bank_account_name": name,
+            "product_schema": json.dumps({}),
+            "currency": "NGN",
+        }
+        if name in VENDOR_BANK_SEED:
+            bn, accn, accname = VENDOR_BANK_SEED[name]
+            rec["bank_name"] = bn
+            rec["bank_account_number"] = accn
+            rec["bank_account_name"] = accname
+        businesses.append(rec)
 
     return businesses
 
@@ -195,13 +208,6 @@ def generate_products(vendors, per_vendor=10):
         ],
     }
 
-    PRICE_RANGES = {
-        "Fashion": (2000, 25000),
-        "Electronics": (15000, 500000),
-        "Cosmetics": (1500, 30000),
-        "Home & Living": (3000, 50000),
-    }
-
     def _fashion_attrs():
         return {
             "size": random.choice(["XS", "S", "M", "L", "XL", "XXL"]),
@@ -243,7 +249,6 @@ def generate_products(vendors, per_vendor=10):
     for vendor in vendors:
         category = VENDOR_CATEGORY.get(vendor["name"], "Home & Living")
         templates = CATALOG[category]
-        lo, hi = PRICE_RANGES[category]
 
         for i, (name, description) in enumerate(templates[:per_vendor]):
             sku_counter += 1
@@ -258,12 +263,13 @@ def generate_products(vendors, per_vendor=10):
                     "business_id": vendor["id"],
                     "name": name,
                     "description": description,
-                    "price": round(random.uniform(lo, hi), 2),
+                    "price": round(random.uniform(5, 1000), 2),
                     "stock_quantity": 0 if out_of_stock else random.randint(5, 200),
                     "sku": f"SKU-{category[:3].upper()}-{sku_counter:03d}",
                     "category": category,
                     "attributes": ATTR_FNS[category](),
                     "is_active": not inactive,
+                    "currency": "NGN",
                 }
             )
 
@@ -307,7 +313,8 @@ def generate_orders(users, vendors, logistics, count=30):
                 "business_id": vendor["id"],
                 "logistic_id": logistic["id"] if logistic else None,
                 "status": status,
-                "total_amount": round(random.uniform(2000, 200000), 2),
+                # Order totals in NGN; keep plausible vs catalog cap ₦1000/item × few lines
+                "total_amount": round(random.uniform(25, 8000), 2),
                 "delivery_address": user["delivery_address"],
                 "delivery_city": user["city"],
                 "delivery_state": user["state"],
@@ -366,8 +373,8 @@ async def insert_businesses(pool, data):
             id, name, business_type, tier, phone_number, email,
             ig_page, facebook_page,
             bank_name, bank_account_number, bank_account_name,
-            product_schema
-        ) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)
+            product_schema, currency
+        ) VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13)
         ON CONFLICT (id) DO UPDATE SET
             name = EXCLUDED.name,
             business_type = EXCLUDED.business_type,
@@ -380,6 +387,7 @@ async def insert_businesses(pool, data):
             bank_account_number = EXCLUDED.bank_account_number,
             bank_account_name = EXCLUDED.bank_account_name,
             product_schema = EXCLUDED.product_schema,
+            currency = EXCLUDED.currency,
             updated_at = NOW()
     """
     async with pool.acquire() as conn:
@@ -398,6 +406,7 @@ async def insert_businesses(pool, data):
                 b["bank_account_number"],
                 b["bank_account_name"],
                 b["product_schema"],
+                b.get("currency") or "NGN",
             )
     logger.info("Inserted %d businesses", len(data))
 
@@ -413,8 +422,8 @@ async def insert_products(pool, data):
         query = """
             INSERT INTO products (
                 id, business_id, name, description, price, stock_quantity,
-                sku, category, attributes, is_active
-            ) VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
+                sku, category, attributes, is_active, currency
+            ) VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11)
         """
         for p in data:
             await conn.execute(
@@ -429,6 +438,7 @@ async def insert_products(pool, data):
                 p["category"],
                 json.dumps(p["attributes"]),
                 p["is_active"],
+                p.get("currency") or "NGN",
             )
     logger.info("Inserted %d products", len(data))
 

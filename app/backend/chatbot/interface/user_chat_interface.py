@@ -1,21 +1,21 @@
 """
-User Chat Interface - Main entry point for customer conversations
-Updated to use pydantic_ai with file handling support
+User Chat Interface - Single entry via conversational_agent (orchestrator).
 """
+from __future__ import annotations
+
+import time
+from typing import Any, Dict, List, Optional
+
+import logfire
 from fastapi import BackgroundTasks, UploadFile
-from typing import List, Optional, Dict, Any
-from backend.chatbot.agents.routing_agent import route_conversation
-from backend.chatbot.agents.product_agent import run_product_agent
-from backend.chatbot.agents.upselling_agent import run_ads_marketing_agent, run_upselling_agent
-from backend.chatbot.agents.payment_verification_agent import run_verification_agent
-from backend.chatbot.agents.customer_complaint_agent import run_customer_complaint_agent
-from backend.chatbot.agents.logistics_agent import run_logistics_agent
-from backend.chatbot.agents.evaluator_agent import evaluate_response, should_send_response
-from backend.chatbot.utils.agent_utils import get_or_create_user_state, save_user_state, format_chat_history
+
+from backend.chatbot.agents.conversational_agent import run_conversational_agent
 from backend.chatbot.utils.file_handler import process_uploaded_files
-from backend.db.db_utils import get_business_info
-from backend.struct import UserRequest
+from backend.chatbot.utils.history_summarizer import maybe_summarize_chat_history
+from backend.config import FILE_TEXT_CACHE_MAX, PRODUCTS_CACHE_TTL_HOURS
 from backend.db.cache_utils import get_user_state, modify_user_state
+from backend.db.db_utils import get_business_info, get_chat_summary, upsert_chat_summary
+from backend.struct import UserRequest
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
@@ -29,77 +29,59 @@ async def chat(
     background_tasks: BackgroundTasks = None,
     reset_user_state: bool = False,
     debug: bool = False,
-    files: Optional[List[UploadFile]] = None
+    files: Optional[List[UploadFile]] = None,
 ) -> str:
     """
-    Main chat function that routes customer messages to appropriate agents.
-    
-    Args:
-        user_request: User request with message and IDs
-        background_tasks: Background tasks for async operations
-        reset_user_state: Whether to reset user state (for testing)
-        debug: Debug mode
-        files: Optional list of uploaded files
-        
-    Returns:
-        Response message from the appropriate agent
+    Customer chat: conversational_agent is the only orchestration path; specialists are tools.
+    One user turn + one assistant turn appended to chat_history here.
     """
-    # Get or create user state
-    user_state = await get_user_state(
-        user_request.user_id,
-        user_request.vendor_id
-    )
-    
+    with logfire.span("customer_chat", user_id=user_request.user_id, vendor_id=user_request.vendor_id):
+        return await _chat_inner(user_request, background_tasks, reset_user_state, debug, files)
+
+
+async def _chat_inner(
+    user_request: UserRequest,
+    background_tasks: BackgroundTasks = None,
+    reset_user_state: bool = False,
+    debug: bool = False,
+    files: Optional[List[UploadFile]] = None,
+) -> str:
+    user_state = await get_user_state(user_request.user_id, user_request.vendor_id) or {}
+
     if debug:
-        print(f"User state: {user_state}")
-    
-    chat_history = user_state.get("chat_history", [])
-    
-    # Process files if provided
-    file_content_summary = "*Uploaded Files By User"
-    receipt_data = None
-    
-    if files:
-        # Get product info from user state for receipt verification
-        products_cache = user_state.get("products", {})
-        expected_product = None
-        expected_amount = None
-        
-        # Try to get latest product info
-        if products_cache:
-            latest_product = list(products_cache.values())[0]
-            products = latest_product.get("retrieved_results", [])
-            if products:
-                expected_product = products[0].get("name") or products[0].get("product_name")
-                expected_amount = products[0].get("price")
-        
-        # Process files
-        processed_files = await process_uploaded_files(
-            files,
-            user_request.vendor_id,
-            user_request.user_id,
-            expected_product=expected_product,
-            expected_amount=expected_amount
-        )
-        
-        # Save processed files to user state
-        user_state.setdefault("uploaded_files", []).extend(processed_files)
-        
-        # Extract receipt data if available
-        for file_result in processed_files:
-            if file_result.get("extracted_content"):
-                file_content_summary += f"\nFile '{file_result['filename']}': {file_result['extracted_content']}"
-                
-                # Check if it's a receipt
-                if "receipt" in file_result.get("filename", "").lower() or "payment" in file_result.get("filename", "").lower():
-                    receipt_data = file_result.get("extracted_content")
-                    user_state["receipt_data"] = receipt_data
-    
-    # Combine message with file content
+        print(f"User state keys: {list(user_state.keys())}")
+
+    chat_history = user_state.get("chat_history") or []
     full_message = user_request.message
-    if file_content_summary:
-        full_message += "\n\n" + file_content_summary
-    
+
+    if files:
+        batch = await process_uploaded_files(
+            files, user_request.vendor_id, user_request.user_id
+        )
+        user_state.setdefault("uploaded_files", []).extend(batch["uploaded_file_refs"])
+        fcache: Dict[str, str] = user_state.setdefault("file_text_cache", {})
+        for it in batch.get("items") or []:
+            fid = it.get("file_id") or ""
+            if fid:
+                fcache[fid] = it.get("extracted_content") or ""
+            attrs = it.get("product_attributes")
+            if isinstance(attrs, dict):
+                name = attrs.get("product_name") or attrs.get("name")
+                if name:
+                    lst: List[str] = user_state.setdefault("products_discussed", [])
+                    low = {x.lower() for x in lst}
+                    n = str(name).strip()
+                    if n and n.lower() not in low:
+                        lst.append(n)
+
+        rd = batch.get("receipt_data")
+        if rd:
+            user_state["receipt_data"] = rd
+
+        pl = batch.get("non_receipt_attachment_lines") or []
+        if pl:
+            full_message += "\n\n[Attachments — non-receipt files]\n" + "\n".join(pl)
+
     business_name = (user_state.get("business_information") or {}).get("name")
     if not business_name:
         biz = await get_business_info(user_request.vendor_id)
@@ -107,104 +89,73 @@ async def chat(
         if biz:
             user_state.setdefault("business_information", {}).update(biz)
 
-    processes = user_state.get("processes", {})
-    order_context = ", ".join(
-        f"{pname} -> {p.get('order_id', '')}"
-        for pname, p in processes.items()
-        if isinstance(p, dict) and p.get("order_id")
-    ) or None
+    # --- Cap file_text_cache to last N entries (older ones live in DB) ---
+    ftc: Dict[str, str] = user_state.get("file_text_cache", {})
+    if len(ftc) > FILE_TEXT_CACHE_MAX:
+        keys = list(ftc.keys())
+        for k in keys[: len(keys) - FILE_TEXT_CACHE_MAX]:
+            del ftc[k]
 
-    routing = await route_conversation(
-        message=full_message,
-        chat_history=chat_history,
-        business_id=user_request.vendor_id,
-        user_id=user_request.user_id,
-        business_name=business_name,
-        order_context=order_context,
+    # --- Evict stale product cache entries (>TTL hours) ---
+    products_cache = user_state.get("products", {})
+    now = time.time()
+    ttl_secs = PRODUCTS_CACHE_TTL_HOURS * 3600
+    stale_keys = [
+        k for k, v in products_cache.items()
+        if isinstance(v, dict) and (now - v.get("_ts", 0)) > ttl_secs
+    ]
+    for k in stale_keys:
+        del products_cache[k]
+
+    # --- Summarize chat_history if it exceeds word limit ---
+    existing_summary = await get_chat_summary(user_request.user_id, user_request.vendor_id)
+    chat_history, new_summary, n_summarized = await maybe_summarize_chat_history(
+        chat_history, existing_summary=existing_summary,
     )
-    
+    if new_summary:
+        await upsert_chat_summary(user_request.user_id, user_request.vendor_id, new_summary, n_summarized)
+        user_state["chat_history"] = chat_history
+
+    processes = user_state.get("processes", {})
+    oc_parts: List[str] = []
+    for pid, p in processes.items():
+        if not isinstance(p, dict):
+            continue
+        oid = (p.get("order_id") or "").strip()
+        onum = (p.get("order_number") or "").strip()
+        pname = p.get("product_name") or ""
+        bits = [f"process={pid}", f"product={pname}"]
+        if oid:
+            bits.append(f"order_id={oid}")
+        if onum:
+            bits.append(f"order_number={onum}")
+        oc_parts.append("; ".join(bits))
+    order_context = ", ".join(oc_parts) if oc_parts else None
+
+    response = await run_conversational_agent(
+        user_message=full_message,
+        chat_history=chat_history,
+        user_id=user_request.user_id,
+        business_id=user_request.vendor_id,
+        user_state=user_state,
+        business_name=business_name,
+        order_context_summary=order_context,
+        receipt_data=user_state.get("receipt_data"),
+        background_tasks=background_tasks,
+        debug=debug,
+    )
+
     if debug:
-        print(f"Routing result: {routing}")
-    
-    # Route to appropriate agent based on conversation stage
-    stage = routing.stage
-    print(f"Conversation Stage: {stage}")
-    print(f"Routing: {routing}")
-    
-    if stage == "Product Enquiry" or stage == "Product purchase":
-        # Use product agent
-        response, user_state = await run_product_agent(
-            customer_message=full_message,
-            product_name=routing.product_name or "NONE",
-            product_category=routing.product_category or "",
-            intent=routing.intent or "enquiry",
-            user_id=user_request.user_id,
-            business_id=user_request.vendor_id,
-            user_state=user_state,
-            debug=debug
-        )
-        
-    elif stage == "Payment verification" or receipt_data:
-        response = await run_verification_agent(
-            customer_message=full_message,
-            user_id=user_request.user_id,
-            business_id=user_request.vendor_id,
-            product_name=routing.product_name or None,
-            user_state=user_state,
-            background_tasks=background_tasks,
-            receipt_data=receipt_data,
-            order_id=routing.order_id,
-            debug=debug,
-        )
-        
-    elif stage == "Logistics":
-        response = await run_logistics_agent(
-            customer_message=full_message,
-            user_id=user_request.user_id,
-            business_id=user_request.vendor_id,
-            product_name=routing.product_name or None,
-            user_state=user_state,
-            background_tasks=background_tasks,
-            order_id=routing.order_id,
-            debug=debug,
-        )
-        
-    elif stage == "Customer complaint/Feedback":
-        response, user_state = await run_customer_complaint_agent(
-            complaint=full_message,
-            product_name=routing.product_name or "",
-            user_id=user_request.user_id,
-            business_id=user_request.vendor_id,
-            user_state=user_state,
-            background_tasks=background_tasks,
-            debug=debug
-        )
+        print(f"conversational_agent response length: {len(response or '')}")
 
-    elif stage == "Ads Marketing":
-        response = await run_ads_marketing_agent(
-            customer_message=full_message,
-            product_name=routing.product_name,
-            business_id=user_request.vendor_id,
-            user_state=user_state,
-        )
-        user_state.setdefault("chat_history", []).extend([
-            ModelRequest(parts=[UserPromptPart(content=user_request.message)]),
+    user_state.setdefault("chat_history", []).extend(
+        [
+            ModelRequest(parts=[UserPromptPart(content=full_message)]),
             ModelResponse(parts=[TextPart(content=response)]),
-        ])
+        ]
+    )
 
-    else:
-        response = routing.response
-        user_state.setdefault("chat_history", []).extend([
-            ModelRequest(parts=[UserPromptPart(content=user_request.message)]),
-            ModelResponse(parts=[TextPart(content=response)]),
-        ])
-        
-    # Save user state (unless resetting for testing)
     if not reset_user_state:
-        await modify_user_state(
-            user_request.user_id,
-            user_request.vendor_id,
-            user_state
-        )
-    
+        await modify_user_state(user_request.user_id, user_request.vendor_id, user_state)
+
     return response

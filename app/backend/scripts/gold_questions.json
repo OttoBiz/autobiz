@@ -1,40 +1,34 @@
 {
-  "routing_agent": [
+  "conversational_agent": [
     {
       "id": "route_product_inquiry",
       "input": "Do you have any ankara dresses in stock?",
-      "expected_stage": "Product Enquiry",
       "description": "Product search by name"
     },
     {
       "id": "route_purchase_intent",
       "input": "I want to buy the wireless earbuds, how do I pay?",
-      "expected_stage": "Product purchase",
       "description": "Purchase intent with payment question"
     },
     {
       "id": "route_payment_notification",
       "input": "I just transferred 15000 naira to your GTBank account for my order",
-      "expected_stage": "Payment verification",
       "description": "Bank transfer notification"
     },
     {
       "id": "route_delivery_tracking",
       "input": "Where is my order? I placed it 3 days ago and haven't received it",
-      "expected_stage": "Logistics",
       "description": "Delivery tracking request"
     },
     {
       "id": "route_complaint",
       "input": "The dress I received is the wrong size, I ordered L but got S",
-      "expected_stage": "Customer complaint/Feedback",
       "description": "Product complaint — wrong size"
     },
     {
       "id": "route_greeting",
       "input": "Hello! Good afternoon",
-      "expected_stage": "General",
-      "description": "Casual greeting — should route to General"
+      "description": "Casual greeting"
     }
   ],
   "product_agent": [
@@ -70,13 +64,11 @@
     {
       "id": "upsell_post_purchase",
       "input": "Ankara Maxi Dress",
-      "intent": "purchased",
       "description": "Post-purchase complementary suggestion"
     },
     {
       "id": "upsell_alternative",
       "input": "Mechanical Keyboard",
-      "intent": "inquired",
       "description": "Pre-purchase alternative when item unavailable"
     }
   ],

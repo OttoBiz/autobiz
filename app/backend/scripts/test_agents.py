@@ -6,7 +6,7 @@ timings, and errors, then writes a structured results JSON.
 
 Run:
     cd app && python -m backend.scripts.test_agents
-    cd app && python -m backend.scripts.test_agents --agent routing_agent
+    cd app && python -m backend.scripts.test_agents --agent conversational_agent
     cd app && python -m backend.scripts.test_agents --output my_results.json
 """
 
@@ -52,8 +52,8 @@ class AgentTestResult:
 # ---------------------------------------------------------------------------
 
 
-async def test_routing_agent(q: dict, business_id: str, user_id: str) -> AgentTestResult:
-    from backend.chatbot.agents.routing_agent import route_conversation
+async def test_conversational_agent(q: dict, business_id: str, user_id: str) -> AgentTestResult:
+    from backend.chatbot.agents.conversational_agent import run_conversational_agent
 
     start = time.perf_counter()
     error = None
@@ -61,24 +61,30 @@ async def test_routing_agent(q: dict, business_id: str, user_id: str) -> AgentTe
     success = False
 
     try:
-        result = await route_conversation(
-            message=q["input"],
+        user_state = {"products": {}, "processes": {}, "chat_history": []}
+        text = await run_conversational_agent(
+            user_message=q["input"],
             chat_history=[],
-            business_id=business_id,
             user_id=user_id,
+            business_id=business_id,
+            user_state=user_state,
         )
-        output = result.model_dump()
-        success = output.get("stage") == q.get("expected_stage")
+        output = {"response": text}
+        text_str = (text or "").strip()
+        success = len(text_str) > 5 and "error" not in text_str[:120].lower()
+        sub = q.get("expected_substring")
+        if success and sub:
+            success = sub.lower() in text_str.lower()
     except Exception as e:
         error = str(e)
 
     return AgentTestResult(
         timestamp=datetime.now().isoformat(),
-        agent_name="routing_agent",
+        agent_name="conversational_agent",
         test_id=q["id"],
         description=q["description"],
         input_data={"message": q["input"]},
-        expected=q.get("expected_stage"),
+        expected=q.get("expected_substring") or "non_empty_reply",
         actual_output=output,
         success=success,
         duration_ms=round((time.perf_counter() - start) * 1000, 2),
@@ -166,7 +172,6 @@ async def test_upselling_agent(q: dict, business_id: str) -> AgentTestResult:
     try:
         response = await run_upselling_agent(
             product=q["input"],
-            intent=q.get("intent", "inquired"),
             business_id=business_id,
         )
         output = response
@@ -179,7 +184,7 @@ async def test_upselling_agent(q: dict, business_id: str) -> AgentTestResult:
         agent_name="upselling_agent",
         test_id=q["id"],
         description=q["description"],
-        input_data={"product": q["input"], "intent": q.get("intent", "inquired")},
+        input_data={"product": q["input"]},
         expected=None,
         actual_output=output,
         success=success,
@@ -267,7 +272,7 @@ async def test_evaluator_agent(q: dict) -> AgentTestResult:
 # ---------------------------------------------------------------------------
 
 AGENT_RUNNERS = {
-    "routing_agent": test_routing_agent,
+    "conversational_agent": test_conversational_agent,
     "product_agent": test_product_agent,
     "payment_agent": test_payment_agent,
     "upselling_agent": test_upselling_agent,
@@ -345,7 +350,7 @@ async def run_all_tests(agent_filter: Optional[str] = None, output_path: str = "
 
 def main():
     parser = argparse.ArgumentParser(description="Run Ottobiz agent tests")
-    parser.add_argument("--agent", type=str, default=None, help="Filter to a single agent (e.g. routing_agent)")
+    parser.add_argument("--agent", type=str, default=None, help="Filter to a single agent (e.g. conversational_agent)")
     parser.add_argument("--output", type=str, default="test_results.json", help="Output JSON path")
     args = parser.parse_args()
 

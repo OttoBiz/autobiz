@@ -4,59 +4,69 @@ Creates orders on payment confirmation. Tracks finished tasks.
 """
 
 import json
-from enum import Enum
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+import logfire
+from pydantic import BaseModel, ConfigDict, Field
 
-from backend.chatbot.agents.central_agent_utils import Customer, Logistics, Product, Vendor
+from backend.config import CENTRAL_AGENT_MODEL_NAME
 from backend.logging_config import get_logger
-from backend.db.cache_utils import get_user_state, modify_user_state, push_to_inbox
+from backend.db.cache_utils import get_user_state, modify_user_state, get_party_state, modify_party_state
+from backend.chatbot.utils.agent_trace_stdout import agent_stdout
 from backend.db.db_utils import (
     create_order as db_create_order,
     get_business_info,
     get_logistics_companies,
+    pick_random_logistics_company_id,
     get_order_by_id,
     get_order_by_number,
     get_orders_by_user,
     get_user_by_id,
     update_order_status as db_update_order_status,
 )
-from backend.struct import CentralAgentInput
-from backend.whatsapp.utils import whatsapp
+from backend.struct import CentralAgentInput, Customer, EntityType, Logistics, Product, Vendor
+from backend.whatsapp.utils import whatsapp, PHONE_NUMBER_ID
 from pydantic_ai import RunContext
+from typing import Literal
 
 from .base_agent import BaseAgent
+from .central_agent_utils import (
+    CentralOutboundContext,
+    deliver_central_outbound,
+    get_contact,
+    get_or_create_process_for_event,
+    get_role,
+    merge_customer_chat_into_comm,
+    polish_central_message_for_customer,
+    _enum_label,
+    _sender_role,
+    _task_label,
+)
 
 logger = get_logger(__name__)
-
 
 class CentralAgentResponse(BaseModel):
     """Structured response from central agent"""
 
-    reasoning: str = Field(..., description="Think about what should be done next")
+    reasoning: str = Field(..., description="Think about what changed and what should be done next")
     next_step: str = Field(
         ..., description="Determine your next step and to whom it should be directed"
     )
-    message: str = Field(..., description="Message to send")
-    recipient: Union[
-        # Literal["ProductAgent", "PaymentAgent", "LogisticAgent"],
-        Literal["Customer", "Vendor", "Logistics"],
-    ] = Field(
-        ...,
+    recipient: EntityType = Field(
         description="Who receives this message. Customer=relay product info/payment/delivery to customer. Vendor=ask vendor for confirmation. Logistics=coordinate shipping.",
     )
-    sender: Union[
-        # Literal["ProductAgent", "PaymentAgent", "LogisticAgent"],
-        Literal["Customer", "Vendor", "Logistics"],
-    ] = Field(..., description="Message sender")
+    sender: EntityType = Field(description="Who is speaking this turn or who sent the last message. Mirror Customer / Vendor / Logistics if quoting or relaying in-thread")
+    message: str = Field(..., description="'short chat-style text for recipient(max ~3–4 sentences). Only facts and next steps—no essays, no internal monologue. Message to send")
+    finished_tasks: List[str] = Field(description="Updated List of finished tasks")
 
 
 class CentralAgentDeps(BaseModel):
-    """Dependencies for central agent. Uses Redis state for processes and finished_tasks."""
+    """Per-turn deps; active_process is the mutable dict for this process_id in Redis."""
 
-    communication_history: List[Dict[str, Any]] = []
-    finished_tasks: List[str] = []
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    active_process: Dict[str, Any] = Field(default_factory=dict)
+    process_id: str = ""
     customer: Optional[Customer] = None
     vendor: Optional[Vendor] = None
     product: Optional[Product] = None
@@ -64,47 +74,87 @@ class CentralAgentDeps(BaseModel):
     customer_id: str = ""
     business_id: str = ""
     logistic_id: Optional[str] = None
-    product_name: Optional[str] = None
+    # product_name: Optional[str] = None
     order_id: Optional[str] = None
     id: str = ""
 
 
-class EntityType(str, Enum):
-    CUSTOMER = "Customer"
-    VENDOR = "Vendor"
-    LOGISTICS = "Logistics"
+def _slim_order_for_tool(row: Dict[str, Any]) -> Dict[str, Any]:
+    keys = (
+        "id", "user_id", "business_id", "order_number", "status", "total_amount",
+        "tracking_number", "logistic_id", "delivery_address", "delivery_city", "delivery_state", "created_at",
+    )
+    out: Dict[str, Any] = {}
+    for k in keys:
+        v = row.get(k)
+        if v is None:
+            continue
+        out[k] = str(v) if k in ("id", "user_id", "business_id", "logistic_id") else v
+    meta = row.get("metadata")
+    if isinstance(meta, dict) and meta:
+        out["metadata"] = meta
+    return out
+
+
+def _slim_process_for_tool(pid: str, proc: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "process_id": pid,
+        "task_type": proc.get("task_type"),
+        "product_name": proc.get("product_name"),
+        "order_id": proc.get("order_id"),
+        "order_number": proc.get("order_number"),
+        "status": proc.get("status"),
+        "tracking_number": proc.get("tracking_number"),
+        "quantity": proc.get("quantity"),
+    }
 
 
 central_agent_base = BaseAgent(
-    system_prompt="""You are a central intelligence agent for automating business operations.
+    model_name=CENTRAL_AGENT_MODEL_NAME,
+    system_prompt="""
+    You are the Lead Transaction Architect. Your mission is to move every "Process" (thread) from initial inquiry to final delivery. You act as the sole intelligence hub connecting Customers, Vendor, and Logistics. You do not just pass messages; you interpret data, verify conditions, and drive the deal forward.
 
-**YOUR JOB**
-Coordinate communication between customers, vendors, and logistics. Confirm payment (verbal or via payment link). Create orders in DB once payment is confirmed. Track completed tasks in finished_tasks.
+#The Three-Step Execution Loop
+For every interaction, you MUST internally follow this sequence:
+    Status Audit: Check the finished_tasks and thread history. What is the current milestone? (Inquiry → Availability → Payment → Fulfillment → Delivery).
+    Tool Execution: Call necessary tools to fetch real-time facts (e.g., check bank API for payment, check vendor stock).
+    Strategic Routing: Based on the Outcome, decide the single most logical recipient to act next.
 
-**OBJECTIVES**
-1. **Payment confirmation**: Confirm via vendor/logistics verbal reply or payment link verification. Create order in DB when confirmed.
-2. **Logistics**: Coordinate delivery, collect addresses, track orders. Use order_id from processes when available.
-3. **Customer feedback**: Handle complaints and escalate when needed.
-4. **Product unavailable**: Confirm availability with vendors and relay to customers.
+#Communication Protocols
+1. Customer (The "High-End Salesperson")
+    Persona: Professional, persuasive, and clear.
+    Goal: Conversion and reassurance.
+    Behavior: Use "closing" language. Instead of "The item is available," say "Great news! We’ve confirmed the item is in stock and reserved just for you. Please complete the payment via the link below to finalize your order."
+    Constraint: Never share internal IDs or technical jargon.
 
-**TOOLS**
-- create_order: Call when payment is confirmed (by vendor or payment link). Creates order in DB and caches in processes.
-- get_order_info: Read order from DB or processes cache.
-- update_order_status: Update order status (shipped, delivered, cancelled). Call when vendor/logistics confirms delivery.
-- mark_task_finished: Add completed activity to finished_tasks. Call when payment confirmed, order created, delivery arranged, etc.
-- get_delivery_address, get_logistics_info, get_contact_info, get_business_bank_details: Fetch context for coordination.
+2. Vendor (The "Ops Manager")
+    Persona: Direct and efficiency-focused.
+    Goal: Fulfillment readiness.
+    Behavior: Provide clear triggers (e.g., "Payment confirmed for Order #123. Please begin packaging for pickup.")
+    Constraint: One actionable request per message.
 
-**RECIPIENT RULES (critical)**
-- recipient=Customer: When the message is FOR the customer — relaying product availability, prices, payment link, bank details, delivery request, or answering their inquiry. Examples: "We have the item available", "Here are the payment details", "Please share your delivery address".
-- recipient=Vendor: When asking the vendor for confirmation, availability check, or a reply. Examples: "Confirm payment received", "Do you have this in stock?".
-- recipient=Logistics: When coordinating with logistics (shipping, tracking, delivery).
+3. Logistics (The "Dispatcher")
+    Persona: Technical and precise.
+    Goal: Seamless transit.
+    Behavior: Always include order_id, pickup location, and specific time windows.
+    Constraint: Only engage Logistics after Vendor confirms "Ready for Pickup."
+    
+Strict Business Rules (The "Guardrails")
+    The Payment Hard-Gate: You are strictly forbidden from generating an order or contacting Logistics until a tool has explicitly verified payment_status: SUCCESS.
+    The "Hint" Override: If a hint_recipient is provided, evaluate it against the transaction state. If the hint says "Logistics" but payment is not confirmed, ignore the hint and route to the Customer for payment.
+    Interpretation of Outcomes: Never dump raw tool data. "Fold" the outcome into a narrative.
+        Bad: "Tool result: success."
+        Good: (to Customer) "Your payment was successful! We are now coordinating with the vendor to prep your package."
 
-**RULES**
-- Create order only after payment confirmation. Update finished_tasks when tasks complete.
-- Use order_id from incoming messages when logistics/vendor provide it.
-- Be concise and action-oriented.""",
+Post-payment delivery routing: After payment is verified / an order exists, call **get_delivery_logistics_context**. If **db_partner_logistic_id** is set, use that logistics party for coordination. 
+If it is null and **party_assigned_logistic_id** is unset, ask the Vendor whether they want to self-handle delivery or want a registered carrier;
+then call **finalize_vendor_delivery_route** (`self_handled=True` for vendor-only shipping, `self_handled=False` with optional `logistic_id`; 
+omit `logistic_id` to auto-pick a registered company). Persisted party state is visible to business chat.
+
+Thread Closure: You must call close_process immediately once the objective is reached (e.g., Delivery Confirmed) to prevent unnecessary billing/processing.""",
     deps_type=CentralAgentDeps,
     output_type=CentralAgentResponse,
+    model_settings={'thinking': 'medium'}
 )
 
 central_agent = central_agent_base.agent
@@ -116,6 +166,10 @@ def _customer_id(ctx: RunContext[CentralAgentDeps]) -> str:
 
 def _business_id(ctx: RunContext[CentralAgentDeps]) -> str:
     return ctx.deps.business_id or (ctx.deps.vendor.id if ctx.deps.vendor else "")
+
+
+def _logistic_id(ctx: RunContext[CentralAgentDeps]) -> str:
+    return ctx.deps.logistic_id or (ctx.deps.logistics.id if ctx.deps.logistics else "")
 
 
 @central_agent.tool
@@ -131,6 +185,7 @@ async def create_order(
     """Create order in DB and cache in Redis processes. Call only after payment is confirmed."""
     customer_id = _customer_id(ctx)
     business_id = _business_id(ctx)
+    
     if not customer_id or not business_id:
         return {"error": "Missing customer or business context"}
 
@@ -148,18 +203,20 @@ async def create_order(
         order_id = str(order["id"])
         order_number = order["order_number"]
 
+        pid = ctx.deps.process_id
+        ap = ctx.deps.active_process
+        ap.update(
+            {
+                "product_name": product_name or ap.get("product_name") or "",
+                "order_id": order_id,
+                "order_number": order_number,
+                "quantity": quantity,
+                "customer_address": delivery_address,
+                "status": "pending",
+            }
+        )
         user_state = await get_user_state(customer_id, business_id) or {}
-        processes = user_state.get("processes", {})
-        if product_name not in processes:
-            processes[product_name] = {}
-        processes[product_name].update({
-            "order_id": order_id,
-            "order_number": order_number,
-            "quantity": quantity,
-            "customer_address": delivery_address,
-            "status": "pending",
-        })
-        user_state["processes"] = processes
+        user_state.setdefault("processes", {})[pid] = ap
         await modify_user_state(customer_id, business_id, user_state)
 
         logger.info(
@@ -192,18 +249,20 @@ async def get_order_info(
     if order_id:
         order = await get_order_by_id(order_id)
         if order:
-            return dict(order)
+            return _slim_order_for_tool(dict(order))
     if order_number:
         order = await get_order_by_number(order_number)
         if order:
-            return dict(order)
+            return _slim_order_for_tool(dict(order))
 
     processes = user_state.get("processes", {})
-    for pname, proc in processes.items():
+    for pid, proc in processes.items():
+        if not isinstance(proc, dict):
+            continue
         if proc.get("order_id") == order_id or proc.get("order_number") == order_number:
-            return {"product_name": pname, **proc}
+            return _slim_process_for_tool(str(pid), proc)
         if not order_id and not order_number and proc.get("order_id"):
-            return {"product_name": pname, **proc}
+            return _slim_process_for_tool(str(pid), proc)
 
     return {"error": "Order not found"}
 
@@ -212,7 +271,7 @@ async def get_order_info(
 async def update_order_status(
     ctx: RunContext[CentralAgentDeps],
     order_id: str,
-    status: str,
+    status: Literal["pending", "payment_verified", "shipped", "delivered", "cancelled"],
     tracking_number: Optional[str] = None,
     logistic_id: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -230,11 +289,17 @@ async def update_order_status(
         business_id = _business_id(ctx)
         user_state = await get_user_state(customer_id, business_id) or {}
         processes = user_state.get("processes", {})
-        for pname, proc in processes.items():
-            if proc.get("order_id") == order_id:
-                processes[pname]["status"] = status
+        for pid, proc in processes.items():
+            if not isinstance(proc, dict):
+                continue
+            if str(proc.get("order_id") or "") == str(order_id):
+                proc["status"] = status
                 if tracking_number:
-                    processes[pname]["tracking_number"] = tracking_number
+                    proc["tracking_number"] = tracking_number
+                if logistic_id:
+                    proc["logistic_id"] = str(logistic_id).strip()
+                processes[pid] = proc
+                ctx.deps.active_process.update(proc)
                 break
         user_state["processes"] = processes
         await modify_user_state(customer_id, business_id, user_state)
@@ -248,11 +313,19 @@ async def mark_task_finished(
     ctx: RunContext[CentralAgentDeps],
     task_description: str,
 ) -> Dict[str, Any]:
-    """Add completed activity to finished_tasks. E.g. 'Payment verified for Product X', 'Order ORD-xxx created'."""
-    finished = ctx.deps.finished_tasks
-    if task_description not in finished:
-        finished.append(task_description)
-    return {"status": "updated", "finished_tasks": finished}
+    """Append to finished_tasks for this process (persisted to Redis)."""
+    ap = ctx.deps.active_process
+    ft = ap.setdefault("finished_tasks", [])
+    if task_description not in ft:
+        ft.append(task_description)
+    customer_id = _customer_id(ctx)
+    business_id = _business_id(ctx)
+    pid = ctx.deps.process_id
+    user_state = await get_user_state(customer_id, business_id) or {}
+    user_state.setdefault("processes", {})[pid] = ap
+    await modify_user_state(customer_id, business_id, user_state)
+    tail = ft[-12:] if len(ft) > 12 else ft
+    return {"status": "updated", "finished_tasks": tail, "total": len(ft)}
 
 
 @central_agent.tool
@@ -265,10 +338,14 @@ async def get_delivery_address(
     business_id = _business_id(ctx)
     user_state = await get_user_state(customer_id, business_id) or {}
     processes = user_state.get("processes", {})
+    addr = ctx.deps.active_process.get("customer_address")
+    if addr:
+        return addr
 
     pname = product_name or ctx.deps.product_name
-    if pname and pname in processes:
-        return processes[pname].get("customer_address")
+    for _pid, proc in processes.items():
+        if isinstance(proc, dict) and (proc.get("product_name") or "") == (pname or ""):
+            return proc.get("customer_address")
 
     user_info = await get_user_by_id(customer_id)
     if user_info:
@@ -284,6 +361,65 @@ async def get_logistics_info(ctx: RunContext[CentralAgentDeps]) -> Dict[str, Any
         if logistics:
             return {"logistics": [{"id": str(l["id"]), "name": l["name"], "phone": l.get("phone_number")} for l in logistics]}
         return {"logistics": [], "message": "No logistics companies configured"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@central_agent.tool
+async def get_delivery_logistics_context(ctx: RunContext[CentralAgentDeps]) -> Dict[str, Any]:
+    """DB partner logistics + vendor party Redis (`assigned_logistic_id`, `delivery_route`) + registry sample."""
+    bid = _business_id(ctx)
+    if not bid:
+        return {"error": "No vendor context"}
+    try:
+        biz = await get_business_info(bid) or {}
+        party = await get_party_state(bid) or {}
+        partner = biz.get("partner_logistic_id")
+        pname = None
+        if partner:
+            pr = await get_business_info(str(partner)) or {}
+            pname = pr.get("name")
+        rows = await get_logistics_companies(limit=8)
+        return {
+            "db_partner_logistic_id": str(partner) if partner else None,
+            "db_partner_name": pname,
+            "party_assigned_logistic_id": party.get("assigned_logistic_id"),
+            "party_delivery_route": party.get("delivery_route"),
+            "registry_sample": [{"id": str(r["id"]), "name": r.get("name")} for r in rows],
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@central_agent.tool
+async def finalize_vendor_delivery_route(
+    ctx: RunContext[CentralAgentDeps],
+    self_handled: bool,
+    logistic_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Persist vendor party Redis: vendor self-delivery vs logistics (`logistic_id` optional → random registry)."""
+    bid = _business_id(ctx)
+    if not bid:
+        return {"error": "No vendor context"}
+    try:
+        st = await get_party_state(bid) or {}
+        if self_handled:
+            st["delivery_route"] = "vendor"
+            st.pop("assigned_logistic_id", None)
+        else:
+            lid = (logistic_id or "").strip()
+            if not lid:
+                lid = await pick_random_logistics_company_id()
+                if not lid:
+                    return {"error": "No logistics companies in registry"}
+            st["delivery_route"] = "logistics"
+            st["assigned_logistic_id"] = lid
+        await modify_party_state(bid, st)
+        return {
+            "ok": True,
+            "delivery_route": st.get("delivery_route"),
+            "assigned_logistic_id": st.get("assigned_logistic_id"),
+        }
     except Exception as e:
         return {"error": str(e)}
 
@@ -356,144 +492,219 @@ async def run_central_agent(
     user_state: Optional[Dict[str, Any]] = None,
     vendor_only: bool = False,
     debug: bool = False,
+    *,
+    caller_agent: str = "unknown",
 ) -> Dict[str, Any]:
-    """Run central agent. Uses Redis state. Builds CentralAgentDeps from event + Redis."""
+    """Run central agent. Uses Redis state; processes keyed by process_id."""
     customer_id = getattr(event_message.customer, "id", "") if event_message.customer else ""
     business_id = getattr(event_message.business, "id", "") if event_message.business else ""
+    logistic_id = getattr(event_message.logistic, "id", None) if event_message.logistic else None
 
-    redis_state = user_state or await get_user_state(customer_id, business_id) or {}
-    redis_state = redis_state if isinstance(redis_state, dict) else {}
-
-    finished_tasks = redis_state.get("finished_tasks", [])
-    if not isinstance(finished_tasks, list):
-        finished_tasks = []
-
-    comm_history = redis_state.get("central_communication_history", [])
-    if not isinstance(comm_history, list):
-        comm_history = []
-
-    product_name = None
-    if event_message.product:
-        product_name = event_message.product.name
-
-    deps = CentralAgentDeps(
-        communication_history=comm_history,
-        finished_tasks=finished_tasks,
-        customer=event_message.customer,
-        vendor=event_message.business,
-        product=event_message.product,
-        logistics=event_message.logistic,
-        customer_id=customer_id,
-        business_id=business_id,
-        logistic_id=getattr(event_message.logistic, "id", None) if event_message.logistic else None,
-        product_name=product_name,
-        order_id=event_message.order_id,
-        id=f"{customer_id}:{business_id}",
-    )
-
-    comm_history.append(
-        {"role": "user", "name": event_message.sender, "content": event_message.message}
-    )
-
-    logger.info(
-        "central_agent | run_start | customer=%s business=%s sender=%s msg_len=%d",
-        customer_id,
-        business_id,
-        event_message.sender,
-        len(event_message.message or ""),
-    )
-    result = await central_agent.run(
-        f"Context: {json.dumps(comm_history[-10:])}",
-        deps=deps,
-    )
-    response = result.output
-    logger.info(
-        "central_agent | run_done | recipient=%s next_step=%s",
-        response.recipient,
-        response.next_step[:60] if response.next_step else "",
-    )
-
-    comm_history.append(
-        {"role": "assistant", "name": response.sender, "content": response.message}
-    )
-
-    finished_tasks = deps.finished_tasks or finished_tasks
-    redis_state["central_communication_history"] = comm_history[-50:]
-    redis_state["finished_tasks"] = finished_tasks
-    await modify_user_state(customer_id, business_id, redis_state)
-
-    recipient_lower = response.recipient.lower()
-    recipient_id = None
-    if recipient_lower == "vendor":
-        recipient_id = business_id
-    elif recipient_lower == "logistics" and event_message.logistic:
-        recipient_id = getattr(event_message.logistic, "id", None)
-    elif recipient_lower == "customer":
-        recipient_id = customer_id
-
-    if recipient_id:
-        msg = response.message
-        if recipient_lower in ("vendor", "logistics") and (customer_id or product_name or event_message.order_id):
-            parts = []
-            if customer_id:
-                parts.append(f"Customer: {customer_id}")
-            if product_name:
-                parts.append(f"Product: {product_name}")
-            order_num = event_message.order_id
-            if not order_num and customer_id and business_id:
-                user_state = await get_user_state(customer_id, business_id) or {}
-                for _pn, proc in (user_state.get("processes") or {}).items():
-                    if proc.get("order_id"):
-                        order_num = proc.get("order_number") or proc.get("order_id")
-                        break
-            if order_num:
-                parts.append(f"Order: {order_num}")
-            if parts:
-                msg = f"[{' | '.join(parts)}] {msg}"
-        inbox_payload = {
-            "message": msg,
-            "sender": response.sender,
-            "recipient": response.recipient,
-        }
-        if customer_id and recipient_lower in ("vendor", "logistics"):
-            inbox_payload["customer_id"] = customer_id
-        if product_name:
-            inbox_payload["product_name"] = product_name
-        if event_message.order_id:
-            inbox_payload["order_id"] = event_message.order_id
-        if business_id:
-            inbox_payload["business_id"] = business_id
-        logger.info(
-            "central_agent | inbox_push | recipient_id=%s sender=%s",
-            recipient_id,
-            response.sender,
-        )
-        await push_to_inbox(recipient_id, inbox_payload)
+    if not customer_id or not business_id:
+        raise ValueError("central agent requires customer.id and business.id")
 
     try:
-        sender_num = get_contact(response.sender, event_message)
-        recipient_num = get_contact(response.recipient, event_message)
-        if sender_num and recipient_num:
-            whatsapp.send_message(sender_num, recipient_num, response.message)
+        from backend.chatbot.utils.history_summarizer import maybe_summarize_comm_history
+
+        redis_state = user_state or await get_user_state(customer_id, business_id) or {}
+        pid, proc = get_or_create_process_for_event(redis_state, event_message)
+        event_message.process_id = pid
+
+        comm = proc.setdefault("communication_history", [])
+
+        comm = await maybe_summarize_comm_history(comm)
+        proc["communication_history"] = comm
+
+        product_name = proc.get("product_name") or (
+            event_message.product.name if event_message.product else None
+        )
+        
+        order_num_out = proc.get("order_number") or proc.get("order_id") or event_message.order_id
+
+        force_vendor_inbox = (
+            event_message.sender == EntityType.AGENT
+            and event_message.recipient == EntityType.VENDOR
+        )
+
+        _tt = _task_label(event_message.task_type)
+        _msg_prev = (event_message.message or "")[:2000]
+        logger.info(
+            "central_agent_invoked | caller=%s customer_id=%s business_id=%s process_id=%s "
+            "task_type=%s incoming_sender=%s incoming_recipient=%s vendor_only=%s message=%r",
+            caller_agent,
+            customer_id,
+            business_id,
+            pid,
+            _tt,
+            event_message.sender,
+            event_message.recipient,
+            vendor_only,
+            _msg_prev,
+        )
+        logfire.info(
+            "central_agent_invoked",
+            caller_agent=caller_agent,
+            customer_id=customer_id,
+            business_id=business_id,
+            process_id=pid,
+            task_type=_tt,
+            incoming_sender=str(event_message.sender),
+            incoming_recipient=str(event_message.recipient),
+            vendor_only=vendor_only,
+            message_preview=_msg_prev,
+        )
+
+        deps = CentralAgentDeps(
+            active_process=proc,
+            process_id=pid,
+            customer=event_message.customer,
+            vendor=event_message.business,
+            product=event_message.product,
+            logistics=event_message.logistic,
+            customer_id=customer_id,
+            business_id=business_id,
+            logistic_id=getattr(event_message.logistic, "id", None) if event_message.logistic else None,
+            order_id=event_message.order_id,
+            product_name=product_name,
+            id=f"{customer_id}:{business_id}",
+        )
+
+        role = get_role(event_message)
+        comm.append(
+            {"role": role, "name": _enum_label(event_message.sender), "content": event_message.message}
+        )
+
+        ft = proc.get("finished_tasks") or []
+        ft_text = "\n".join(f"- {t}" for t in ft) if ft else "(none yet)"
+        hint = (
+            # f"Inbound hint (non-binding): sender={_enum_label(event_message.sender)} "
+            f"proposed_recipient (hint)={_enum_label(event_message.recipient)}\n\n"
+        )
+        run_prompt = (
+            hint
+            + f"**Finished tasks:**\n{ft_text}\n\n**Thread**\n{json.dumps(comm)}"
+        )
+
+        agent_stdout("central_agent input", run_prompt)
+        result = await central_agent.run(run_prompt, deps=deps)
+        response = result.output
+        logger.info(
+            "central_agent_completed | caller=%s process_id=%s model_recipient=%s next_step_preview=%r",
+            caller_agent,
+            pid,
+            response.recipient,
+            (response.next_step or "")[:120],
+        )
+
+        recipient_lower = _enum_label(response.recipient).strip().lower()
+        outbound_message = (response.message or "").strip()
+        
+        comm.append(
+            {
+                "role": _sender_role(response.sender),
+                "name": _enum_label(response.sender),
+                "content": outbound_message,
+            }
+        )
+
+        if recipient_lower == "customer" and (customer_id and business_id):
+            outbound_message = await polish_central_message_for_customer(
+                draft_message=outbound_message,
+                customer_id=customer_id,
+                business_id=business_id,
+                pair_state=redis_state,
+            )
+
+        agent_stdout(
+            "central_agent output",
+            f"recipient={response.recipient}\n"
+            f"sender={response.sender}\n"
+            f"next_step={response.next_step}\n"
+            f"message=\n{outbound_message}",
+        )
+
+        # prev_ft = list(proc.get("finished_tasks") or [])
+        out_ft = list(response.finished_tasks or [])
+        # merged = list(dict.fromkeys(prev_ft + out_ft))
+        proc["finished_tasks"] = out_ft
+        proc["communication_history"] = comm
+        redis_state.setdefault("processes", {})[pid] = proc
+        await modify_user_state(customer_id, business_id, redis_state)
+
+        task_type_label = str(proc.get("task_type") or "")
+
+        logistics_party_id: Optional[str] = None
+        if event_message.logistic and getattr(event_message.logistic, "id", None):
+            logistics_party_id = str(event_message.logistic.id).strip() or None
+        if not logistics_party_id and proc.get("logistic_id"):
+            logistics_party_id = str(proc.get("logistic_id")).strip() or None
+
+        sent_message = await deliver_central_outbound(
+            CentralOutboundContext(
+                recipient_lower=recipient_lower,
+                outbound_message=outbound_message,
+                response_sender=_enum_label(response.sender),
+                response_recipient=_enum_label(response.recipient),
+                customer_id=customer_id,
+                business_id=business_id,
+                product_name=product_name,
+                order_id=str(order_num_out) if order_num_out else None,
+                process_id=pid,
+                task_type_label=task_type_label,
+                event_message=event_message,
+                logistics_party_id=logistics_party_id,
+            )
+        )
+
+        if force_vendor_inbox and recipient_lower != "vendor":
+            logger.info(
+                "central_agent_vendor_inbox_fallback | caller=%s process_id=%s task_type=%s "
+                "(model targeted %s; pushing original agent->vendor message to vendor inbox)",
+                caller_agent,
+                pid,
+                task_type_label,
+                recipient_lower,
+            )
+            await deliver_central_outbound(
+                CentralOutboundContext(
+                    recipient_lower="vendor",
+                    outbound_message=(event_message.message or "").strip(),
+                    response_sender="Agent",
+                    response_recipient="Vendor",
+                    customer_id=customer_id,
+                    business_id=business_id,
+                    product_name=product_name,
+                    order_id=str(order_num_out) if order_num_out else None,
+                    process_id=pid,
+                    task_type_label=task_type_label,
+                    event_message=event_message,
+                    logistics_party_id=logistics_party_id,
+                )
+            )
+
+        try:
+            recipient_num = get_contact(_enum_label(response.recipient), event_message)
+            if recipient_num:
+                whatsapp.send_message(PHONE_NUMBER_ID, recipient_num, sent_message)
+        except Exception as e:
+            if debug:
+                print(f"WhatsApp send error: {e}")
+
+        return {
+            "message": sent_message,
+            "sender": response.sender,
+            "recipient": response.recipient,
+            "reasoning": response.reasoning,
+            "process_id": pid,
+        }
     except Exception as e:
-        if debug:
-            print(f"WhatsApp send error: {e}")
+        logger.exception("run_central_agent failed")
+        return {
+            "message": "",
+            "sender": "",
+            "recipient": "",
+            "reasoning": "",
+            "error": str(e),
+        }
 
-    return {
-        "message": response.message,
-        "sender": response.sender,
-        "recipient": response.recipient,
-        "reasoning": response.reasoning,
-    }
 
-
-def get_contact(entity: str, event_message: CentralAgentInput) -> Optional[str]:
-    """Get contact ID for entity (phone or id for WhatsApp)."""
-    entity_lower = entity.lower()
-    if entity_lower == "customer" and event_message.customer:
-        return getattr(event_message.customer, "phone", None) or getattr(event_message.customer, "id", None)
-    if entity_lower == "vendor" and event_message.business:
-        return getattr(event_message.business, "phone", None) or getattr(event_message.business, "id", None)
-    if entity_lower == "logistics" and event_message.logistic:
-        return getattr(event_message.logistic, "phone", None) or getattr(event_message.logistic, "id", None)
-    return None
