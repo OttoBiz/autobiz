@@ -123,7 +123,7 @@ async def test_product_agent(q: dict, business_id: str, user_id: str) -> AgentTe
 
 
 async def test_payment_agent(q: dict, business_id: str, user_id: str) -> AgentTestResult:
-    from backend.chatbot.agents.payment_verification_agent import run_verification_agent
+    from backend.chatbot.agents.payment import run_verification_agent
 
     start = time.perf_counter()
     error = None

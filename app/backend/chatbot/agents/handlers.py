@@ -5,7 +5,7 @@ from backend.chatbot.agents.customer_relation import customer_complaint_agent
 from backend.chatbot.agents.logistics_agent import logistics_agent
 from backend.chatbot.agents.main_agent import AgentDeps
 from backend.chatbot.agents.outbound import dispatch
-from backend.chatbot.agents.payment_verification_agent import payment_verification_agent
+from backend.chatbot.agents.payment import payment_verification_agent
 from backend.chatbot.agents.product_agent import product_agent
 from backend.db.db_utils import get_business_info
 
