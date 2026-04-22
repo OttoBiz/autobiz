@@ -3,9 +3,9 @@ from typing import Any, Awaitable, Callable, List, Literal, NamedTuple, Optional
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.models import KnownModelName
 
 from backend.chatbot.agents.outbound import OutboundDeps
+from backend.config import MODEL_NAME
 
 
 class AgentDeps(BaseModel):
@@ -63,10 +63,17 @@ def _register_handlers() -> dict[str, SubagentDef]:
     }
 
 
-SUBAGENTS: dict[str, SubagentDef] = _register_handlers()
+_SUBAGENTS: dict[str, SubagentDef] | None = None
 
 
-model: KnownModelName = "openai:gpt-5.2-chat-latest"
+def _get_subagents() -> dict[str, SubagentDef]:
+    global _SUBAGENTS
+    if _SUBAGENTS is None:
+        _SUBAGENTS = _register_handlers()
+    return _SUBAGENTS
+
+
+model = MODEL_NAME
 
 instructions = """
 You are an AI sales assistant for a business. You help customers with product enquiries, purchases, payments, delivery, and complaints.
@@ -102,7 +109,7 @@ async def query_subagent(
 ) -> list[dict[str, Any]]:
     """Call one or more subagents in parallel. Each task specifies the subagent name and a detailed prompt."""
     results = await asyncio.gather(
-        *(SUBAGENTS[task.agent_name].handler(ctx.deps, task.prompt) for task in tasks),
+        *(_get_subagents()[task.agent_name].handler(ctx.deps, task.prompt) for task in tasks),
         return_exceptions=True,
     )
     return [r if isinstance(r, dict) else {"error": str(r)} for r in results]
@@ -111,6 +118,6 @@ async def query_subagent(
 @agent.instructions
 def build_instructions(ctx: RunContext[AgentDeps]) -> str:
     subagent_list = "\n".join(
-        f"- {name}: {sub.description}" for name, sub in SUBAGENTS.items()
+        f"- {name}: {sub.description}" for name, sub in _get_subagents().items()
     )
     return instructions.replace("{subagents}", subagent_list)
