@@ -68,15 +68,21 @@ def test_get_unknown_raises_keyerror():
         registry.get("missing")
 
 
-def test_get_for_customer_returns_none_without_resolver():
-    assert registry.get_for_customer("biz", "cust") is None
+@pytest.mark.asyncio
+async def test_get_for_customer_returns_none_without_resolver():
+    assert await registry.get_for_customer("biz", "cust") is None
 
 
-def test_get_for_customer_uses_resolver():
+@pytest.mark.asyncio
+async def test_get_for_customer_uses_resolver():
     fake = FakeChannel()
     registry.register(fake)
-    registry.set_identity_resolver(lambda business_id, customer_id: fake)
-    assert registry.get_for_customer("biz", "cust") is fake
+
+    async def resolver(business_id: str, customer_id: str) -> Channel:
+        return fake
+
+    registry.set_identity_resolver(resolver)
+    assert await registry.get_for_customer("biz", "cust") is fake
 
 
 def test_channel_abc_cannot_be_instantiated_directly():
