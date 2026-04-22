@@ -69,7 +69,9 @@ async def handle_inbound(msg: InboundMessage) -> None:
         result = await central_agent.run(prompt, deps=deps)
 
         channel = registry.get(msg.identity.channel)
-        await messaging_dispatcher.dispatch(channel, msg.identity, result.output)
+        await messaging_dispatcher.dispatch_to_customer(
+            channel, msg.identity, result.output
+        )
 
         # Destructive drain only after a successful send. Any exception above
         # leaves items in the inbox for the next turn (drain-and-fail atomicity).

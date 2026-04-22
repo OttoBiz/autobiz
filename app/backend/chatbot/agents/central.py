@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
 
 from backend.chatbot.agents.deps import AgentDeps
-from backend.chatbot.messaging.reply import OutboundReply
+from backend.chatbot.messaging.reply import Reply
 from backend.config import MODEL_NAME
 
 
@@ -144,15 +144,15 @@ OUTBOUND:
 - When its result appears in your state, relay it to the customer.
 
 RESPONSE FORMAT:
-Your reply is an `OutboundReply` (channel-agnostic). For plain text, set `text`. The dispatcher
-routes the reply through the customer's active channel.
+Reply with `Reply.text` only — plain prose. Do not return JSON, markdown structure, or
+any UI hint; the channel layer owns formatting.
 """
 
 
 agent = Agent(
     model=model,
     deps_type=AgentDeps,
-    output_type=OutboundReply,
+    output_type=Reply,
 )
 
 

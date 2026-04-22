@@ -3,8 +3,10 @@
 Resolution state lives in the `outbound_tasks` ledger, not on deps. The agent
 calls `mark_completed(customer_context, system_context)` when it's done; the
 after-tool hook fans out via the resolution router. The agent's run output is
-an `OutboundReply` (channel-agnostic); the dispatch helper routes it through
-the party's channel after the run completes.
+a plain-text `Reply`. The dispatch helper wraps that text in a tracking
+primitive (a WhatsApp Flow whose `flow_token` is the task_key) so the vendor's
+reply is mappable back to this exact ticket — a single party can have many
+open tickets concurrently.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from pydantic_ai.messages import ToolCallPart
 from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity
 from backend.chatbot.messaging import dispatcher as messaging_dispatcher
-from backend.chatbot.messaging.reply import OutboundReply
+from backend.chatbot.messaging.reply import Reply
 from backend.config import MODEL_NAME
 from backend.db import channel_identities, outbound_ledger
 
@@ -65,19 +67,9 @@ RULES:
 - If the party declines or cannot help, still call `mark_completed` describing the negative outcome.
 
 RESPONSE FORMAT:
-Your final reply is an `OutboundReply` (channel-agnostic). Populate the narrowest set of fields
-that fits the message you want to send to the party. The dispatcher routes them to the right
-channel primitive.
-- `text`: free-form prose. Default for open-ended questions or status updates.
-- `buttons`: yes/no or up to 3 quick-pick choices. Faster reply than free text. Pair with `text`
-  for the body.
-- `list_sections` (+ optional `list_button_text`): pick-one from a longer enumerated set
-  (e.g. SKUs, time slots). Pair with `text` for the body.
-- `flow`: typed-field collection (e.g. ETA, quantity, address) via a structured form.
-- `template`: required to OPEN the conversation outside the WhatsApp 24h window. Do not use
-  inside the window.
-- `media_url`: attach an image / document URL. Use `text` as caption.
-- `expect_reply`, `reply_to_id`: set when the message threads off a prior message.
+Reply with `Reply.text` only — plain prose to the party. Do not pick a UI surface; the
+dispatcher wraps your text in the right tracking primitive (on WhatsApp, a Flow keyed
+by this task) so the party's reply is routed back to this ticket.
 """
 
 _hooks: Hooks[OutboundDeps] = Hooks()
@@ -114,10 +106,10 @@ async def _on_mark_completed(
     return result
 
 
-outbound_agent: Agent[OutboundDeps, OutboundReply] = Agent(
+outbound_agent: Agent[OutboundDeps, Reply] = Agent(
     model=MODEL_NAME,
     deps_type=OutboundDeps,
-    output_type=OutboundReply,
+    output_type=Reply,
     capabilities=[_hooks],
 )
 
@@ -224,7 +216,9 @@ async def dispatch(
                 channel_user_id=party,
                 last_inbound_at=identity.last_inbound_at,
             )
-            await messaging_dispatcher.dispatch(channel, target_identity, result.output)
+            await messaging_dispatcher.dispatch_to_party(
+                channel, target_identity, result.output, task_key=task_key
+            )
         except Exception as exc:
             await outbound_ledger.mark_failed(task_key, system_context=str(exc))
 

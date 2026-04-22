@@ -45,6 +45,12 @@ WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
 # `request_info` helper below targets a generic "request information" flow
 # that the business publishes once and reuses across agents.
 FLOW_REQUEST_INFO_ID = os.getenv("FLOW_REQUEST_INFO_ID", "")
+# Flow used to deliver outbound vendor/logistics requests. Renders the agent's
+# message as context plus a free-form textbox; the per-task `flow_token`
+# (= outbound task_key) lets us map the vendor's nfm_reply back to the
+# originating task without disambiguation.
+FLOW_OUTBOUND_TICKET_ID = os.getenv("FLOW_OUTBOUND_TICKET_ID", "")
+FLOW_OUTBOUND_TICKET_SCREEN = os.getenv("FLOW_OUTBOUND_TICKET_SCREEN", "OUTBOUND_TICKET")
 
 # Business Tier Plans
 TIER_FREE = "free"
@@ -68,6 +74,8 @@ class Config:
     WHATSAPP_API_KEY = WHATSAPP_API_KEY
     WHATSAPP_PHONE_NUMBER_ID = WHATSAPP_PHONE_NUMBER_ID
     FLOW_REQUEST_INFO_ID = FLOW_REQUEST_INFO_ID
+    FLOW_OUTBOUND_TICKET_ID = FLOW_OUTBOUND_TICKET_ID
+    FLOW_OUTBOUND_TICKET_SCREEN = FLOW_OUTBOUND_TICKET_SCREEN
 
 config = Config()
 

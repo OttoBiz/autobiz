@@ -1,88 +1,57 @@
-"""Channel-agnostic dispatcher.
+"""Channel-agnostic dispatch.
 
-Resolves an `OutboundReply` (channel-agnostic) into one channel-bound primitive
-and dispatches it via the supplied `Channel`. Precedence is fixed and explicit:
+Agents emit plain text (`Reply`). The dispatcher decides how that text is
+delivered per channel and per audience:
 
-    flow > template > list_sections > buttons > media_url > text
+- `dispatch_to_customer`: simple text send. The customer-facing reply is always
+  prose; the agent does not pick UI primitives.
+- `dispatch_to_party`: outbound to a vendor/logistics party. On WhatsApp this
+  wraps the text in a Flow whose `flow_token` is the outbound `task_key`, so
+  the vendor's nfm_reply can be mapped back to the originating ticket without
+  guesswork (a single party may have multiple open tickets at once).
 
-Only one branch fires per call. Agents pick the richest field they need; the
-dispatcher does not try to combine them.
+If a Flow ID isn't configured, party dispatch falls back to text with a
+`[Ref: <task_key>]` marker so the mapping path still exists.
 """
 
 from __future__ import annotations
 
 from backend.chatbot.channels.base import Channel, ChannelIdentity
-from backend.chatbot.channels.whatsapp_messages import (
-    ButtonMessage,
-    Flow,
-    ListMessage,
-    ListRow as WhatsAppListRow,
-    ListSection as WhatsAppListSection,
-    ReplyButton,
-    Template,
-)
-from backend.chatbot.messaging.reply import OutboundReply
+from backend.chatbot.channels.whatsapp_messages import Flow
+from backend.chatbot.messaging.reply import Reply
+from backend.config import config
 
 
-async def dispatch(
+# WhatsApp text body cap. Long context still rides in `data["context"]` so the
+# Flow screen template can render it in full.
+_WHATSAPP_BODY_LIMIT = 1024
+
+
+async def dispatch_to_customer(
     channel: Channel,
     identity: ChannelIdentity,
-    reply: OutboundReply,
+    reply: Reply,
 ) -> None:
-    if reply.flow is not None:
+    await channel.send(identity, reply.text)
+
+
+async def dispatch_to_party(
+    channel: Channel,
+    identity: ChannelIdentity,
+    reply: Reply,
+    *,
+    task_key: str,
+) -> None:
+    if channel.name == "whatsapp" and config.FLOW_OUTBOUND_TICKET_ID:
         flow = Flow(
-            flow_id=reply.flow.flow_id,
-            flow_token=reply.flow.flow_token,
-            flow_cta=reply.flow.flow_cta,
-            body=reply.flow.body,
-            screen=reply.flow.screen,
-            data=reply.flow.data,
+            flow_id=config.FLOW_OUTBOUND_TICKET_ID,
+            flow_token=task_key,
+            flow_cta="Reply",
+            body=reply.text[:_WHATSAPP_BODY_LIMIT],
+            screen=config.FLOW_OUTBOUND_TICKET_SCREEN,
+            data={"task_key": task_key, "context": reply.text},
         )
         await channel.send_flow(identity, flow)
         return
 
-    if reply.template is not None:
-        template = Template(
-            name=reply.template.name,
-            language=reply.template.language,
-            components=reply.template.components,
-        )
-        await channel.send_template(identity, template, {})
-        return
-
-    if reply.list_sections is not None:
-        msg = ListMessage(
-            body=reply.text or "",
-            button=reply.list_button_text or "Choose",
-            sections=[
-                WhatsAppListSection(
-                    title=s.title,
-                    rows=[
-                        WhatsAppListRow(
-                            id=r.id, title=r.title, description=r.description
-                        )
-                        for r in s.rows
-                    ],
-                )
-                for s in reply.list_sections
-            ],
-        )
-        await channel.send_list(identity, msg)
-        return
-
-    if reply.buttons is not None:
-        # WhatsApp caps interactive buttons at 3 — enforced here, not at agent boundary.
-        msg = ButtonMessage(
-            body=reply.text or "",
-            buttons=[ReplyButton(id=b.id, title=b.title) for b in reply.buttons[:3]],
-        )
-        await channel.send_buttons(identity, msg)
-        return
-
-    if reply.media_url is not None:
-        # TODO: no `Channel.send_media` exists yet; for now fall through to a
-        # text send carrying the URL as caption-style content.
-        await channel.send(identity, reply.text or reply.media_url)
-        return
-
-    await channel.send(identity, reply.text or "")
+    await channel.send(identity, f"{reply.text}\n\n[Ref: {task_key}]")
