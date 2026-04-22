@@ -8,7 +8,7 @@ from backend.chatbot.agents.routing_agent import route_conversation
 from backend.chatbot.agents.product_agent import run_product_agent
 from backend.chatbot.agents.upselling_agent import run_ads_marketing_agent, run_upselling_agent
 from backend.chatbot.agents.payment_verification_agent import run_verification_agent
-from backend.chatbot.agents.customer_complaint_agent import run_customer_complaint_agent
+from backend.chatbot.agents.customer_relation import run_customer_complaint_agent
 from backend.chatbot.agents.logistics_agent import run_logistics_agent
 from backend.chatbot.agents.evaluator_agent import evaluate_response, should_send_response
 from backend.chatbot.utils.agent_utils import get_or_create_user_state, save_user_state, format_chat_history

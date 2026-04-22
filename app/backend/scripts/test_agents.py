@@ -189,7 +189,7 @@ async def test_upselling_agent(q: dict, business_id: str) -> AgentTestResult:
 
 
 async def test_complaint_agent(q: dict, business_id: str, user_id: str) -> AgentTestResult:
-    from backend.chatbot.agents.customer_complaint_agent import (
+    from backend.chatbot.agents.customer_relation import (
         run_customer_complaint_agent,
     )
 
