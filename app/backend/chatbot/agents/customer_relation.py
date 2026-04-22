@@ -2,7 +2,7 @@
 
 from pydantic_ai import Agent
 
-from backend.chatbot.agents.central import AgentDeps
+from backend.chatbot.agents.deps import AgentDeps
 from backend.config import MODEL_NAME
 
 customer_complaint_agent = Agent(

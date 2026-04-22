@@ -12,7 +12,7 @@ import time
 import pytest
 
 from backend.chatbot.agents import central
-from backend.chatbot.agents.central import AgentDeps
+from backend.chatbot.agents.deps import AgentDeps
 
 
 @pytest.mark.asyncio

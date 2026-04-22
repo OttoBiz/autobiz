@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional
 
 from pydantic_ai import Agent, RunContext
 
-from backend.chatbot.agents.central import AgentDeps
+from backend.chatbot.agents.deps import AgentDeps
 from backend.config import MODEL_NAME
 from backend.db.db_utils import get_order_by_id
 

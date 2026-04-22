@@ -1,25 +1,15 @@
 import asyncio
-from typing import Any, Awaitable, Callable, List, Literal, NamedTuple, Optional
+from typing import Any, Awaitable, Callable, Literal, NamedTuple
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
 
-from backend.chatbot.agents.outbound import OutboundDeps
+from backend.chatbot.agents.deps import AgentDeps
 from backend.config import MODEL_NAME
 
 
 SUBAGENT_TIMEOUT_SECONDS = 30
-
-
-class AgentDeps(BaseModel):
-    user_id: str
-    business_id: str
-    chat_history: Optional[List[Any]] = None
-    state: dict[str, Any] = Field(default_factory=dict)
-    outbound: List[OutboundDeps] = Field(default_factory=list)
-    max_depth: int = 3
-    current_depth: int = 0
 
 
 class Task(BaseModel):

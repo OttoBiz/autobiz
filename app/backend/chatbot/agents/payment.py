@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 from pydantic_ai import Agent, RunContext
 
-from backend.chatbot.agents.central import AgentDeps
+from backend.chatbot.agents.deps import AgentDeps
 from backend.config import MODEL_NAME
 
 payment_verification_agent = Agent(
