@@ -17,6 +17,7 @@ from backend.whatsapp.routers import router as whatsapp_router
 # Import legacy endpoints for backward compatibility
 from backend.chatbot.interface.user_chat_interface import chat
 from backend.chatbot.interface.business_chat_interface import business_chat
+from backend.chatbot.sweeper import sweep_loop
 from backend.struct import UserRequest, BusinessRequest
 
 load_dotenv()
@@ -45,6 +46,8 @@ app = FastAPI(
     version="1.0.0"
 )
 
+_sweeper_task: asyncio.Task | None = None
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -58,6 +61,8 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     """Initialize database connection pool and populate on startup"""
+    global _sweeper_task
+
     if not DB_AVAILABLE:
         logging.warning("Database connection not available - running without database")
         print("⚠ Database connection not available - running without database")
@@ -71,7 +76,7 @@ async def startup_event():
             if populate_db_on_startup:
                 await populate_db_on_startup()
                 print("✓ Database populated with migrations and dummy data")
-            return
+            break
         except Exception as e:
             logging.warning(f"DB init attempt {attempt + 1}/10 failed: {e}")
             if attempt < 9:
@@ -81,10 +86,24 @@ async def startup_event():
                 print(f"✗ Failed to initialize database: {e}")
                 raise
 
+    _sweeper_task = asyncio.create_task(sweep_loop())
+    logging.info("✓ Outbound timeout sweeper started")
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Close database connection pool on shutdown"""
+    global _sweeper_task
+
+    if _sweeper_task is not None:
+        _sweeper_task.cancel()
+        try:
+            await _sweeper_task
+        except asyncio.CancelledError:
+            pass
+        _sweeper_task = None
+        logging.info("✓ Outbound timeout sweeper stopped")
+
     if DB_AVAILABLE:
         try:
             await close_db()
