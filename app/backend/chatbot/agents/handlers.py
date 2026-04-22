@@ -2,7 +2,7 @@ from typing import Any
 from uuid import UUID
 
 from backend.chatbot.agents.customer_relation import customer_complaint_agent
-from backend.chatbot.agents.logistics_agent import logistics_agent
+from backend.chatbot.agents.logistics import logistics_agent
 from backend.chatbot.agents.main_agent import AgentDeps
 from backend.chatbot.agents.outbound import dispatch
 from backend.chatbot.agents.payment import payment_verification_agent
