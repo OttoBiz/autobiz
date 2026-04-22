@@ -51,6 +51,7 @@ def acquire_lock(
     owner: str,
     ttl_seconds: int = DEFAULT_LOCK_TTL_SECONDS,
 ) -> bool:
+    """Per-customer mutex. central_agent (orchestrator) and coordinator (resolution router) must serialize on it."""
     key = _lock_key(business_id, customer_id)
     return bool(redis_conn._client.set(key, owner, nx=True, ex=ttl_seconds))
 

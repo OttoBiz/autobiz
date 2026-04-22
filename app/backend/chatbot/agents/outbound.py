@@ -29,6 +29,9 @@ class OutboundCancelled(Exception):
         super().__init__(f"outbound task {task_key} cancelled")
 
 
+OUTBOUND_MAX_DEPTH = 3
+
+
 class OutboundDeps(BaseModel):
     task_key: str
     business_id: UUID
@@ -38,6 +41,7 @@ class OutboundDeps(BaseModel):
     dispatch_prompt: str
     business_name: str | None = None
     max_depth: int = 3
+    current_depth: int = 0
 
 
 instructions = """
@@ -137,7 +141,13 @@ async def dispatch(
     dispatch_prompt: str,
     business_name: str | None = None,
     timeout_seconds: int = 3600,
+    parent_depth: int = 0,
 ) -> str:
+    # Reject *before* writing the ledger so a depth-exhausted chain leaves no row.
+    next_depth = parent_depth + 1
+    if next_depth > OUTBOUND_MAX_DEPTH:
+        raise ValueError(f"max_depth {OUTBOUND_MAX_DEPTH} exceeded")
+
     task_key = uuid4().hex
     timeout_at = datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)
     await outbound_ledger.insert_task(
@@ -157,6 +167,7 @@ async def dispatch(
         initiated_by=initiated_by,
         dispatch_prompt=dispatch_prompt,
         business_name=business_name,
+        current_depth=next_depth,
     )
 
     async def _run() -> None:

@@ -173,10 +173,6 @@ async def dispatch_outbound(
     timeout_seconds: int = 3600,
 ) -> str:
     """Open a new system-initiated outbound thread. Returns the new task_key."""
-    # Depth check is non-obvious: we count the *next* dispatch (current_depth + 1)
-    # against max_depth so a coordinator at depth N can dispatch only if N < max.
-    if ctx.deps.current_depth + 1 > ctx.deps.max_depth:
-        raise ValueError("max_depth exceeded")
     return await outbound.dispatch(
         business_id=ctx.deps.business_id,
         customer_id=ctx.deps.customer_id,
@@ -184,6 +180,7 @@ async def dispatch_outbound(
         initiated_by="system",
         dispatch_prompt=prompt,
         timeout_seconds=timeout_seconds,
+        parent_depth=ctx.deps.current_depth,
     )
 
 

@@ -219,3 +219,60 @@ def test_hooks_registered_on_agent():
     assert "after_tool_execute" in registry
     after_entries = registry["after_tool_execute"]
     assert any("mark_completed" in (e.tools or ()) for e in after_entries)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_rejects_at_max_depth(patch_ledger, monkeypatch):
+    monkeypatch.setattr(
+        outbound.outbound_agent, "run", AsyncMock(return_value=SimpleNamespace(output="ok"))
+    )
+
+    # parent_depth = max - 1 still permits one more dispatch (next_depth == max).
+    task_key = await outbound.dispatch(
+        business_id=uuid4(),
+        customer_id=uuid4(),
+        party="vendor",
+        initiated_by="customer",
+        dispatch_prompt="hi",
+        parent_depth=outbound.OUTBOUND_MAX_DEPTH - 1,
+    )
+    assert isinstance(task_key, str)
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    # parent_depth = max means next_depth exceeds the limit.
+    with pytest.raises(ValueError):
+        await outbound.dispatch(
+            business_id=uuid4(),
+            customer_id=uuid4(),
+            party="vendor",
+            initiated_by="customer",
+            dispatch_prompt="hi",
+            parent_depth=outbound.OUTBOUND_MAX_DEPTH,
+        )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_passes_current_depth_to_deps(patch_ledger, monkeypatch):
+    captured: dict[str, Any] = {}
+
+    async def _capture(prompt: str, deps: outbound.OutboundDeps) -> Any:
+        captured["deps"] = deps
+        return SimpleNamespace(output="ok")
+
+    monkeypatch.setattr(outbound.outbound_agent, "run", AsyncMock(side_effect=_capture))
+
+    parent_depth = 1
+    await outbound.dispatch(
+        business_id=uuid4(),
+        customer_id=uuid4(),
+        party="vendor",
+        initiated_by="customer",
+        dispatch_prompt="hi",
+        parent_depth=parent_depth,
+    )
+
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    assert captured["deps"].current_depth == parent_depth + 1

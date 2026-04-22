@@ -9,12 +9,17 @@ from backend.chatbot.agents.outbound import OutboundDeps
 from backend.config import MODEL_NAME
 
 
+SUBAGENT_TIMEOUT_SECONDS = 30
+
+
 class AgentDeps(BaseModel):
     user_id: str
     business_id: str
     chat_history: Optional[List[Any]] = None
     state: dict[str, Any] = Field(default_factory=dict)
     outbound: List[OutboundDeps] = Field(default_factory=list)
+    max_depth: int = 3
+    current_depth: int = 0
 
 
 class Task(BaseModel):
@@ -31,32 +36,46 @@ class SubagentDef(NamedTuple):
     handler: Callable[[AgentDeps, str], Awaitable[dict[str, Any]]]
 
 
+async def _run_with_timeout(
+    name: str, coro: Awaitable[Any]
+) -> dict[str, Any]:
+    # Timeout fallback so a single hung subagent can't block the central reply;
+    # the error dict surfaces to central so it can decide what to tell the customer.
+    try:
+        result = await asyncio.wait_for(coro, timeout=SUBAGENT_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        return {"error": "subagent_timeout", "subagent": name}
+    return {"response": result.output}
+
+
 async def _handle_product(deps: AgentDeps, prompt: str) -> dict[str, Any]:
     from backend.chatbot.agents.product import product_agent
 
-    result = await product_agent.run(prompt, deps=deps)
-    return {"response": result.output}
+    return await _run_with_timeout("product", product_agent.run(prompt, deps=deps))
 
 
 async def _handle_payment(deps: AgentDeps, prompt: str) -> dict[str, Any]:
     from backend.chatbot.agents.payment import payment_verification_agent
 
-    result = await payment_verification_agent.run(prompt, deps=deps)
-    return {"response": result.output}
+    return await _run_with_timeout(
+        "payment", payment_verification_agent.run(prompt, deps=deps)
+    )
 
 
 async def _handle_logistics(deps: AgentDeps, prompt: str) -> dict[str, Any]:
     from backend.chatbot.agents.logistics import logistics_agent
 
-    result = await logistics_agent.run(prompt, deps=deps)
-    return {"response": result.output}
+    return await _run_with_timeout(
+        "logistics", logistics_agent.run(prompt, deps=deps)
+    )
 
 
 async def _handle_customer_relation(deps: AgentDeps, prompt: str) -> dict[str, Any]:
     from backend.chatbot.agents.customer_relation import customer_complaint_agent
 
-    result = await customer_complaint_agent.run(prompt, deps=deps)
-    return {"response": result.output}
+    return await _run_with_timeout(
+        "customer_relation", customer_complaint_agent.run(prompt, deps=deps)
+    )
 
 
 async def _handle_outbound(deps: AgentDeps, prompt: str) -> dict[str, Any]:
@@ -72,6 +91,7 @@ async def _handle_outbound(deps: AgentDeps, prompt: str) -> dict[str, Any]:
         initiated_by="customer",
         dispatch_prompt=prompt,
         business_name=business_name,
+        parent_depth=deps.current_depth,
     )
     return {"status": "pending", "task_key": task_key}
 

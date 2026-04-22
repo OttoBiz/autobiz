@@ -240,31 +240,20 @@ async def test_dispatch_outbound_calls_dispatch_with_system_initiated_by(monkeyp
     assert kwargs["initiated_by"] == "system"
     assert kwargs["dispatch_prompt"] == "can you fulfill?"
     assert kwargs["timeout_seconds"] == 1800
+    assert kwargs["parent_depth"] == 0
 
 
 @pytest.mark.asyncio
-async def test_dispatch_outbound_allowed_under_max_depth(monkeypatch):
+async def test_dispatch_outbound_forwards_current_depth_as_parent_depth(monkeypatch):
     ctx = _make_ctx(current_depth=2, max_depth=3)
     dispatch = AsyncMock(return_value="tk")
     monkeypatch.setattr(coordinator.outbound, "dispatch", dispatch)
 
-    # current_depth + 1 == max_depth → still allowed (strictly greater fails).
-    result = await coordinator.dispatch_outbound(ctx, party="p", prompt="x")
+    # Depth enforcement lives in `outbound.dispatch`; the coordinator just
+    # propagates its own `current_depth` as the dispatch's `parent_depth`.
+    await coordinator.dispatch_outbound(ctx, party="p", prompt="x")
 
-    assert result == "tk"
-    dispatch.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_dispatch_outbound_rejects_beyond_max_depth(monkeypatch):
-    ctx = _make_ctx(current_depth=3, max_depth=3)
-    dispatch = AsyncMock()
-    monkeypatch.setattr(coordinator.outbound, "dispatch", dispatch)
-
-    with pytest.raises(ValueError, match="max_depth exceeded"):
-        await coordinator.dispatch_outbound(ctx, party="p", prompt="x")
-
-    dispatch.assert_not_awaited()
+    assert dispatch.await_args.kwargs["parent_depth"] == 2
 
 
 # ---------- surface_to_customer ----------
