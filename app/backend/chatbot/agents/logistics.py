@@ -1,17 +1,16 @@
-"""
-Logistics Agent - Handles customer logistics and delivery inquiries
-"""
+"""Logistics agent — handles customer delivery and tracking inquiries."""
 
 from typing import Any, Dict, Optional
 
-from pydantic_ai import RunContext
+from pydantic_ai import Agent, RunContext
 
-from backend.chatbot.agents.main_agent import AgentDeps
+from backend.chatbot.agents.central import AgentDeps
+from backend.config import MODEL_NAME
 from backend.db.db_utils import get_order_by_id
 
-from .base_agent import BaseAgent
-
-logistics_agent_base = BaseAgent(
+logistics_agent = Agent(
+    model=MODEL_NAME,
+    deps_type=AgentDeps,
     system_prompt="""You are a logistics coordination agent for delivery and shipping.
 
 **YOUR JOB**
@@ -22,24 +21,7 @@ logistics_agent_base = BaseAgent(
 **TOOLS**
 - get_order_for_product: Get order_id for a purchased product from processes.
 - get_order_tracking: Get order status, tracking number, and delivery details.""",
-    deps_type=AgentDeps,
 )
-
-logistics_agent = logistics_agent_base.agent
-
-
-async def run_logistics_agent(
-    customer_message: str,
-    user_id: str,
-    business_id: str,
-    user_state: dict = None,
-    **kwargs,
-) -> str:
-    """Legacy wrapper — delegates to logistics_agent."""
-    from backend.chatbot.agents.main_agent import AgentDeps
-    deps = AgentDeps(user_id=user_id, business_id=business_id, state=user_state or {})
-    result = await logistics_agent.run(customer_message, deps=deps)
-    return result.output
 
 
 @logistics_agent.tool

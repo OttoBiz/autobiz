@@ -1,12 +1,13 @@
-"""
-Customer Complaint Agent - Handles customer complaints and feedback
-"""
+"""Customer relation agent — handles complaints, feedback, and escalation."""
 
-from backend.chatbot.agents.main_agent import AgentDeps
+from pydantic_ai import Agent
 
-from .base_agent import BaseAgent
+from backend.chatbot.agents.central import AgentDeps
+from backend.config import MODEL_NAME
 
-customer_complaint_agent_base = BaseAgent(
+customer_complaint_agent = Agent(
+    model=MODEL_NAME,
+    deps_type=AgentDeps,
     system_prompt="""You are a customer service agent that handles customer complaints and feedback.
 
 **YOUR JOB**
@@ -20,22 +21,4 @@ customer_complaint_agent_base = BaseAgent(
 **OBJECTIVE**
 - Resolve customer complaints efficiently.
 - Escalate to human agents when necessary.""",
-    deps_type=AgentDeps,
 )
-
-customer_complaint_agent = customer_complaint_agent_base.agent
-
-
-async def run_customer_complaint_agent(
-    customer_message: str,
-    user_id: str,
-    business_id: str,
-    user_state: dict | None = None,
-    **kwargs,
-):
-    """Legacy wrapper — delegates to customer_complaint_agent."""
-    from backend.chatbot.agents.main_agent import AgentDeps
-
-    deps = AgentDeps(user_id=user_id, business_id=business_id, state=user_state or {})
-    result = await customer_complaint_agent.run(customer_message, deps=deps)
-    return result.output, user_state or {}

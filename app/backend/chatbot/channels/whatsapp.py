@@ -1,8 +1,14 @@
 import asyncio
+import hashlib
+import hmac
+import logging
+import os
 from datetime import datetime, timezone
-from typing import ClassVar
+from typing import ClassVar, Optional
+from urllib.parse import parse_qs
 
 import requests
+from dotenv import load_dotenv
 
 from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import (
@@ -12,7 +18,15 @@ from backend.chatbot.channels.base import (
     MediaAttachment,
     WindowPolicy,
 )
-from backend.whatsapp.utils import whatsapp as _whatsapp_bot
+from backend.config import config
+
+load_dotenv()
+
+logger = logging.getLogger(__name__)
+
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "")
+APP_SECRET = os.getenv("APP_SECRET", "")
+PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN", "") or config.WHATSAPP_API_KEY
 
 _MEDIA_KINDS: tuple[str, ...] = ("image", "audio", "video", "document")
 
@@ -40,6 +54,89 @@ def _extract_media(message: dict) -> list[MediaAttachment]:
             )
         )
     return attachments
+
+
+class WhatsappBot:
+    """Thin client for WhatsApp Cloud API verify + send."""
+
+    def __init__(
+        self,
+        page_access_token: Optional[str] = None,
+        app_secret: Optional[str] = None,
+        verify_token: Optional[str] = None,
+    ):
+        self.page_access_token = page_access_token or PAGE_ACCESS_TOKEN
+        self.app_secret = app_secret or APP_SECRET
+        self.verify_token = verify_token or VERIFY_TOKEN
+
+    def verify_webhook(self, request) -> str:
+        query_params = parse_qs(str(request.query_params))
+        mode = query_params.get("hub.mode")
+        token = query_params.get("hub.verify_token")
+        challenge = query_params.get("hub.challenge")
+
+        if mode and token:
+            if mode[0] == "subscribe" and token[0] == self.verify_token:
+                return challenge[0] if challenge else ""
+            return "Invalid verification token"
+        return "Invalid request"
+
+    def verify_signature(self, request_body: bytes, signature: str) -> bool:
+        if not self.app_secret:
+            logger.warning("APP_SECRET not configured, skipping signature verification")
+            return True
+        if signature.startswith("sha256="):
+            sha256 = hmac.new(
+                self.app_secret.encode("utf-8"), request_body, hashlib.sha256
+            ).hexdigest()
+            return sha256 == signature[7:]
+        if signature.startswith("sha1="):
+            sha1 = hmac.new(
+                self.app_secret.encode("utf-8"), request_body, hashlib.sha1
+            ).hexdigest()
+            return sha1 == signature[5:]
+        return False
+
+    def send_message(
+        self, phone_number_id: str, recipient_id: str, message: str
+    ) -> bool:
+        if not self.page_access_token or not phone_number_id:
+            logger.warning("WhatsApp credentials not configured")
+            return False
+
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": recipient_id,
+            "type": "text",
+            "text": {"preview_url": True, "body": message},
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.page_access_token}",
+        }
+
+        try:
+            response = requests.post(
+                f"https://graph.facebook.com/v18.0/{phone_number_id}/messages",
+                json=payload,
+                headers=headers,
+                timeout=10,
+            )
+            if response.status_code != 200:
+                logger.error(
+                    "Failed to send WhatsApp message: %s - %s",
+                    response.status_code,
+                    response.text,
+                )
+                return False
+            return True
+        except Exception as exc:
+            logger.error("Error sending WhatsApp message: %s", exc)
+            return False
+
+
+_whatsapp_bot = WhatsappBot()
 
 
 class WhatsappChannel(Channel):

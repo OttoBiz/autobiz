@@ -11,7 +11,7 @@ from fastapi.responses import PlainTextResponse
 import backend.chatbot.channels.whatsapp  # noqa: F401  triggers channel registration
 from backend.chatbot import orchestrator
 from backend.chatbot.channels import registry
-from backend.whatsapp.utils import whatsapp as _whatsapp_bot
+from backend.chatbot.channels.whatsapp import _whatsapp_bot
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 

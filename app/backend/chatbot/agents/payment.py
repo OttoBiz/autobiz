@@ -1,16 +1,15 @@
-"""
-Payment Verification Agent - Verifies customer payments
-"""
+"""Payment verification agent — verifies customer payments."""
 
 from typing import Any, Dict
 
-from pydantic_ai import RunContext
+from pydantic_ai import Agent, RunContext
 
-from backend.chatbot.agents.main_agent import AgentDeps
+from backend.chatbot.agents.central import AgentDeps
+from backend.config import MODEL_NAME
 
-from .base_agent import BaseAgent
-
-payment_verification_agent_base = BaseAgent(
+payment_verification_agent = Agent(
+    model=MODEL_NAME,
+    deps_type=AgentDeps,
     system_prompt="""You are a payment verification assistant.
 
 **YOUR JOB**
@@ -22,24 +21,7 @@ payment_verification_agent_base = BaseAgent(
 **RULES**
 - Only report payment as confirmed when verify_payment_link returns verified=True.
 - For receipts: report that vendor confirmation is needed — the orchestrator will handle it.""",
-    deps_type=AgentDeps,
 )
-
-payment_verification_agent = payment_verification_agent_base.agent
-
-
-async def run_verification_agent(
-    customer_message: str,
-    user_id: str,
-    business_id: str,
-    user_state: dict = None,
-    **kwargs,
-) -> str:
-    """Legacy wrapper — delegates to payment_verification_agent."""
-    from backend.chatbot.agents.main_agent import AgentDeps
-    deps = AgentDeps(user_id=user_id, business_id=business_id, state=user_state or {})
-    result = await payment_verification_agent.run(customer_message, deps=deps)
-    return result.output
 
 
 @payment_verification_agent.tool

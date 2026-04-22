@@ -4,24 +4,9 @@ from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel
 
 
-class Customer(BaseModel):
-    id: str
-    name: Optional[str] = None
-    phone: Optional[str] = None
-    address: Optional[str] = None
-
-
 class BankAccount(BaseModel):
     name: Optional[str] = None
     number: Optional[str] = None
-
-
-class Vendor(BaseModel):
-    id: str
-    name: Optional[str] = None
-    phone: Optional[str] = None
-    address: Optional[str] = None
-    bank_account: Optional[BankAccount] = None
 
 
 class Logistics(BaseModel):
@@ -30,31 +15,6 @@ class Logistics(BaseModel):
     phone: Optional[str] = None
     address: Optional[str] = None
     bank_account: Optional[BankAccount] = None
-
-
-class Product(BaseModel):
-    id: str
-    name: str
-    quantity: int
-    price: float
-    has_paid: bool = False
-    metadata: Optional[Dict[str, Any]] = None
-
-
-class CentralAgentInput(BaseModel):
-    """Input for central agent"""
-
-    sender: str  # ["Agent", "Customer", "Vendor", "Logistics"]
-    recipient: str  # ["Agent", "Customer", "Vendor", "Logistics"]
-    business: Optional[Vendor] = None
-    customer: Optional[Customer] = None
-    logistic: Optional[Logistics] = None
-    message: str
-    product: Optional[Product] = None
-    order_id: Optional[str] = None
-
-    def to_dict(self):
-        return self.dict()
 
 
 class ProductAgentInput(BaseModel):
@@ -98,17 +58,6 @@ class UserRequest(BaseModel):
     msg_date_time: Optional[Union[datetime, str]] = None
 
 
-class BusinessRequest(BaseModel):
-    """Request from business/logistics. Reply context is extracted by the agent from chat history."""
-    vendor_id: str = ""  # Set when business is chatting
-    logistic_id: str = ""  # Set when logistics is chatting
-    session_id: str
-    sender: str  # "business" or "logistics"
-    message: str
-    recent_inbox: Optional[List[Dict[str, Any]]] = None  # Inbox messages displayed in UI (for context extraction)
-    msg_date_time: Optional[Union[datetime, str]] = None
-
-
 class AgentRequest(BaseModel):
     user_id: str
     vendor_id: Optional[str] = None
@@ -117,7 +66,6 @@ class AgentRequest(BaseModel):
     message: str
     agent_input: Optional[
         Union[
-            CentralAgentInput,
             CustomerComplaintAgent,
             PaymentVerifcationAgent,
             UpsellingAgentInput,

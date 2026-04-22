@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from backend.chatbot import inbox
-from backend.chatbot.agents.main_agent import AgentDeps, agent as central_agent
+from backend.chatbot.agents.central import AgentDeps, agent as central_agent
 from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity, InboundMessage
 from backend.db import channel_identities, outbound_ledger

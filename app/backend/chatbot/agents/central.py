@@ -1,5 +1,6 @@
 import asyncio
 from typing import Any, Awaitable, Callable, List, Literal, NamedTuple, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
@@ -30,35 +31,72 @@ class SubagentDef(NamedTuple):
     handler: Callable[[AgentDeps, str], Awaitable[dict[str, Any]]]
 
 
-def _register_handlers() -> dict[str, SubagentDef]:
-    from backend.chatbot.agents.handlers import (
-        handle_customer_relation,
-        handle_logistics,
-        handle_outbound,
-        handle_payment,
-        handle_product,
-    )
+async def _handle_product(deps: AgentDeps, prompt: str) -> dict[str, Any]:
+    from backend.chatbot.agents.product import product_agent
 
+    result = await product_agent.run(prompt, deps=deps)
+    return {"response": result.output}
+
+
+async def _handle_payment(deps: AgentDeps, prompt: str) -> dict[str, Any]:
+    from backend.chatbot.agents.payment import payment_verification_agent
+
+    result = await payment_verification_agent.run(prompt, deps=deps)
+    return {"response": result.output}
+
+
+async def _handle_logistics(deps: AgentDeps, prompt: str) -> dict[str, Any]:
+    from backend.chatbot.agents.logistics import logistics_agent
+
+    result = await logistics_agent.run(prompt, deps=deps)
+    return {"response": result.output}
+
+
+async def _handle_customer_relation(deps: AgentDeps, prompt: str) -> dict[str, Any]:
+    from backend.chatbot.agents.customer_relation import customer_complaint_agent
+
+    result = await customer_complaint_agent.run(prompt, deps=deps)
+    return {"response": result.output}
+
+
+async def _handle_outbound(deps: AgentDeps, prompt: str) -> dict[str, Any]:
+    from backend.chatbot.agents.outbound import dispatch
+    from backend.db.db_utils import get_business_info
+
+    business_info = await get_business_info(deps.business_id)
+    business_name = business_info.get("name", "") if business_info else None
+    task_key = await dispatch(
+        business_id=UUID(deps.business_id),
+        customer_id=UUID(deps.user_id),
+        party="vendor",
+        initiated_by="customer",
+        dispatch_prompt=prompt,
+        business_name=business_name,
+    )
+    return {"status": "pending", "task_key": task_key}
+
+
+def _register_handlers() -> dict[str, SubagentDef]:
     return {
         "product": SubagentDef(
             description="Look up product info, pricing, availability, and payment links for this business.",
-            handler=handle_product,
+            handler=_handle_product,
         ),
         "payment": SubagentDef(
             description="Verify a payment via receipt or payment link. Match amounts against known products.",
-            handler=handle_payment,
+            handler=_handle_payment,
         ),
         "logistics": SubagentDef(
             description="Track orders, get delivery status, collect delivery addresses.",
-            handler=handle_logistics,
+            handler=_handle_logistics,
         ),
         "customer_relation": SubagentDef(
             description="Handle complaints, feedback, and escalation decisions.",
-            handler=handle_customer_relation,
+            handler=_handle_customer_relation,
         ),
         "outbound": SubagentDef(
             description="Contact vendor or logistics. Returns immediately — runs in background. Use when you need human confirmation or info the system doesn't have.",
-            handler=handle_outbound,
+            handler=_handle_outbound,
         ),
     }
 
