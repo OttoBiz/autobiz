@@ -5,7 +5,7 @@ Updated to use pydantic_ai with file handling support
 from fastapi import BackgroundTasks, UploadFile
 from typing import List, Optional, Dict, Any
 from backend.chatbot.agents.routing_agent import route_conversation
-from backend.chatbot.agents.product_agent import run_product_agent
+from backend.chatbot.agents.product import run_product_agent
 from backend.chatbot.agents.upselling_agent import run_ads_marketing_agent, run_upselling_agent
 from backend.chatbot.agents.payment import run_verification_agent
 from backend.chatbot.agents.customer_relation import run_customer_complaint_agent

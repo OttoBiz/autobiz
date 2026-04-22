@@ -87,7 +87,7 @@ async def test_routing_agent(q: dict, business_id: str, user_id: str) -> AgentTe
 
 
 async def test_product_agent(q: dict, business_id: str, user_id: str) -> AgentTestResult:
-    from backend.chatbot.agents.product_agent import run_product_agent
+    from backend.chatbot.agents.product import run_product_agent
 
     start = time.perf_counter()
     error = None
