@@ -14,15 +14,12 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from backend.chatbot.agents.central_agent import run_central_agent
-from backend.chatbot.agents.central_agent_utils import create_structured_input
 from backend.chatbot.agents.main_agent import AgentDeps
 from backend.chatbot.agents.upselling_agent import run_upselling_agent
 from backend.chatbot.utils.agent_utils import get_or_create_user_state, save_user_state
 from backend.db.cache_utils import get_user_state
 from backend.db.db_utils import get_products
 from backend.modules.products import get_product_images
-from backend.struct import Customer, Vendor
 
 from .base_agent import BaseAgent
 
@@ -46,7 +43,7 @@ RULES:
 - Call get_product_info with no arguments to list all available products.
 - Only mention products that are returned by the tool. If the tool returns nothing, say the vendor has no matching products.
 - When a customer wants to purchase, fetch the payment link or provide bank transfer details.
-- If information is missing (no products listed, no payment details set up), call notify_vendor to send a message directly to the vendor — NEVER ask the customer to contact the owner manually.
+- If information is missing (no products listed, no payment details set up), return a clear message stating what's unavailable so the orchestrator can handle it.
 - Keep responses concise and conversational.""",
     deps_type=AgentDeps,
 )
@@ -104,29 +101,6 @@ async def get_business_payment_info(
         "paystack_public_key": business_info.get("paystack_public_key", ""),
     }
 
-
-@product_agent.tool
-async def notify_vendor(
-    ctx: RunContext[AgentDeps],
-    message: str,
-) -> Dict[str, Any]:
-    """Send a message to the vendor via the central agent.
-    Use this when you are unable to find/provide any information concerning a product or the business (per customer's request)."""
-    try:
-        agent_input = await create_structured_input(
-            sender="Agent",
-            recipient="Vendor",
-            message=message,
-            customer=Customer(id=ctx.deps.user_id),
-            business=Vendor(id=ctx.deps.business_id),
-        )
-        await run_central_agent(event_message=agent_input)
-        return {
-            "status": "vendor_notified",
-            "message": "Message sent to vendor. The customer will be updated when the vendor responds.",
-        }
-    except Exception as e:
-        return {"status": "error", "message": f"Could not reach vendor: {e}"}
 
 
 @product_agent.tool

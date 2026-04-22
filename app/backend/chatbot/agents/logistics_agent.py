@@ -2,18 +2,14 @@
 Logistics Agent - Handles customer logistics and delivery inquiries
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from pydantic_ai import RunContext
 
-from backend.chatbot.agents.central_agent import run_central_agent
-from backend.chatbot.agents.central_agent_utils import create_structured_input
 from backend.chatbot.agents.main_agent import AgentDeps
 from backend.db.db_utils import get_order_by_id
-from backend.struct import Customer, Vendor
 
 from .base_agent import BaseAgent
-
 
 logistics_agent_base = BaseAgent(
     system_prompt="""You are a logistics coordination agent for delivery and shipping.
@@ -21,16 +17,29 @@ logistics_agent_base = BaseAgent(
 **YOUR JOB**
 - Help customers track deliveries and understand shipping status.
 - Collect delivery addresses for order fulfillment.
-- Coordinate with vendor/logistics via notify_central_agent. Always pass order_id when available.
+- Return tracking data and status to the orchestrator. Do NOT contact vendors directly.
 
 **TOOLS**
 - get_order_for_product: Get order_id for a purchased product from processes.
-- get_order_tracking: Get order status, tracking number, and delivery details.
-- notify_central_agent: Request info from vendor/logistics. Include order_id and product_name when available.""",
+- get_order_tracking: Get order status, tracking number, and delivery details.""",
     deps_type=AgentDeps,
 )
 
 logistics_agent = logistics_agent_base.agent
+
+
+async def run_logistics_agent(
+    customer_message: str,
+    user_id: str,
+    business_id: str,
+    user_state: dict = None,
+    **kwargs,
+) -> str:
+    """Legacy wrapper — delegates to logistics_agent."""
+    from backend.chatbot.agents.main_agent import AgentDeps
+    deps = AgentDeps(user_id=user_id, business_id=business_id, state=user_state or {})
+    result = await logistics_agent.run(customer_message, deps=deps)
+    return result.output
 
 
 @logistics_agent.tool
@@ -68,27 +77,3 @@ async def get_order_tracking(
         "delivery_city": order.get("delivery_city"),
         "delivery_state": order.get("delivery_state"),
     }
-
-
-@logistics_agent.tool
-async def notify_central_agent(
-    ctx: RunContext[AgentDeps],
-    message: str,
-    recipient: str = "Vendor",
-    order_id: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Notify central agent. Pass order_id when available for better context."""
-    try:
-        full_msg = f"[Order ID: {order_id}] {message}" if order_id else message
-        agent_input = await create_structured_input(
-            sender="Agent",
-            recipient=recipient,
-            message=full_msg,
-            customer=Customer(id=ctx.deps.user_id),
-            business=Vendor(id=ctx.deps.business_id),
-            order_id=order_id,
-        )
-        await run_central_agent(event_message=agent_input)
-        return {"status": "sent", "message": "Request sent. Awaiting response."}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
