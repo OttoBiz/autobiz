@@ -19,6 +19,7 @@ from backend.chatbot.agents.central import agent as central_agent
 from backend.chatbot.agents.deps import AgentDeps
 from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity, InboundMessage
+from backend.chatbot.messaging import dispatcher as messaging_dispatcher
 from backend.db import channel_identities, outbound_ledger
 from backend.db.outbound_ledger import OutboundTaskRow
 
@@ -68,7 +69,7 @@ async def handle_inbound(msg: InboundMessage) -> None:
         result = await central_agent.run(prompt, deps=deps)
 
         channel = registry.get(msg.identity.channel)
-        await channel.send(msg.identity, result.output)
+        await messaging_dispatcher.dispatch(channel, msg.identity, result.output)
 
         # Destructive drain only after a successful send. Any exception above
         # leaves items in the inbox for the next turn (drain-and-fail atomicity).

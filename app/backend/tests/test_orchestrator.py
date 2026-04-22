@@ -29,6 +29,7 @@ from backend.chatbot.channels.base import (  # noqa: E402
     ChannelIdentity,
     InboundMessage,
 )
+from backend.chatbot.messaging.reply import OutboundReply  # noqa: E402
 from backend.db.outbound_ledger import OutboundTaskRow  # noqa: E402
 
 
@@ -132,14 +133,23 @@ def patch_identity(monkeypatch):
 
 @pytest.fixture
 def patch_central(monkeypatch):
-    run = AsyncMock(return_value=SimpleNamespace(output="agent reply"))
+    run = AsyncMock(
+        return_value=SimpleNamespace(output=OutboundReply(text="agent reply"))
+    )
     monkeypatch.setattr(orchestrator.central_agent, "run", run)
     return run
 
 
 @pytest.fixture
 def patch_registry(monkeypatch):
-    channel = SimpleNamespace(send=AsyncMock(), name="whatsapp")
+    channel = SimpleNamespace(
+        send=AsyncMock(),
+        send_buttons=AsyncMock(),
+        send_list=AsyncMock(),
+        send_flow=AsyncMock(),
+        send_template=AsyncMock(),
+        name="whatsapp",
+    )
     get = MagicMock(return_value=channel)
     monkeypatch.setattr(orchestrator.registry, "get", get)
     return SimpleNamespace(get=get, channel=channel)
@@ -171,6 +181,8 @@ async def test_happy_path_runs_central_sends_and_drains_after(
     assert "hi there" in prompt_arg
     assert "vendor confirmed" in prompt_arg
     patch_registry.channel.send.assert_awaited_once_with(msg.identity, "agent reply")
+    # Dispatcher fell through to plain text — none of the rich primitives ran.
+    patch_registry.channel.send_buttons.assert_not_awaited()
     patch_inbox.drain.assert_called_once_with(_BIZ_ID, _CUST_ID)
     patch_inbox.set_cursor.assert_called_once_with(_BIZ_ID, _CUST_ID, resolved_at)
     patch_inbox.release.assert_called_once()

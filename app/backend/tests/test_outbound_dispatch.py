@@ -17,7 +17,10 @@ from uuid import UUID, uuid4
 import pytest
 
 from backend.chatbot.agents import outbound
+from backend.chatbot.channels import registry
+from backend.chatbot.messaging.reply import OutboundReply
 from backend.chatbot.routers import outbound_resolution
+from backend.db import channel_identities
 
 
 @pytest.fixture

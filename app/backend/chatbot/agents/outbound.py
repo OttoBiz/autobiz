@@ -2,7 +2,9 @@
 
 Resolution state lives in the `outbound_tasks` ledger, not on deps. The agent
 calls `mark_completed(customer_context, system_context)` when it's done; the
-after-tool hook fans out via the resolution router.
+after-tool hook fans out via the resolution router. The agent's run output is
+an `OutboundReply` (channel-agnostic); the dispatch helper routes it through
+the party's channel after the run completes.
 """
 
 from __future__ import annotations
@@ -18,18 +20,11 @@ from pydantic_ai.capabilities import Hooks
 from pydantic_ai.messages import ToolCallPart
 
 from backend.chatbot.channels import registry
-from backend.chatbot.channels.base import Channel, ChannelIdentity
-from backend.chatbot.channels.whatsapp_messages import (
-    ButtonMessage,
-    ListMessage,
-    ListRow,
-    ListSection,
-    ReplyButton,
-    Template,
-    request_info,
-)
+from backend.chatbot.channels.base import ChannelIdentity
+from backend.chatbot.messaging import dispatcher as messaging_dispatcher
+from backend.chatbot.messaging.reply import OutboundReply
 from backend.config import MODEL_NAME
-from backend.db import outbound_ledger
+from backend.db import channel_identities, outbound_ledger
 
 
 class OutboundCancelled(Exception):
@@ -69,12 +64,20 @@ RULES:
 - Do NOT end the conversation without calling `mark_completed`.
 - If the party declines or cannot help, still call `mark_completed` describing the negative outcome.
 
-SEND TOOLS (pick the narrowest primitive that fits):
-- `send_text_to_party(text)` — default. Free-form prose for open-ended questions or status updates.
-- `send_buttons_to_party(body, buttons)` — yes/no or ≤3 quick-pick choices; faster reply than free text.
-- `send_list_to_party(body, button_text, sections)` — pick-one from a longer enumerated set (e.g. SKUs, time slots).
-- `request_structured_info(prompt, fields)` — collect typed fields via a WhatsApp Flow form (e.g. ETA, quantity, address).
-- `send_template_to_party(template_name, vars)` — required to OPEN the conversation outside the WhatsApp 24h window; do not use inside the window.
+RESPONSE FORMAT:
+Your final reply is an `OutboundReply` (channel-agnostic). Populate the narrowest set of fields
+that fits the message you want to send to the party. The dispatcher routes them to the right
+channel primitive.
+- `text`: free-form prose. Default for open-ended questions or status updates.
+- `buttons`: yes/no or up to 3 quick-pick choices. Faster reply than free text. Pair with `text`
+  for the body.
+- `list_sections` (+ optional `list_button_text`): pick-one from a longer enumerated set
+  (e.g. SKUs, time slots). Pair with `text` for the body.
+- `flow`: typed-field collection (e.g. ETA, quantity, address) via a structured form.
+- `template`: required to OPEN the conversation outside the WhatsApp 24h window. Do not use
+  inside the window.
+- `media_url`: attach an image / document URL. Use `text` as caption.
+- `expect_reply`, `reply_to_id`: set when the message threads off a prior message.
 """
 
 _hooks: Hooks[OutboundDeps] = Hooks()
@@ -111,9 +114,10 @@ async def _on_mark_completed(
     return result
 
 
-outbound_agent: Agent[OutboundDeps, str] = Agent(
+outbound_agent: Agent[OutboundDeps, OutboundReply] = Agent(
     model=MODEL_NAME,
     deps_type=OutboundDeps,
+    output_type=OutboundReply,
     capabilities=[_hooks],
 )
 
@@ -148,126 +152,6 @@ async def mark_completed(
         ctx.deps.task_key, customer_context, system_context
     )
     return {"acknowledged": True}
-
-
-async def _resolve_party_channel(
-    deps: OutboundDeps,
-) -> tuple[Channel, ChannelIdentity]:
-    """Resolve the (channel, identity) pair for the outbound task's party.
-
-    v1 assumption: `party` IS the vendor's WhatsApp phone number. The free-form
-    send path in this agent has always treated it that way.
-
-    TODO: lift `party` from `str` to a typed `Party(phone, name, channel)` once
-    we support multi-channel vendors (Slack, email). At that point this resolver
-    consults the party's preferred channel instead of hard-coding WhatsApp.
-    """
-    channel = registry.get("whatsapp")
-    identity = ChannelIdentity(
-        business_id=str(deps.business_id),
-        # `customer_id` here marks the THREAD's owning customer for analytics /
-        # window tracking; `channel_user_id` is the vendor phone we actually
-        # send to. They are intentionally different identities.
-        customer_id=str(deps.customer_id),
-        channel="whatsapp",
-        channel_user_id=deps.party,
-        last_inbound_at=None,
-    )
-    return channel, identity
-
-
-@outbound_agent.tool
-async def send_text_to_party(ctx: RunContext[OutboundDeps], text: str) -> dict[str, Any]:
-    """Send free-form text to the vendor/party. Default send primitive."""
-    channel, identity = await _resolve_party_channel(ctx.deps)
-    await channel.send(identity, text)
-    return {"sent": True}
-
-
-@outbound_agent.tool
-async def send_buttons_to_party(
-    ctx: RunContext[OutboundDeps],
-    body: str,
-    buttons: list[dict[str, str]],
-) -> dict[str, Any]:
-    """Send a body + up to 3 reply buttons. `buttons` = [{"id","title"}, ...]."""
-    channel, identity = await _resolve_party_channel(ctx.deps)
-    msg = ButtonMessage(
-        body=body,
-        buttons=[ReplyButton(id=b["id"], title=b["title"]) for b in buttons],
-    )
-    await channel.send_buttons(identity, msg)
-    return {"sent": True, "buttons": [b["id"] for b in buttons]}
-
-
-@outbound_agent.tool
-async def send_list_to_party(
-    ctx: RunContext[OutboundDeps],
-    body: str,
-    button_text: str,
-    sections: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Send a list picker. `sections` = [{"title","rows":[{"id","title","description"?}]}]."""
-    channel, identity = await _resolve_party_channel(ctx.deps)
-    msg = ListMessage(
-        body=body,
-        button=button_text,
-        sections=[
-            ListSection(
-                title=s["title"],
-                rows=[
-                    ListRow(
-                        id=r["id"],
-                        title=r["title"],
-                        description=r.get("description"),
-                    )
-                    for r in s["rows"]
-                ],
-            )
-            for s in sections
-        ],
-    )
-    await channel.send_list(identity, msg)
-    return {"sent": True}
-
-
-@outbound_agent.tool
-async def request_structured_info(
-    ctx: RunContext[OutboundDeps],
-    prompt: str,
-    fields: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Open the standing 'request information' Flow to collect typed fields.
-
-    `fields` = [{"name","label","type"?}]. The labels render in the form;
-    field names key the response payload.
-    """
-    channel, identity = await _resolve_party_channel(ctx.deps)
-    flow = request_info(prompt, [f["label"] for f in fields])
-    await channel.send_flow(identity, flow)
-    return {"sent": True, "flow_id": flow.flow_id}
-
-
-@outbound_agent.tool
-async def send_template_to_party(
-    ctx: RunContext[OutboundDeps],
-    template_name: str,
-    vars: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Send a pre-approved template — required to open the conversation outside the 24h window.
-
-    `vars` is forwarded to `Channel.send_template` (e.g. {"language": "en",
-    "components": [...]}) so language/parameter substitution stays the channel's
-    concern, not the agent's.
-    """
-    channel, identity = await _resolve_party_channel(ctx.deps)
-    template = Template(
-        name=template_name,
-        language=(vars or {}).get("language", "en"),
-        components=(vars or {}).get("components", []),
-    )
-    await channel.send_template(identity, template, vars or {})
-    return {"sent": True}
 
 
 async def dispatch(
@@ -311,9 +195,36 @@ async def dispatch(
     async def _run() -> None:
         await outbound_ledger.mark_running(task_key)
         try:
-            await outbound_agent.run(dispatch_prompt, deps=deps)
+            result = await outbound_agent.run(dispatch_prompt, deps=deps)
         except OutboundCancelled:
             return
+        except Exception as exc:
+            await outbound_ledger.mark_failed(task_key, system_context=str(exc))
+            return
+
+        try:
+            channel = await registry.get_for_customer(
+                str(business_id), str(customer_id)
+            )
+            if channel is None:
+                return
+            identity = await channel_identities.get_most_recent_identity(
+                business_id, customer_id
+            )
+            if identity is None:
+                # No prior identity to send to (e.g. party-only thread); the
+                # ledger still carries the resolution for the central agent.
+                return
+            # `party` is the vendor's channel address — override channel_user_id
+            # so the reply goes to the vendor, not the customer.
+            target_identity = ChannelIdentity(
+                business_id=identity.business_id,
+                customer_id=identity.customer_id,
+                channel=identity.channel,
+                channel_user_id=party,
+                last_inbound_at=identity.last_inbound_at,
+            )
+            await messaging_dispatcher.dispatch(channel, target_identity, result.output)
         except Exception as exc:
             await outbound_ledger.mark_failed(task_key, system_context=str(exc))
 

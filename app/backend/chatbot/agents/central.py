@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
 
 from backend.chatbot.agents.deps import AgentDeps
+from backend.chatbot.messaging.reply import OutboundReply
 from backend.config import MODEL_NAME
 
 
@@ -141,12 +142,17 @@ OUTBOUND:
 - Call the "outbound" subagent when you need vendor/logistics input (payment confirmation, stock checks, delivery coordination).
 - It returns immediately. Tell the customer you're on it.
 - When its result appears in your state, relay it to the customer.
+
+RESPONSE FORMAT:
+Your reply is an `OutboundReply` (channel-agnostic). For plain text, set `text`. The dispatcher
+routes the reply through the customer's active channel.
 """
 
 
 agent = Agent(
     model=model,
     deps_type=AgentDeps,
+    output_type=OutboundReply,
 )
 
 
