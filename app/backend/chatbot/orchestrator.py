@@ -59,8 +59,8 @@ async def handle_inbound(msg: InboundMessage) -> None:
 
         prompt = _build_prompt(items, pending, resolved)
         deps = AgentDeps(
-            user_id=str(customer_id),
-            business_id=str(business_id),
+            customer_id=customer_id,
+            business_id=business_id,
             chat_history=None,
             state={},
             outbound=[],

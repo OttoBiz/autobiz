@@ -40,7 +40,7 @@ async def get_product_info(
 
     try:
         products = await get_products(
-            business_id=ctx.deps.business_id,
+            business_id=str(ctx.deps.business_id),
             name=product_name if product_name else "",
             category=category if category else "",
         )
@@ -69,7 +69,7 @@ async def get_business_payment_info(
     ctx: RunContext[AgentDeps],
 ) -> Dict[str, str]:
     """Get business payment information (bank account details)"""
-    user_state = await get_user_state(ctx.deps.user_id, ctx.deps.business_id)
+    user_state = await get_user_state(str(ctx.deps.customer_id), str(ctx.deps.business_id))
     business_info = user_state.get("business_information", {})
 
     return {

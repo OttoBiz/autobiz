@@ -32,10 +32,14 @@ from backend.chatbot.channels.base import (  # noqa: E402
 from backend.db.outbound_ledger import OutboundTaskRow  # noqa: E402
 
 
+_BIZ_ID = str(uuid4())
+_CUST_ID = str(uuid4())
+
+
 def _identity() -> ChannelIdentity:
     return ChannelIdentity(
-        business_id="biz1",
-        customer_id="cust1",
+        business_id=_BIZ_ID,
+        customer_id=_CUST_ID,
         channel="whatsapp",
         channel_user_id="cust1",
         last_inbound_at=None,
@@ -160,15 +164,15 @@ async def test_happy_path_runs_central_sends_and_drains_after(
     patch_inbox.acquire.assert_called_once()
     patch_identity.assert_awaited_once()
     patch_inbox.enqueue.assert_called_once()
-    patch_ledger.pending.assert_awaited_once_with("biz1", "cust1")
-    patch_ledger.resolved.assert_awaited_once_with("biz1", "cust1", None)
+    patch_ledger.pending.assert_awaited_once_with(_BIZ_ID, _CUST_ID)
+    patch_ledger.resolved.assert_awaited_once_with(_BIZ_ID, _CUST_ID, None)
     patch_central.assert_awaited_once()
     prompt_arg = patch_central.await_args.args[0]
     assert "hi there" in prompt_arg
     assert "vendor confirmed" in prompt_arg
     patch_registry.channel.send.assert_awaited_once_with(msg.identity, "agent reply")
-    patch_inbox.drain.assert_called_once_with("biz1", "cust1")
-    patch_inbox.set_cursor.assert_called_once_with("biz1", "cust1", resolved_at)
+    patch_inbox.drain.assert_called_once_with(_BIZ_ID, _CUST_ID)
+    patch_inbox.set_cursor.assert_called_once_with(_BIZ_ID, _CUST_ID, resolved_at)
     patch_inbox.release.assert_called_once()
 
 

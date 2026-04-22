@@ -2,6 +2,7 @@
 # specialized subagents can import without a cycle through `central`.
 
 from typing import Any, List, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -9,8 +10,8 @@ from backend.chatbot.agents.outbound import OutboundDeps
 
 
 class AgentDeps(BaseModel):
-    user_id: str
-    business_id: str
+    customer_id: UUID
+    business_id: UUID
     chat_history: Optional[List[Any]] = None
     state: dict[str, Any] = Field(default_factory=dict)
     outbound: List[OutboundDeps] = Field(default_factory=list)

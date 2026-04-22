@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from uuid import uuid4
 
 import pytest
 
@@ -31,7 +32,7 @@ async def test_handle_subagent_timeout(monkeypatch):
 
     monkeypatch.setattr(product_mod, "product_agent", _StubAgent())
 
-    deps = AgentDeps(user_id="u", business_id="b")
+    deps = AgentDeps(customer_id=uuid4(), business_id=uuid4())
     started = time.monotonic()
     result = await central._handle_product(deps, "anything")
     elapsed = time.monotonic() - started

@@ -1,6 +1,5 @@
 import asyncio
 from typing import Any, Awaitable, Callable, Literal, NamedTuple
-from uuid import UUID
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
@@ -72,11 +71,11 @@ async def _handle_outbound(deps: AgentDeps, prompt: str) -> dict[str, Any]:
     from backend.chatbot.agents.outbound import dispatch
     from backend.db.db_utils import get_business_info
 
-    business_info = await get_business_info(deps.business_id)
+    business_info = await get_business_info(str(deps.business_id))
     business_name = business_info.get("name", "") if business_info else None
     task_key = await dispatch(
-        business_id=UUID(deps.business_id),
-        customer_id=UUID(deps.user_id),
+        business_id=deps.business_id,
+        customer_id=deps.customer_id,
         party="vendor",
         initiated_by="customer",
         dispatch_prompt=prompt,
