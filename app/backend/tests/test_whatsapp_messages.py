@@ -22,7 +22,6 @@ from backend.chatbot.channels.whatsapp_messages import (
     Template,
     confirm_request,
     pick_option,
-    request_info,
 )
 
 
@@ -420,17 +419,3 @@ def test_pick_option_round_trips() -> None:
     assert rows == [{"id": "r", "title": "Red"}, {"id": "b", "title": "Blue"}]
 
 
-def test_request_info_round_trips_with_fields(monkeypatch) -> None:
-    from backend import config as config_module
-
-    monkeypatch.setattr(config_module.config, "FLOW_REQUEST_INFO_ID", "FLOW_42")
-
-    flow = request_info("We need a few details", ["email", "phone"])
-    assert isinstance(flow, Flow)
-    payload = flow.to_whatsapp_payload()
-    parameters = payload["interactive"]["action"]["parameters"]
-    assert parameters["flow_id"] == "FLOW_42"
-    assert parameters["flow_action_payload"]["screen"] == "REQUEST_INFO"
-    assert json.loads(parameters["flow_action_payload"]["data"]) == {
-        "fields": ["email", "phone"]
-    }

@@ -24,8 +24,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from backend.config import config
-
 
 # ---------------------------------------------------------------------------
 # Shared sub-models
@@ -243,22 +241,4 @@ def pick_option(prompt: str, options: list[tuple[str, str]]) -> ListMessage:
         body=prompt,
         button="Choose",
         sections=[ListSection(title="Options", rows=rows)],
-    )
-
-
-def request_info(prompt: str, fields: list[str]) -> Flow:
-    """Open the standing 'request information' flow with a list of field labels.
-
-    The actual flow definition (screens, validation) lives in WhatsApp Manager
-    and is referenced by `FLOW_REQUEST_INFO_ID`. We pass `fields` through as
-    initial screen data so the same flow can collect different pieces of info
-    depending on context.
-    """
-    return Flow(
-        flow_id=config.FLOW_REQUEST_INFO_ID,
-        flow_token=f"request_info:{':'.join(fields)}",
-        flow_cta="Provide info",
-        body=prompt,
-        screen="REQUEST_INFO",
-        data={"fields": fields},
     )
