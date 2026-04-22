@@ -1,0 +1,210 @@
+"""Outbound task ledger accessors.
+
+One row per outbound task. Append-only by identity — `state` mutates, rows
+never delete. See `ARCHITECTURE_DECISIONS.md` → "Outbound task ledger".
+"""
+
+from datetime import datetime
+from typing import Literal
+from uuid import UUID
+
+from pydantic import BaseModel
+
+from backend.db.connection import get_db
+
+
+class OutboundTaskRow(BaseModel):
+    task_key: str
+    business_id: UUID
+    customer_id: UUID
+    party: str
+    initiated_by: Literal["customer", "system"]
+    dispatch_prompt: str
+    state: Literal[
+        "queued",
+        "running",
+        "succeeded",
+        "failed",
+        "timed_out",
+        "cancelled",
+        "escalated",
+    ]
+    customer_context: str | None
+    system_context: str | None
+    dispatched_at: datetime
+    resolved_at: datetime | None
+    timeout_at: datetime
+
+
+_COLUMNS = (
+    "task_key, business_id, customer_id, party, initiated_by, dispatch_prompt, "
+    "state, customer_context, system_context, dispatched_at, resolved_at, timeout_at"
+)
+
+
+async def insert_task(
+    task_key: str,
+    business_id: UUID,
+    customer_id: UUID,
+    party: str,
+    initiated_by: str,
+    dispatch_prompt: str,
+    timeout_at: datetime,
+) -> None:
+    pool = await get_db()
+    query = """
+        INSERT INTO outbound_tasks (
+            task_key, business_id, customer_id, party,
+            initiated_by, dispatch_prompt, timeout_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+    """
+    async with pool.acquire() as conn:
+        await conn.execute(
+            query,
+            task_key,
+            business_id,
+            customer_id,
+            party,
+            initiated_by,
+            dispatch_prompt,
+            timeout_at,
+        )
+
+
+async def mark_running(task_key: str) -> bool:
+    pool = await get_db()
+    query = """
+        UPDATE outbound_tasks
+        SET state = 'running'
+        WHERE task_key = $1 AND state = 'queued'
+    """
+    async with pool.acquire() as conn:
+        status = await conn.execute(query, task_key)
+    return _rowcount(status) > 0
+
+
+async def mark_completed(
+    task_key: str,
+    customer_context: str | None,
+    system_context: str | None,
+) -> bool:
+    if not (customer_context or system_context):
+        raise ValueError(
+            "mark_completed requires at least one of customer_context or system_context"
+        )
+
+    pool = await get_db()
+    # Idempotency guard: only running rows transition to succeeded. A second
+    # call (or a race after timeout/cancel) is a no-op.
+    query = """
+        UPDATE outbound_tasks
+        SET state = 'succeeded',
+            customer_context = $2,
+            system_context = $3,
+            resolved_at = NOW()
+        WHERE task_key = $1 AND state = 'running'
+    """
+    async with pool.acquire() as conn:
+        status = await conn.execute(query, task_key, customer_context, system_context)
+    return _rowcount(status) > 0
+
+
+async def mark_failed(task_key: str, system_context: str) -> bool:
+    pool = await get_db()
+    query = """
+        UPDATE outbound_tasks
+        SET state = 'failed',
+            system_context = $2,
+            resolved_at = NOW()
+        WHERE task_key = $1 AND state = 'running'
+    """
+    async with pool.acquire() as conn:
+        status = await conn.execute(query, task_key, system_context)
+    return _rowcount(status) > 0
+
+
+async def mark_cancelled(task_key: str) -> bool:
+    pool = await get_db()
+    query = """
+        UPDATE outbound_tasks
+        SET state = 'cancelled',
+            resolved_at = NOW()
+        WHERE task_key = $1 AND state IN ('queued', 'running')
+    """
+    async with pool.acquire() as conn:
+        status = await conn.execute(query, task_key)
+    return _rowcount(status) > 0
+
+
+async def get_by_key(task_key: str) -> OutboundTaskRow | None:
+    pool = await get_db()
+    query = f"SELECT {_COLUMNS} FROM outbound_tasks WHERE task_key = $1"
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(query, task_key)
+    return OutboundTaskRow(**dict(row)) if row else None
+
+
+async def get_pending_for_customer(
+    business_id: UUID, customer_id: UUID
+) -> list[OutboundTaskRow]:
+    pool = await get_db()
+    query = f"""
+        SELECT {_COLUMNS}
+        FROM outbound_tasks
+        WHERE business_id = $1
+          AND customer_id = $2
+          AND initiated_by = 'customer'
+          AND state IN ('queued', 'running')
+        ORDER BY dispatched_at
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query, business_id, customer_id)
+    return [OutboundTaskRow(**dict(row)) for row in rows]
+
+
+async def get_resolved_since(
+    business_id: UUID, customer_id: UUID, cursor: datetime | None
+) -> list[OutboundTaskRow]:
+    pool = await get_db()
+    query = f"""
+        SELECT {_COLUMNS}
+        FROM outbound_tasks
+        WHERE business_id = $1
+          AND customer_id = $2
+          AND initiated_by = 'customer'
+          AND customer_context IS NOT NULL
+          AND resolved_at > COALESCE($3, '-infinity'::timestamptz)
+        ORDER BY resolved_at
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query, business_id, customer_id, cursor)
+    return [OutboundTaskRow(**dict(row)) for row in rows]
+
+
+async def get_state(task_key: str) -> str | None:
+    pool = await get_db()
+    query = "SELECT state FROM outbound_tasks WHERE task_key = $1"
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(query, task_key)
+    return row["state"] if row else None
+
+
+async def sweep_timeouts() -> list[str]:
+    pool = await get_db()
+    query = """
+        UPDATE outbound_tasks
+        SET state = 'timed_out',
+            resolved_at = NOW()
+        WHERE state IN ('queued', 'running')
+          AND timeout_at < NOW()
+        RETURNING task_key
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query)
+    return [row["task_key"] for row in rows]
+
+
+def _rowcount(status: str) -> int:
+    # asyncpg returns command tags like "UPDATE 1" / "UPDATE 0".
+    return int(status.rsplit(" ", 1)[-1])
