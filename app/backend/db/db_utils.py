@@ -844,6 +844,50 @@ async def update_product_stock(
         return dict(row) if row else None
 
 
+async def update_product_price(
+    product_id: str, price: Any
+) -> Optional[Dict[str, Any]]:
+    """Update a product's unit price. `price` may be a Decimal, float, or str."""
+    pool = await get_db()
+
+    query = """
+        UPDATE products
+        SET price = $2,
+            updated_at = NOW()
+        WHERE id = $1::uuid
+        RETURNING id, name, price, sku, updated_at
+    """
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(query, product_id, price)
+        return dict(row) if row else None
+
+
+async def update_vendor(vendor_id: Any, **fields: Any) -> bool:
+    """Update a vendor's record in the `businesses` table.
+
+    Accepted fields: `name`, `phone` (mapped to phone_number), `email`.
+    Returns True if a row was updated.
+    """
+    column_map = {"name": "name", "phone": "phone_number", "email": "email"}
+    updates = {column_map[k]: v for k, v in fields.items() if k in column_map}
+    if not updates:
+        return False
+
+    pool = await get_db()
+    set_clause = ", ".join(f"{col} = ${i + 2}" for i, col in enumerate(updates))
+    query = f"""
+        UPDATE businesses
+        SET {set_clause},
+            updated_at = NOW()
+        WHERE id = $1::uuid
+    """
+
+    async with pool.acquire() as conn:
+        status = await conn.execute(query, str(vendor_id), *updates.values())
+    return int(status.rsplit(" ", 1)[-1]) > 0
+
+
 async def get_low_stock_products(
     business_id: str, threshold: int = 10
 ) -> List[Dict[str, Any]]:
