@@ -84,6 +84,7 @@ def new_process_dict(
         "task_type": _task_label(task_type),
         "product_name": product_name or "",
         "order_id": order_id,
+        "price": None,
         "order_number": None,
         "quantity": None,
         "customer_address": None,
@@ -91,7 +92,89 @@ def new_process_dict(
         "tracking_number": None,
         "communication_history": [],
         "finished_tasks": [],
+        "completed": False,
     }
+
+
+def build_central_agent_run_instructions(
+    event_message: CentralAgentInput,
+    process_id: str,
+    proc: Dict[str, Any],
+) -> str:
+    
+    lines: List[str] = []
+    cid = getattr(event_message.customer, "id", None) if event_message.customer else None
+    bid = getattr(event_message.business, "id", None) if event_message.business else None
+    lines.append(
+        f"- identifiers: process_id={process_id!r}, customer_id={cid!r}, business_id={bid!r}"
+    )
+
+    def _emit(label: str, value: Any) -> None:
+        if value is None:
+            return
+        if isinstance(value, str) and not value.strip():
+            return
+        lines.append(f"- {label}: {value!r}")
+
+    for key in (
+        "order_id",
+        "order_number",
+        "status",
+        "tracking_number",
+        "quantity",
+        "customer_address",
+        "product_name",
+        "price",
+        "logistic_id",
+    ):
+        if key not in proc:
+            continue
+        v = proc.get(key)
+        if v is None or v == "":
+            continue
+        lines.append(f"- process[{key!r}]: {v!r}")
+
+    if proc.get("completed"):
+        lines.append("- process[completed]: True")
+
+    ev_oid = event_message.order_id
+    pr_oid = proc.get("order_id")
+    if ev_oid and str(ev_oid).strip() and str(ev_oid) != str(pr_oid or ""):
+        _emit("event_message.order_id (override or extra)", str(ev_oid).strip())
+
+    if event_message.product:
+        p = event_message.product
+        pb: List[str] = []
+        if (p.name or "").strip():
+            pb.append(f"name={p.name!r}")
+        if p.quantity and int(p.quantity) != 1:
+            pb.append(f"quantity={p.quantity}")
+        if p.price is not None and float(p.price) != 0.0:
+            pb.append(f"price={p.price}")
+        if getattr(p, "has_paid", False):
+            pb.append("has_paid=True")
+        if pb:
+            lines.append("- event_message.product: " + ", ".join(pb))
+
+    if event_message.customer:
+        c = event_message.customer
+        if (c.address or "").strip():
+            _emit("event_message.customer.address", (c.address or "").strip())
+        if (c.phone or "").strip():
+            _emit("event_message.customer.phone", (c.phone or "").strip())
+
+    if event_message.logistic:
+        lg = event_message.logistic
+        lid = getattr(lg, "id", None)
+        if lid:
+            _emit("event_message.logistic.id", str(lid).strip())
+        if (lg.name or "").strip():
+            _emit("event_message.logistic.name", (lg.name or "").strip())
+
+    return (
+        "### Transaction snapshot (structured; the **Thread** block below is conversational only)\n"
+        + "\n".join(lines)
+    )
 
 
 def get_or_create_process_for_event(
@@ -249,7 +332,7 @@ async def deliver_central_outbound(ctx: CentralOutboundContext) -> str:
     from backend.db.cache_utils import (
         append_inbox_turn_to_customer_pair,
         append_inbox_turn_to_party_state,
-        push_to_inbox,
+        push_to_inbox_with_retry,
     )
 
     recipient_id: Optional[str] = None
@@ -309,11 +392,20 @@ async def deliver_central_outbound(ctx: CentralOutboundContext) -> str:
         inbox_payload["business_id"] = ctx.business_id
 
     logger.info(
-        "central_agent | inbox_push | recipient_id=%s sender=%s",
+        "central_agent | inbox_push | recipient_id=%s sender=%s process_id=%s order_id=%s",
         recipient_id,
         ctx.response_sender,
+        ctx.process_id or "",
+        ctx.order_id or "",
     )
-    await push_to_inbox(recipient_id, inbox_payload)
+    ok = await push_to_inbox_with_retry(recipient_id, inbox_payload, retries=3)
+    if not ok:
+        logger.error(
+            "central_agent | inbox_push_failed_after_retries | recipient_id=%s process_id=%s order_id=%s",
+            recipient_id,
+            ctx.process_id or "",
+            ctx.order_id or "",
+        )
 
     if ctx.recipient_lower == "vendor" and ctx.business_id:
         await append_inbox_turn_to_party_state(ctx.business_id, msg)

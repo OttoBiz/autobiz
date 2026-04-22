@@ -2,13 +2,14 @@
 Media Processing Agent - Handles images and documents
 Used as a tool for payment verification, product enquiry, etc.
 """
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import httpx
 from pydantic import BaseModel, Field
 from pydantic_ai import ImageUrl, DocumentUrl
 
 from .base_agent import BaseAgent
+import enum
 
 # Initialize media processing agent
 media_processing_agent_base = BaseAgent(
@@ -38,29 +39,27 @@ class ReceiptExtract(BaseModel):
     currency_rate: float = 1.0
 
 
-class UploadKind:
+class UploadKind(enum.Enum):
     """Constants for upload classification (string values match model output)."""
 
     receipt = "receipt"
     product = "product"
     others = "others"
 
+class ProductAttributes(BaseModel):
+    product_name: Optional[str] = None
+    attributes: Dict[str, Any]
 
 class ProcessedUploadOutput(BaseModel):
     """Structured result from the upload analyzer (single source of truth per file)."""
 
     file_content_type: str = UploadKind.others
-    description: str = Field(default="", description="Short human summary of the file")
-    extracted_content: str = Field(
+    description: str = Field(default="", description="very concise desc of the file content (one sentence)")
+    extracted_content: Union[str, ReceiptExtract] = Field(
         default="",
-        description="Full usable text: transcript, OCR merge, or key facts as prose",
+        description="Full structured & usable text: transcript, OCR, or key facts as prose",
     )
-    receipt: Optional[ReceiptExtract] = Field(
-        default=None,
-        description="If type=receipt, structured fields; else null",
-    )
-    product_attributes: Dict[str, Any] = Field(
-        default_factory=dict,
+    product_attributes: ProductAttributes = Field( None,
         description="If product image: e.g. color, brand, product_name",
     )
 

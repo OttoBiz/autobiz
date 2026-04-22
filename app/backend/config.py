@@ -66,7 +66,9 @@ CHAT_HISTORY_KEEP_LAST_N = int(os.getenv("CHAT_HISTORY_KEEP_LAST_N", "20"))
 COMM_HISTORY_SUMMARY_WORD_LIMIT = int(os.getenv("COMM_HISTORY_SUMMARY_WORD_LIMIT", "1024"))
 COMM_HISTORY_KEEP_LAST_N = int(os.getenv("COMM_HISTORY_KEEP_LAST_N", "10"))
 FILE_TEXT_CACHE_MAX = int(os.getenv("FILE_TEXT_CACHE_MAX", "5"))
-PRODUCTS_CACHE_TTL_HOURS = int(os.getenv("PRODUCTS_CACHE_TTL_HOURS", "12"))
+PRODUCTS_CACHE_TTL_HOURS = int(os.getenv("PRODUCTS_CACHE_TTL_HOURS", "6"))
+# Cap Redis list paystack_webhook_confirmed (webhook also persists to Postgres).
+PAYSTACK_WEBHOOK_CONFIRMED_MAX = int(os.getenv("PAYSTACK_WEBHOOK_CONFIRMED_MAX", "50"))
 
 # Rate limiting (requests per window). Off by default; set RATE_LIMIT_ENABLED=true to enable.
 RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "false").lower() == "true"

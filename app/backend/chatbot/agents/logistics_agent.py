@@ -31,6 +31,8 @@ class LogisticsDeps(BaseModel):
     product_name: Optional[str] = None
     products_cache: Optional[Dict[str, Any]] = None
     processes: Optional[Dict[str, Any]] = None
+    process_id: Optional[str] = None
+    resolved_order_id: Optional[str] = None
 
 
 # Initialize logistics agent
@@ -38,10 +40,10 @@ logistics_agent_base = BaseAgent(
     system_prompt="""You are the **logistics specialist**: tracking, ETAs, delivery coordination.
 
 **Workflow**
-1. Call `get_order_for_product` to find the order_id for the product in question.
-2. With an order_id, call `get_order_tracking` for status, dispatch rider's phone number, tracking number, and delivery details.
-3. If delivery address is missing or needs confirmation, ask the customer directly.
-4. When you need to escalate (e.g. delayed shipment, missing tracking), call `notify_central_agent` with the order_id.
+1. With an order_id (or process_id that has an order in session), call `get_order_tracking` for status, tracking number, and delivery details.
+2. If delivery address is missing or needs confirmation, ask the customer directly.
+3. When you need to escalate (e.g. delivery date and time alignment between customer and vendor+/- logistics company, 
+delayed shipment, missing tracking), call `notify_central_agent` with the order_id.
 
 **Rules**
 - Never guess tracking numbers or ETAs. If unknown, tell the customer what you are doing next.
@@ -57,8 +59,19 @@ async def get_order_for_product(
     ctx: RunContext[LogisticsDeps],
     product_name: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Get order_id for a purchased product from processes. Pass order_id to notify_central_agent."""
+    """Get order_id from session process (prefer `process_id` on deps) or by product name match. Pass order_id to notify_central_agent."""
     processes = ctx.deps.processes or {}
+    focus = (getattr(ctx.deps, "process_id", None) or "").strip()
+    if focus:
+        raw = processes.get(focus)
+        if isinstance(raw, dict) and raw.get("order_id"):
+            pn = (raw.get("product_name") or "").strip()
+            pname = (product_name or ctx.deps.product_name or "").strip()
+            return {
+                "order_id": raw.get("order_id"),
+                "product_name": pn or pname,
+                "process_id": focus,
+            }
     pname = (product_name or ctx.deps.product_name or "").strip()
     for _pid, proc in processes.items():
         if not isinstance(proc, dict):
@@ -112,6 +125,9 @@ async def notify_central_agent(
     message: str,
     recipient: str = "Vendor",
     order_id: Optional[str] = None,
+    process_id: Optional[str] = None,
+    task_type: Optional[TaskType] = None,
+    customer_address: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Notify central agent. Pass order_id when available (from get_order_for_product) for better context."""
     try:
@@ -121,32 +137,47 @@ async def notify_central_agent(
         us = await get_user_state(ctx.deps.user_id, ctx.deps.business_id) or {}
         pid = ensure_central_process(
             us,
-            task_type=TaskType.LOGISTICS_COORDINATION,
+            task_type=task_type or TaskType.LOGISTICS_COORDINATION,
             customer_id=ctx.deps.user_id,
             vendor_id=ctx.deps.business_id,
             product_name=ctx.deps.product_name or "",
             order_id=order_id,
+            process_id=process_id,
         )
+        proc = us.get("processes", {}).get(pid) or {}
         await modify_user_state(ctx.deps.user_id, ctx.deps.business_id, us)
+        addr = customer_address
+        if not addr and isinstance(us, dict):
+            addr = us.get("customer_address")
+        pname_res = (ctx.deps.product_name or proc.get("product_name") or "").strip()
+        try:
+            qty = int(proc.get("quantity") or 1)
+        except (TypeError, ValueError):
+            qty = 1
+        try:
+            unit = float(proc.get("price") or 0)
+        except (TypeError, ValueError):
+            unit = 0.0
+        line_price = unit * qty
         agent_input = await create_structured_input(
             sender=EntityType.AGENT,
             recipient=coerce_entity(recipient),
             message=full_msg,
-            customer=Customer(id=ctx.deps.user_id),
+            customer=Customer(id=ctx.deps.user_id, address=addr),
             business=Vendor(id=ctx.deps.business_id),
             order_id=order_id,
-            product=Product(id="", name=ctx.deps.product_name or "", quantity=1, price=0.0)
-            if ctx.deps.product_name
+            product=Product(id="", name=pname_res, quantity=qty, price=line_price)
+            if pname_res
             else None,
             process_id=pid,
-            task_type=TaskType.LOGISTICS_COORDINATION,
+            task_type=task_type or TaskType.LOGISTICS_COORDINATION,
         )
         await run_central_agent(
             event_message=agent_input,
             user_state=us,
-            caller_agent="logistics_agent.notify_central",
+            caller_agent="logistics_agent",
         )
-        return {"status": "sent", "message": "Request sent. Customer will be updated when we receive a response."}
+        return {"status": "sent", "message": "Request sent. Customer will be updated when we receive a response from the vendor."}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -159,7 +190,9 @@ async def run_logistics_agent(
     user_state: Optional[Dict[str, Any]] = None,
     background_tasks: Optional[BackgroundTasks] = None,
     debug: bool = False,
+    customer_address: Optional[str] = None,
     append_chat_history: bool = True,
+    instructions: Optional[str] = None,
     **kwargs,
 ) -> str:
     """
@@ -180,11 +213,25 @@ async def run_logistics_agent(
     if not user_state:
         user_state = await get_or_create_user_state(user_id, business_id)
 
+    customer_address = customer_address or user_state.get("customer_address")
+    if customer_address:
+        customer_message = f"Customer address\n{customer_address}\n\nCustomer message:{customer_message}\n\n"
     products_cache = user_state.get("products", {})
     processes = user_state.get("processes", {})
-    product_context = f"\nProduct for delivery: {product_name}" if product_name else ""
     order_id = kwargs.get("order_id")
-    order_ctx = f"\nOrder ID: {order_id}" if order_id else ""
+    process_id = kwargs.get("process_id")
+    pid_s = (str(process_id).strip() if process_id else "") or None
+    if not order_id and pid_s:
+        pr = (processes or {}).get(pid_s)
+        if isinstance(pr, dict) and pr.get("order_id"):
+            order_id = str(pr.get("order_id")).strip()
+    if (not product_name or not str(product_name).strip()) and pid_s:
+        pr = (processes or {}).get(pid_s)
+        if isinstance(pr, dict) and pr.get("product_name"):
+            product_name = str(pr.get("product_name") or "").strip()
+    product_context = f"\nProduct for delivery: {product_name}" if product_name else ""
+    order_ctx = f"\nProduct Order ID: {order_id}" if order_id else ""
+    process_ctx = f"\nProcess ID: {pid_s}" if pid_s else ""
 
     deps = LogisticsDeps(
         user_id=user_id,
@@ -192,9 +239,16 @@ async def run_logistics_agent(
         product_name=product_name,
         products_cache=products_cache,
         processes=processes,
+        process_id=pid_s,
+        resolved_order_id=(str(order_id).strip() if order_id else None) or None,
     )
 
-    result = await logistics_agent.run(customer_message + product_context + order_ctx, deps=deps)
+    run_kw: Dict[str, Any] = {}
+    if instructions and instructions.strip():
+        run_kw["instructions"] = instructions.strip()
+    result = await logistics_agent.run(
+        (product_context + process_ctx + order_ctx + customer_message), deps=deps, message_history=user_state.get("chat_history", []), **run_kw
+    )
     response = result.output
 
     if append_chat_history:

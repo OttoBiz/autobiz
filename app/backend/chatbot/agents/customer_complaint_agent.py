@@ -14,7 +14,12 @@ from backend.chatbot.agents.central_agent_utils import (
     create_structured_input,
     ensure_central_process,
 )
-from backend.chatbot.utils.agent_utils import get_or_create_user_state, save_user_state
+from backend.chatbot.utils.agent_utils import (
+    format_handoff_process_context,
+    get_or_create_user_state,
+    get_process_snapshot,
+    save_user_state,
+)
 from backend.db.cache_utils import get_user_state, modify_user_state
 from backend.struct import Customer, EntityType, Product, TaskType, Vendor
 
@@ -32,6 +37,7 @@ class CustomerComplaintDeps(BaseModel):
     user_id: str
     business_id: str
     product_name: Optional[str] = None
+    process_id: Optional[str] = None
 
 
 # Initialize customer complaint agent
@@ -58,6 +64,8 @@ async def notify_central_agent(
     message: str,
     recipient: str = "Vendor",
     product_name: str = "",
+    process_id: Optional[str] = None,
+    task_type: Optional[TaskType] = None,
 ) -> Dict[str, Any]:
     """Escalate complaint to vendor or logistics via the central agent."""
     try:
@@ -67,10 +75,11 @@ async def notify_central_agent(
         us = await get_user_state(ctx.deps.user_id, ctx.deps.business_id) or {}
         pid = ensure_central_process(
             us,
-            task_type=TaskType.COMPLAINT,
+            task_type=task_type or TaskType.COMPLAINT,
             customer_id=ctx.deps.user_id,
             vendor_id=ctx.deps.business_id,
             product_name=pname,
+            process_id=process_id or ctx.deps.process_id,
         )
         await modify_user_state(ctx.deps.user_id, ctx.deps.business_id, us)
         agent_input = await create_structured_input(
@@ -102,6 +111,8 @@ async def run_customer_complaint_agent(
     background_tasks: Optional[BackgroundTasks] = None,
     debug: bool = False,
     append_chat_history: bool = True,
+    instructions: Optional[str] = None,
+    process_id: Optional[str] = None,
     **kwargs,
 ) -> tuple[str, Dict[str, Any]]:
     """
@@ -122,12 +133,26 @@ async def run_customer_complaint_agent(
     if not user_state:
         user_state = await get_or_create_user_state(user_id, business_id)
 
-    deps = CustomerComplaintDeps(user_id=user_id, business_id=business_id, product_name=product_name or "")
+    proc = get_process_snapshot(user_state, process_id)
+    if proc and (not product_name or not str(product_name).strip()) and proc.get("product_name"):
+        product_name = str(proc.get("product_name") or "").strip()
+
+    deps = CustomerComplaintDeps(
+        user_id=user_id,
+        business_id=business_id,
+        product_name=product_name or "",
+        process_id=(process_id or "").strip() or None,
+    )
 
     product_ctx = f"\nProduct: {product_name}" if product_name else ""
-    prompt = f"Customer complaint: {customer_message}{product_ctx}"
-
-    result = await customer_complaint_agent.run(prompt, deps=deps)
+    proc_line = ""
+    if proc and (process_id or "").strip():
+        proc_line = "\n" + format_handoff_process_context(str(process_id).strip(), proc)
+    prompt = f"Customer complaint: {customer_message}{product_ctx}{proc_line}"
+    run_kw: Dict[str, Any] = {}
+    if instructions and instructions.strip():
+        run_kw["instructions"] = instructions.strip()
+    result = await customer_complaint_agent.run(prompt, deps=deps, **run_kw)
     response = result.output
 
     if append_chat_history:

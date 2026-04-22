@@ -105,20 +105,20 @@ async def _process_single_file(
 
     uploaded_at = datetime.now(timezone.utc).isoformat()
     receipt_payload = (
-        structured.receipt.model_dump() if structured.receipt is not None else None
+        structured.extracted_content.model_dump() if kind==UploadKind.receipt.value else None
     )
 
     return {
         "filename": raw_name,
         "file_id": file_id,
         "file_url": public_url,
-        "mime_type": content_type,
+        # "mime_type": content_type,
         "file_content_type": kind,
         "description": desc,
         "extracted_content": text_for_db,
         "receipt": receipt_payload,
         # "structured": structured.model_dump(),
-        "product_attributes": dict(structured.product_attributes or {}),
+        "product_attributes": structured.product_attributes,
         "uploaded_at": uploaded_at,
     }
 
@@ -161,14 +161,14 @@ async def process_uploaded_files(
                 "file_id": it["file_id"],
                 "filename": it["filename"],
                 "file_content_type": it["file_content_type"],
-                "description": (it["description"] or "")[:100],
+                "description": (it["description"] or ""),
                 "uploaded_at": it["uploaded_at"],
             }
         )
         if it["file_content_type"] == UploadKind.receipt:
             tx = (it.get("extracted_content") or "").strip()
             if tx:
-                receipt_parts.append(tx)
+                receipt_parts.append(tx.model_dump())
         else:
             non_receipt_lines.append(
                 f"- id={it['file_id']} name={it['filename']} type={it['file_content_type']}: "

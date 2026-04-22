@@ -9,7 +9,10 @@ from typing import Any, Dict, List, Optional
 import logfire
 from fastapi import BackgroundTasks, UploadFile
 
-from backend.chatbot.agents.conversational_agent import run_conversational_agent
+from backend.chatbot.agents.conversational_agent import (
+    prune_completed_processes,
+    run_conversational_agent,
+)
 from backend.chatbot.utils.file_handler import process_uploaded_files
 from backend.chatbot.utils.history_summarizer import maybe_summarize_chat_history
 from backend.config import FILE_TEXT_CACHE_MAX, PRODUCTS_CACHE_TTL_HOURS
@@ -65,8 +68,8 @@ async def _chat_inner(
             if fid:
                 fcache[fid] = it.get("extracted_content") or ""
             attrs = it.get("product_attributes")
-            if isinstance(attrs, dict):
-                name = attrs.get("product_name") or attrs.get("name")
+            if attrs is not None:
+                name = attrs.product_name
                 if name:
                     lst: List[str] = user_state.setdefault("products_discussed", [])
                     low = {x.lower() for x in lst}
@@ -77,6 +80,7 @@ async def _chat_inner(
         rd = batch.get("receipt_data")
         if rd:
             user_state["receipt_data"] = rd
+            full_message += "\n\n[Receipt Data]\n" + "\n".join(rd)
 
         pl = batch.get("non_receipt_attachment_lines") or []
         if pl:
@@ -116,21 +120,19 @@ async def _chat_inner(
         await upsert_chat_summary(user_request.user_id, user_request.vendor_id, new_summary, n_summarized)
         user_state["chat_history"] = chat_history
 
+    prune_completed_processes(user_state)
     processes = user_state.get("processes", {})
     oc_parts: List[str] = []
     for pid, p in processes.items():
-        if not isinstance(p, dict):
+        if not isinstance(p, dict) or p.get("completed"):
             continue
         oid = (p.get("order_id") or "").strip()
-        onum = (p.get("order_number") or "").strip()
         pname = p.get("product_name") or ""
         bits = [f"process={pid}", f"product={pname}"]
         if oid:
             bits.append(f"order_id={oid}")
-        if onum:
-            bits.append(f"order_number={onum}")
-        oc_parts.append("; ".join(bits))
-    order_context = ", ".join(oc_parts) if oc_parts else None
+        oc_parts.append("[" + ", ".join(bits) + "]")
+    order_context = ", ".join(oc_parts) if oc_parts else ""
 
     response = await run_conversational_agent(
         user_message=full_message,

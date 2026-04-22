@@ -17,12 +17,15 @@ from backend.db.db_utils import (
     create_order as db_create_order,
     get_business_info,
     get_logistics_companies,
+    mark_order_process_link_completed,
     pick_random_logistics_company_id,
     get_order_by_id,
     get_order_by_number,
     get_orders_by_user,
     get_user_by_id,
+    touch_order_process_link,
     update_order_status as db_update_order_status,
+    upsert_order_process_link,
 )
 from backend.struct import CentralAgentInput, Customer, EntityType, Logistics, Product, Vendor
 from backend.whatsapp.utils import whatsapp, PHONE_NUMBER_ID
@@ -32,6 +35,7 @@ from typing import Literal
 from .base_agent import BaseAgent
 from .central_agent_utils import (
     CentralOutboundContext,
+    build_central_agent_run_instructions,
     deliver_central_outbound,
     get_contact,
     get_or_create_process_for_event,
@@ -52,10 +56,10 @@ class CentralAgentResponse(BaseModel):
     next_step: str = Field(
         ..., description="Determine your next step and to whom it should be directed"
     )
+    sender: EntityType = Field(description="Who is speaking this turn or who sent the last message. Mirror Customer / Vendor / Logistics if quoting or relaying in-thread")
     recipient: EntityType = Field(
         description="Who receives this message. Customer=relay product info/payment/delivery to customer. Vendor=ask vendor for confirmation. Logistics=coordinate shipping.",
     )
-    sender: EntityType = Field(description="Who is speaking this turn or who sent the last message. Mirror Customer / Vendor / Logistics if quoting or relaying in-thread")
     message: str = Field(..., description="'short chat-style text for recipient(max ~3–4 sentences). Only facts and next steps—no essays, no internal monologue. Message to send")
     finished_tasks: List[str] = Field(description="Updated List of finished tasks")
 
@@ -74,7 +78,7 @@ class CentralAgentDeps(BaseModel):
     customer_id: str = ""
     business_id: str = ""
     logistic_id: Optional[str] = None
-    # product_name: Optional[str] = None
+    product_name: Optional[str] = None
     order_id: Optional[str] = None
     id: str = ""
 
@@ -151,7 +155,7 @@ If it is null and **party_assigned_logistic_id** is unset, ask the Vendor whethe
 then call **finalize_vendor_delivery_route** (`self_handled=True` for vendor-only shipping, `self_handled=False` with optional `logistic_id`; 
 omit `logistic_id` to auto-pick a registered company). Persisted party state is visible to business chat.
 
-Thread Closure: You must call close_process immediately once the objective is reached (e.g., Delivery Confirmed) to prevent unnecessary billing/processing.""",
+Thread Closure: Call **mark_process_completed** once the process objective is reached (e.g. delivery confirmed) so downstream UIs stop surfacing it as active.""",
     deps_type=CentralAgentDeps,
     output_type=CentralAgentResponse,
     model_settings={'thinking': 'medium'}
@@ -218,10 +222,13 @@ async def create_order(
         user_state = await get_user_state(customer_id, business_id) or {}
         user_state.setdefault("processes", {})[pid] = ap
         await modify_user_state(customer_id, business_id, user_state)
+        await upsert_order_process_link(order_id, pid, customer_id, business_id)
 
         logger.info(
-            "central_agent | order_created | order_number=%s product=%s customer=%s",
+            "central_agent | order_created | order_number=%s order_id=%s process_id=%s product=%s customer=%s",
             order_number,
+            order_id,
+            pid,
             product_name,
             customer_id,
         )
@@ -232,6 +239,14 @@ async def create_order(
             "message": f"Order {order_number} created for {product_name}",
         }
     except Exception as e:
+        logger.error(
+            "central_agent | create_order_failed | process_id=%s customer=%s business=%s err=%s",
+            ctx.deps.process_id,
+            customer_id,
+            business_id,
+            e,
+            exc_info=True,
+        )
         return {"error": str(e)}
 
 
@@ -285,6 +300,7 @@ async def update_order_status(
         )
         if not updated:
             return {"error": "Order not found", "order_id": order_id}
+        await touch_order_process_link(order_id)
         customer_id = _customer_id(ctx)
         business_id = _business_id(ctx)
         user_state = await get_user_state(customer_id, business_id) or {}
@@ -303,7 +319,7 @@ async def update_order_status(
                 break
         user_state["processes"] = processes
         await modify_user_state(customer_id, business_id, user_state)
-        return {"status": "updated", "order_id": order_id, "new_status": status}
+        return {"status_updated": "updated", "order_id": order_id, "new_status": status}
     except Exception as e:
         return {"error": str(e)}
 
@@ -337,6 +353,10 @@ async def get_delivery_address(
     customer_id = _customer_id(ctx)
     business_id = _business_id(ctx)
     user_state = await get_user_state(customer_id, business_id) or {}
+    addr = user_state.get("customer").get("address")
+    if addr:
+        return addr
+    
     processes = user_state.get("processes", {})
     addr = ctx.deps.active_process.get("customer_address")
     if addr:
@@ -350,14 +370,14 @@ async def get_delivery_address(
     user_info = await get_user_by_id(customer_id)
     if user_info:
         return user_info.get("delivery_address")
-    return None
+    return "customer address not found. Prompt customer to provide delivery address."
 
 
 @central_agent.tool
-async def get_logistics_info(ctx: RunContext[CentralAgentDeps]) -> Dict[str, Any]:
+async def get_logistics_info(ctx: RunContext[CentralAgentDeps], limit: int=5) -> Dict[str, Any]:
     """Get logistics companies for the vendor. Returns list of available logistics."""
     try:
-        logistics = await get_logistics_companies(limit=5)
+        logistics = await get_logistics_companies(limit=limit)
         if logistics:
             return {"logistics": [{"id": str(l["id"]), "name": l["name"], "phone": l.get("phone_number")} for l in logistics]}
         return {"logistics": [], "message": "No logistics companies configured"}
@@ -374,18 +394,16 @@ async def get_delivery_logistics_context(ctx: RunContext[CentralAgentDeps]) -> D
     try:
         biz = await get_business_info(bid) or {}
         party = await get_party_state(bid) or {}
-        partner = biz.get("partner_logistic_id")
+        partner = biz.get("logistic_id") or party.get("logistic_id")
         pname = None
         if partner:
             pr = await get_business_info(str(partner)) or {}
             pname = pr.get("name")
-        rows = await get_logistics_companies(limit=8)
+            
         return {
             "db_partner_logistic_id": str(partner) if partner else None,
             "db_partner_name": pname,
-            "party_assigned_logistic_id": party.get("assigned_logistic_id"),
             "party_delivery_route": party.get("delivery_route"),
-            "registry_sample": [{"id": str(r["id"]), "name": r.get("name")} for r in rows],
         }
     except Exception as e:
         return {"error": str(e)}
@@ -405,20 +423,23 @@ async def finalize_vendor_delivery_route(
         st = await get_party_state(bid) or {}
         if self_handled:
             st["delivery_route"] = "vendor"
-            st.pop("assigned_logistic_id", None)
+            st.pop("logistic_id", None)
         else:
             lid = (logistic_id or "").strip()
             if not lid:
                 lid = await pick_random_logistics_company_id()
                 if not lid:
-                    return {"error": "No logistics companies in registry"}
+                    st['delivery_route'] = "vendor"
+                    st.pop("logistic_id", None)
+                    await modify_party_state(bid, st)
+                    return {"error": "No logistics companies in registry. Allow vendor to self-handle delivery."}
             st["delivery_route"] = "logistics"
-            st["assigned_logistic_id"] = lid
+            st["logistic_id"] = lid
         await modify_party_state(bid, st)
         return {
             "ok": True,
             "delivery_route": st.get("delivery_route"),
-            "assigned_logistic_id": st.get("assigned_logistic_id"),
+            "assigned_logistic_id": st.get("logistic_id"),
         }
     except Exception as e:
         return {"error": str(e)}
@@ -485,6 +506,35 @@ async def get_business_bank_details(ctx: RunContext[CentralAgentDeps]) -> Dict[s
         "bank_account_number": business_info.get("bank_account_number", ""),
         "bank_account_name": business_info.get("bank_account_name", ""),
     }
+
+
+@central_agent.tool
+async def mark_process_completed(
+    ctx: RunContext[CentralAgentDeps],
+    process_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Set completed=True on a process when its objective is done. Persists to customer Redis state."""
+    pid = (process_id or ctx.deps.process_id or "").strip()
+    if not pid:
+        return {"error": "process_id required"}
+    customer_id = _customer_id(ctx)
+    business_id = _business_id(ctx)
+    if not customer_id or not business_id:
+        return {"error": "Missing customer or business context"}
+    us = await get_user_state(customer_id, business_id) or {}
+    procs = us.setdefault("processes", {})
+    tgt = procs.get(pid)
+    if not isinstance(tgt, dict):
+        return {"error": f"process {pid!r} not found"}
+    tgt["completed"] = True
+    procs[pid] = tgt
+    oid = tgt.get("order_id")
+    if oid:
+        await mark_order_process_link_completed(str(oid))
+    await modify_user_state(customer_id, business_id, us)
+    if ctx.deps.process_id == pid:
+        ctx.deps.active_process["completed"] = True
+    return {"ok": True, "process_id": pid}
 
 
 async def run_central_agent(
@@ -582,11 +632,12 @@ async def run_central_agent(
         )
         run_prompt = (
             hint
-            + f"**Finished tasks:**\n{ft_text}\n\n**Thread**\n{json.dumps(comm)}"
+            + f"Task Type: {_task_label(event_message.task_type)}\n**Finished tasks:**\n{ft_text}\n\n**Thread**\n{json.dumps(comm)}"
         )
 
+        run_instructions = build_central_agent_run_instructions(event_message, pid, proc)
         agent_stdout("central_agent input", run_prompt)
-        result = await central_agent.run(run_prompt, deps=deps)
+        result = await central_agent.run(run_prompt, deps=deps, instructions=run_instructions)
         response = result.output
         logger.info(
             "central_agent_completed | caller=%s process_id=%s model_recipient=%s next_step_preview=%r",

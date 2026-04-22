@@ -1,6 +1,7 @@
 """
 Conversational agent — single orchestrator for the customer chat channel.
-Delegates to specialists via tools. Session product cache is passed via `instructions` each run.
+Delegates to specialists via tools. Orchestrator run passes session context (incl. product cache) via `instructions`;
+specialist handoffs use slimmer profiles to avoid duplicating each agent's own prompt body.
 """
 
 from __future__ import annotations
@@ -8,13 +9,14 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Literal, Union
 
 from fastapi import BackgroundTasks
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai import RunContext
 
 from backend.chatbot.agents.base_agent import BaseAgent
+from backend.config import PRODUCTS_CACHE_TTL_HOURS
 from backend.chatbot.utils.agent_trace_stdout import agent_stdout
 from backend.db.db_utils import (
     browse_available_products as db_browse_available_products,
@@ -29,6 +31,8 @@ from backend.chatbot.agents.customer_complaint_agent import run_customer_complai
 from backend.chatbot.agents.ads_marketing_agent import run_ads_marketing_agent
 from backend.chatbot.agents.upselling_agent import run_upselling_agent
 
+from backend.db.cache_utils import modify_user_state
+from backend.struct import TaskType
 
 def _format_products_cache(products: Optional[Dict[str, Any]]) -> str:
     """Human-readable snapshot of user_state['products'] for model context."""
@@ -56,6 +60,119 @@ def _format_products_cache(products: Optional[Dict[str, Any]]) -> str:
     return "\n".join(lines) if lines else ""
 
 
+def prune_completed_processes(user_state: Dict[str, Any]) -> None:
+    """Remove completed processes from user_state['processes'] (mutates in place)."""
+    procs = user_state.get("processes")
+    if not isinstance(procs, dict):
+        return
+    for pid in list(procs.keys()):
+        p = procs.get(pid)
+        if isinstance(p, dict) and p.get("completed"):
+            del procs[pid]
+
+
+def _track_product_discussed(user_state: Dict[str, Any], name: str) -> None:
+    n = (name or "").strip()
+    if not n or n.upper() == "NONE":
+        return
+    lst: List[str] = user_state.setdefault("products_discussed", [])
+    low = {x.lower() for x in lst}
+    if n.lower() not in low:
+        lst.append(n)
+
+
+def build_conversational_session_instructions(
+    user_state: Dict[str, Any],
+    business_name: Optional[str] = None,
+    order_context_summary: Optional[str] = None,
+    *,
+    specialist: Optional[str] = None,
+    order_id_hint: Optional[str] = None,
+) -> str:
+    """Session context for orchestrator (specialist=None) or a specialist (slim: no duplicate product cache / process lines where deps or prompt already carry them)."""
+    slim = specialist is not None
+    skip_product_cache = slim
+    skip_process_lines = specialist == "logistics"
+    skip_order_summary = slim and (order_id_hint or "").strip() and specialist in (
+        "payment",
+        "logistics",
+    )
+
+    header: List[str] = []
+    bi = user_state.get("business_information") or {}
+    display_name = business_name or (bi.get("name") or "")
+    if display_name:
+        header.append(f"Business name: {display_name}")
+    biz_bits: List[str] = []
+    if bi.get("business_type"):
+        biz_bits.append(f"type={bi['business_type']}")
+    if bi.get("tier") is not None and bi.get("tier") != "":
+        biz_bits.append(f"tier={bi['tier']}")
+    phone = bi.get("phone_number") or bi.get("human_agent_phone")
+    if phone:
+        biz_bits.append(f"phone={phone}")
+    if bi.get("email"):
+        biz_bits.append(f"email={bi['email']}")
+    if biz_bits:
+        header.append("Business: " + "; ".join(biz_bits))
+    if order_context_summary and not skip_order_summary:
+        header.append(f"Active orders (summary): {order_context_summary}")
+
+    procs = user_state.get("processes") or {}
+    proc_lines: List[str] = []
+    if not skip_process_lines and isinstance(procs, dict):
+        for pid, pr in procs.items():
+            if isinstance(pr, dict) and not pr.get("completed"):
+                proc_lines.append(
+                    f"- process_id={pid}: [product={pr.get('product_name') or '?'}, task_type={pr.get('task_type') or '?'}]"
+                )
+    if proc_lines:
+        header.append("Active processes:\n" + "\n".join(proc_lines))
+        header.append(
+            "Process completion: mark a flow complete only when its objective is done — "
+            "product enquiry (customer moved on or enquiry closed); payment (verified / order placed); "
+            "logistics (delivered or terminal status); complaint (resolved)."
+        )
+
+    prefix = "\n".join(header)
+
+    cache_text = _format_products_cache(user_state.get("products")) if not skip_product_cache else ""
+    cache_stale_hint = ""
+    if cache_text and not skip_product_cache:
+        cache_stale_hint = (
+            f"\nProduct cache is time-bounded (~{PRODUCTS_CACHE_TTL_HOURS}h); before quoting a final price or "
+            "starting payment, prefer a fresh tool read (product specialist / browse) so offers match live stock and price."
+        )
+    # products_discussed: canonical names; user_state["products"] is search/browse cache by query key — different roles.
+    pd = user_state.get("products_discussed") or []
+    pd_line = (
+        ("\n## products_discussed (canonical names for this session)\n" + ", ".join(pd))
+        if pd
+        else ""
+    )
+    cache_section = (
+        ("## Session product cache: \n" + cache_text + cache_stale_hint)
+        if cache_text
+        else ""
+    )
+    return prefix + "\n" + cache_section + pd_line
+
+
+def _handoff_session_instructions(
+    ctx: RunContext[ConversationalAgentDeps],
+    specialist: str,
+    order_id_hint: Optional[str] = None,
+) -> Optional[str]:
+    s = build_conversational_session_instructions(
+        ctx.deps.user_state,
+        ctx.deps.business_name or None,
+        ctx.deps.order_context_summary or None,
+        specialist=specialist,
+        order_id_hint=order_id_hint,
+    )
+    return s.strip() or None
+
+
 class ConversationalAgentDeps(BaseModel):
     """Mutable user_state is shared by reference across tool calls."""
 
@@ -64,10 +181,7 @@ class ConversationalAgentDeps(BaseModel):
     user_id: str
     business_id: str
     business_name: str = ""
-    order_context_summary: str = Field(
-        default="",
-        description="Short text summary of active orders (product -> order_id) for the prompt.",
-    )
+    order_context_summary: Optional[str] = None
     user_state: Dict[str, Any]
     receipt_data: Optional[str] = None
     background_tasks: Optional[Any] = None
@@ -82,7 +196,7 @@ Replies must be **short, chatty messages** (strictly 1–3 sentences), not essay
 1. **Discovery & Sales Pitch** — vague browse ("what do you have?", "surprise me") -> `browse_available_products`. **Any specific product, model, color, storage, or "do you have X"** -> `handoff_to_product_specialist` with that product name. (Do **not** answer from general knowledge or guess catalog contents). Once a product is identified, hype it up and confidently persuade the user to buy it!
 2. **Unavailable / Wrong Item / Rejections** — after specialist -> `handoff_to_upsell_specialist`. If their desired product isn't available, or they reject an offer, handle it politely. Ask a quick question to gauge their preferences, and fiercely pitch a compelling alternative.
 3. **Checkout / Pay** -> `handoff_to_payment_specialist`.
-4. **Delivery / Tracking** -> `handoff_to_logistics_specialist` (use `get_order_and_process_details` if you need order facts first).
+4. **Delivery / Tracking** -> `handoff_to_logistics_specialist` (use `get_order_and_process_details` with `process_id` and/or `order_id` from context, or `product_name_hint` to match open flows).
 5. **Post-Purchase Complements (Cross-selling)** -> `handoff_to_ads_marketing_specialist`. Once a purchase and delivery are sorted, the selling doesn't stop. Proactively recommend and pitch complementary products based on what you've learned about the user.
 6. **Complaints** -> `handoff_to_complaint_specialist`.
 
@@ -93,9 +207,12 @@ Replies must be **short, chatty messages** (strictly 1–3 sentences), not essay
 - **Markdown requirement:** Always use **Markdown** (e.g., bullets, bold text) whenever you are listing or highlighting products.
 - Never invent prices, stock, or tracking.
 - Never tell the customer to visit an external website, email the store, or leave this chat for product help. Keep them in-app.
-- Do not paste raw **product IDs**, **stock counts**, or **internal categories** unless the customer explicitly asks for technical detail.
+- Do not paste raw **product IDs**, **stock counts**, or **internal categories**.
 - Do not present long "pick one of four options" menus. Instead, offer one clear next step or a brief, highly persuasive recommendation.
-- One specialist handoff per turn (`handoff_to_*`). `browse_available_products` is not a handoff.
+- One specialist handoff per turn (`handoff_to_*`). `browse_available_products` is not a handoff. When you know it, pass **`process_id`** on handoffs so specialists can resolve product/order from `user_state.processes` and notify central with full context.
+- You can only co-ordinate delivery for products that have been purchased (have order_id).
+- You can only verify payment for products that have either been discussed (in your context).
+- You ask customers for their delivery address when co-ordinating delivery for a product that has been purchased (have order_id).
 """
 
 
@@ -158,55 +275,101 @@ async def browse_available_products(
     )
 
 
+def _fuzzy_match_product(hint: str, process_id: str, proc: Dict[str, Any]) -> bool:
+    ph = hint.lower()
+    pnm = (proc.get("product_name") or "").lower()
+    pid_s = str(process_id).lower()
+    return ph in pnm or ph in pid_s or pnm in ph or pid_s in ph
+
+
+async def _lines_for_session_process(process_id: str, proc: Dict[str, Any]) -> List[str]:
+    lines: List[str] = []
+    chunk = (
+        f"process_id={process_id!r}; task_type={proc.get('task_type')!r}; "
+        f"product={proc.get('product_name')!r}; order_id={proc.get('order_id')}; order_number={proc.get('order_number')}; "
+        f"status={proc.get('status')}; quantity={proc.get('quantity')}; "
+        f"customer_address={proc.get('customer_address')}; completed={proc.get('completed', False)}"
+    )
+    lines.append(chunk)
+    oid = proc.get("order_id")
+    if oid:
+        try:
+            order = await get_order_by_id(str(oid))
+            if order:
+                lines.append(
+                    f"  [DB] order_number={order.get('order_number')}; status={order.get('status')}; "
+                    f"tracking_number={order.get('tracking_number')}; "
+                    f"delivery_address={order.get('delivery_address')}"
+                )
+        except Exception as e:
+            lines.append(f"  [DB] lookup failed: {e}")
+    return lines
+
+
 @conversational_agent.tool
 async def get_order_and_process_details(
     ctx: RunContext[ConversationalAgentDeps],
+    process_id: Optional[str] = None,
+    order_id: Optional[str] = None,
     product_name_hint: Optional[str] = None,
 ) -> str:
-    """Orders in session (`processes`) plus DB rows when order_id is known."""
+    """Session process and/or DB order. Prefer explicit `process_id` or `order_id` from active processes; use `product_name_hint` only to disambiguate among **open** processes."""
     st = ctx.deps.user_state
     processes = st.get("processes") or {}
-    if not isinstance(processes, dict) or not processes:
-        return "No orders in session yet. processes is empty."
+    if not isinstance(processes, dict):
+        return "Invalid processes state."
 
-    lines: List[str] = []
-    for process_id, proc in processes.items():
+    pid_in = (process_id or "").strip()
+    oid_in = (order_id or "").strip()
+    hint = (product_name_hint or "").strip()
+
+    if pid_in:
+        proc = processes.get(pid_in)
         if not isinstance(proc, dict):
-            continue
-        if product_name_hint:
-            ph = product_name_hint.lower()
-            pnm = (proc.get("product_name") or "").lower()
-            pid_s = str(process_id).lower()
-            if ph not in pnm and ph not in pid_s and pnm not in ph and pid_s not in ph:
+            return f"No process {pid_in!r} in this session."
+        out = await _lines_for_session_process(pid_in, proc)
+        return "\n".join(out)
+
+    if oid_in:
+        lines: List[str] = []
+        for process_id, proc in processes.items():
+            if not isinstance(proc, dict):
                 continue
-        oid = proc.get("order_id")
-        chunk = (
-            f"process_id={process_id!r}; task_type={proc.get('task_type')!r}; "
-            f"product={proc.get('product_name')!r}; order_id={oid}; order_number={proc.get('order_number')}; "
-            f"status={proc.get('status')}; quantity={proc.get('quantity')}; "
-            f"customer_address={proc.get('customer_address')}"
-        )
-        lines.append(chunk)
-        if oid:
-            try:
-                order = await get_order_by_id(str(oid))
-                if order:
-                    lines.append(
-                        f"  [DB] order_number={order.get('order_number')}; status={order.get('status')}; "
-                        f"tracking_number={order.get('tracking_number')}; "
-                        f"delivery_address={order.get('delivery_address')}"
-                    )
-            except Exception as e:
-                lines.append(f"  [DB] lookup failed: {e}")
+            if str(proc.get("order_id") or "").strip() == oid_in:
+                lines.extend(await _lines_for_session_process(str(process_id), proc))
+        if lines:
+            return "\n".join(lines)
+        try:
+            order = await get_order_by_id(oid_in)
+            if order:
+                return (
+                    f"[DB only — no session process with this order_id]\n"
+                    f"order_number={order.get('order_number')}; status={order.get('status')}; "
+                    f"tracking_number={order.get('tracking_number')}; "
+                    f"delivery_address={order.get('delivery_address')}"
+                )
+        except Exception as e:
+            return f"[DB] lookup failed: {e}"
+        return f"No session process or DB order for order_id={oid_in!r}."
+
+    lines = []
+    for process_id, proc in processes.items():
+        if not isinstance(proc, dict) or proc.get("completed"):
+            continue
+        if hint and not _fuzzy_match_product(hint, str(process_id), proc):
+            continue
+        lines.extend(await _lines_for_session_process(str(process_id), proc))
 
     if not lines:
-        return "No matching processes for that product hint, or processes empty."
+        if not processes:
+            return "No processes in session yet."
+        return "No open processes match that hint, or none in session."
     return "\n".join(lines)
 
 
 @conversational_agent.tool
 async def list_session_uploads(ctx: RunContext[ConversationalAgentDeps]) -> str:
-    """Summarize files attached this session (file_id, filename, type, description)."""
+    """returns List of files uploaded during this session (file_id, filename, type, description)."""
     refs = ctx.deps.user_state.get("uploaded_files") or []
     if not refs:
         return "No files recorded for this session."
@@ -235,32 +398,24 @@ async def get_uploaded_file_content(
         return "File not found or not accessible for this customer/store."
     return row.get("text_content") or ""
 
-
-def _track_product_discussed(user_state: Dict[str, Any], name: str) -> None:
-    n = (name or "").strip()
-    if not n or n.upper() == "NONE":
-        return
-    lst: List[str] = user_state.setdefault("products_discussed", [])
-    low = {x.lower() for x in lst}
-    if n.lower() not in low:
-        lst.append(n)
-
-
 @conversational_agent.tool
 async def handoff_to_product_specialist(
     ctx: RunContext[ConversationalAgentDeps],
     customer_message: str,
     product_name: str,
     product_category: str = "",
-    intent: str = "enquiry",
+    intent: Literal["enquiry", "purchase"] = "enquiry",
     sales_context: str = "",
-    product_attributes: str = "",
+    product_attributes: Union[Dict,str] = "",
+    process_id: Optional[str] = None,
 ) -> str:
-    """Delegate to the product specialist for **specific** items: availability, price, specs, purchase. They query the real catalog and notify the vendor when something is missing—use this whenever the customer names a product or model."""
+    """Delegate to the product specialist for **specific** items: availability, price, specs, purchase. 
+    They query the real catalog and notify the vendor when something is missing—use this whenever the customer names a product or model."""
     msg = customer_message
     if sales_context:
         msg = f"{customer_message}\n\n[Sales context for specialist]\n{sales_context}"
     pa = product_attributes.strip() or None
+    si = _handoff_session_instructions(ctx, "product")
     out, ctx.deps.user_state = await run_product_agent(
         customer_message=msg,
         product_name=product_name or "NONE",
@@ -271,6 +426,8 @@ async def handoff_to_product_specialist(
         user_state=ctx.deps.user_state,
         product_attributes_json=pa,
         append_chat_history=False,
+        instructions=si,
+        process_id=process_id,
     )
     _track_product_discussed(ctx.deps.user_state, product_name)
     if pa:
@@ -284,6 +441,21 @@ async def handoff_to_product_specialist(
             pass
     return out
 
+@conversational_agent.tool
+async def modify_task_type(
+    ctx: RunContext[ConversationalAgentDeps],
+    process_id: str,
+    task_type: TaskType,
+) -> Dict[str, Any]:
+    """Modify task type for the current (existing) process. Use this to change the task type accordingly based on the context or stage of the conversation about products."""
+    processes = ctx.deps.user_state.get("processes", {})
+    if not isinstance(processes, dict):
+        return "Invalid processes state."
+    proc = ctx.deps.user_state.get("processes", {}).get(process_id)
+    proc["task_type"] = task_type
+    ctx.deps.user_state["processes"][process_id] = proc
+    await modify_user_state(ctx.deps.user_id, ctx.deps.business_id, ctx.deps.user_state)
+    return {"status": "success", "message": f"Task type modified to {task_type.value}"}
 
 @conversational_agent.tool
 async def handoff_to_payment_specialist(
@@ -291,12 +463,14 @@ async def handoff_to_payment_specialist(
     customer_message: str,
     product_name: Optional[str] = None,
     order_id: Optional[str] = None,
+    process_id: Optional[str] = None,
     notes: str = "",
 ) -> str:
     """Delegate to the payment specialist for payment inquiries & verification. They verify the payment and notify the vendor when something is missing—use this whenever the customer names a product or model."""
     msg = customer_message
     if notes:
         msg = f"{customer_message}\n\n[Payment context]\n{notes}"
+    si = _handoff_session_instructions(ctx, "payment", order_id_hint=order_id)
     return await run_verification_agent(
         customer_message=msg,
         user_id=ctx.deps.user_id,
@@ -307,6 +481,8 @@ async def handoff_to_payment_specialist(
         receipt_data=ctx.deps.receipt_data,
         order_id=order_id,
         append_chat_history=False,
+        instructions=si,
+        process_id=process_id,
     )
 
 
@@ -315,13 +491,21 @@ async def handoff_to_logistics_specialist(
     ctx: RunContext[ConversationalAgentDeps],
     customer_message: str,
     product_name: Optional[str] = None,
+    process_id: Optional[str] = None,
     order_id: Optional[str] = None,
+    customer_address: Optional[str] = None,
     notes: str = "",
 ) -> str:
     """Delegate to the logistics specialist for delivery and tracking inquiries. They query the real catalog and notify the vendor when something is missing—use this whenever the customer names a product or model."""
     msg = customer_message
+    #if customer address, update user state with customer address
+    if customer_address:
+        ctx.deps.user_state.setdefault("customer_address", customer_address)
+        await modify_user_state(ctx.deps.user_id, ctx.deps.business_id, ctx.deps.user_state)
     if notes:
         msg = f"{customer_message}\n\n[Logistics context]\n{notes}"
+        
+    si = _handoff_session_instructions(ctx, "logistics", order_id_hint=order_id)
     return await run_logistics_agent(
         customer_message=msg,
         user_id=ctx.deps.user_id,
@@ -329,8 +513,11 @@ async def handoff_to_logistics_specialist(
         product_name=product_name,
         user_state=ctx.deps.user_state,
         background_tasks=ctx.deps.background_tasks,
+        process_id=process_id,
         order_id=order_id,
+        customer_address=customer_address,
         append_chat_history=False,
+        instructions=si,
     )
 
 
@@ -340,11 +527,13 @@ async def handoff_to_complaint_specialist(
     customer_message: str,
     product_name: str = "",
     issue_summary: str = "",
+    process_id: Optional[str] = None,
 ) -> str:
     """Delegate to the complaint specialist for complaints and issues. They handle complaints and issues and notify the vendor when something is missing—use this whenever the customer names a product or model."""
     msg = customer_message
     if issue_summary:
         msg = f"{customer_message}\n\n[Issue summary]\n{issue_summary}"
+    si = _handoff_session_instructions(ctx, "complaint")
     out, ctx.deps.user_state = await run_customer_complaint_agent(
         customer_message=msg,
         product_name=product_name or "",
@@ -353,6 +542,8 @@ async def handoff_to_complaint_specialist(
         user_state=ctx.deps.user_state,
         background_tasks=ctx.deps.background_tasks,
         append_chat_history=False,
+        instructions=si,
+        process_id=process_id,
     )
     return out
 
@@ -363,14 +554,18 @@ async def handoff_to_ads_marketing_specialist(
     customer_message: str,
     purchased_product: str,
     logistics_context: str = "",
+    process_id: Optional[str] = None,
 ) -> str:
     """Post-purchase: complements after logistics sorted. Not for unavailable-product substitution. upsell complimentary products"""
+    si = _handoff_session_instructions(ctx, "ads")
     return await run_ads_marketing_agent(
         customer_message=customer_message,
         purchased_product=purchased_product,
         business_id=ctx.deps.business_id,
         user_state=ctx.deps.user_state,
         logistics_summary=logistics_context,
+        instructions=si,
+        process_id=process_id,
     )
 
 
@@ -380,6 +575,7 @@ async def handoff_to_upsell_specialist(
     product: str,
     situation_summary: str = "",
     product_attributes: str = "",
+    process_id: Optional[str] = None,
 ) -> str:
     """When the enquired item is unavailable: upsell alternatives / complements from tools."""
     hist = ctx.deps.user_state.get("chat_history") or []
@@ -387,12 +583,15 @@ async def handoff_to_upsell_specialist(
     if product_attributes.strip():
         situ = f"{situ}\n[Product attribute hints]\n{product_attributes.strip()}".strip()
     _track_product_discussed(ctx.deps.user_state, product)
+    si = _handoff_session_instructions(ctx, "upsell")
     return await run_upselling_agent(
         product=product,
         conversation_messages=hist,
         business_id=ctx.deps.business_id,
         situation_summary=situ,
         user_state=ctx.deps.user_state,
+        instructions=si,
+        process_id=process_id,
     )
 
 
@@ -413,6 +612,7 @@ async def run_conversational_agent(
     Run conversational orchestrator; caller appends one user + one assistant turn to chat_history.
     Product cache is injected via `instructions` (dynamic adjunct to system context).
     """
+    prune_completed_processes(user_state)
     deps = ConversationalAgentDeps(
         user_id=user_id,
         business_id=business_id,
@@ -423,53 +623,8 @@ async def run_conversational_agent(
         background_tasks=background_tasks,
     )
 
-    header = []
-    bi = user_state.get("business_information") or {}
-    display_name = business_name or (bi.get("name") or "")
-    if display_name:
-        header.append(f"Business name: {display_name}")
-    biz_bits = []
-    if bi.get("business_type"):
-        biz_bits.append(f"type={bi['business_type']}")
-    if bi.get("tier") is not None and bi.get("tier") != "":
-        biz_bits.append(f"tier={bi['tier']}")
-    phone = bi.get("phone_number") or bi.get("human_agent_phone")
-    if phone:
-        biz_bits.append(f"phone={phone}")
-    if bi.get("email"):
-        biz_bits.append(f"email={bi['email']}")
-    if biz_bits:
-        header.append("Business: " + "; ".join(biz_bits))
-    if order_context_summary:
-        header.append(f"Active orders (summary): {order_context_summary}")
-
-    procs = user_state.get("processes") or {}
-    proc_lines: List[str] = []
-    if isinstance(procs, dict):
-        for pid, pr in procs.items():
-            if isinstance(pr, dict):
-                oid = pr.get("order_id")
-                onum = pr.get("order_number")
-                proc_lines.append(
-                    f"- process_id={pid} order_id={oid or '—'} order_number={onum or '—'} "
-                    f"product={pr.get('product_name') or '?'} task_type={pr.get('task_type') or '?'}"
-                )
-    if proc_lines:
-        header.append("Active processes:\n" + "\n".join(proc_lines))
-
-    prefix = "\n".join(header)
-
-    cache_text = _format_products_cache(user_state.get("products"))
-    pd = user_state.get("products_discussed") or []
-    pd_line = (
-        ("\n## products_discussed (canonical names for this session)\n" + ", ".join(pd))
-        if pd
-        else ""
-    )
-    cache_section = (
-        ("## Session product cache: \n" + cache_text)
-        if cache_text
-        else ""
+    dynamic_instructions = build_conversational_session_instructions(
+        user_state, business_name, order_context_summary
     )
     polish_block = ""
     if polish_only:
@@ -478,7 +633,7 @@ async def run_conversational_agent(
             "Rewrite the provided message for the customer channel (customers use and understanding). Keep every fact (amounts, order numbers, dates, next steps). "
             "At most 3–4 short sentences. **Do not use tools.** Output only the polished text.\n"
         )
-    dynamic_instructions =  prefix + "\n" + cache_section + pd_line + polish_block
+    dynamic_instructions = dynamic_instructions + polish_block
 
     agent_stdout("conversational_agent input", user_message)
     result = await conversational_agent.run(

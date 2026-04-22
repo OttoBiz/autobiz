@@ -1,3 +1,5 @@
+import asyncio
+
 from backend.logging_config import get_logger
 from pydantic_ai.messages import (
     ModelMessagesTypeAdapter,
@@ -112,11 +114,29 @@ async def delete_party_state(party_id: str) -> None:
         logger.error("redis_party_delete_failed | party_id=%s", party_id, exc_info=True)
 
 
-async def push_to_inbox(recipient_id: str, message: dict) -> None:
+async def push_to_inbox(recipient_id: str, message: dict) -> bool:
     try:
         redis_conn.push_to_list(f"inbox:{recipient_id}", message)
+        return True
     except Exception:
         logger.error("inbox_push_failed | recipient_id=%s", recipient_id, exc_info=True)
+        return False
+
+
+async def push_to_inbox_with_retry(
+    recipient_id: str, message: dict, *, retries: int = 3
+) -> bool:
+    """Vendor/logistics inbox: transient Redis failures get a short bounded retry."""
+    for attempt in range(max(1, retries)):
+        if await push_to_inbox(recipient_id, message):
+            return True
+        await asyncio.sleep(0.12 * (attempt + 1))
+    logger.error(
+        "inbox_push_exhausted_retries | recipient_id=%s attempts=%s",
+        recipient_id,
+        retries,
+    )
+    return False
 
 
 async def get_inbox(recipient_id: str) -> list:

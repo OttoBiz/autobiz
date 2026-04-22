@@ -8,7 +8,11 @@ from pydantic import BaseModel
 from pydantic_ai import RunContext
 
 from backend.chatbot.agents.base_agent import BaseAgent
-from backend.chatbot.utils.agent_utils import check_tier_access
+from backend.chatbot.utils.agent_utils import (
+    check_tier_access,
+    format_handoff_process_context,
+    get_process_snapshot,
+)
 from backend.db.db_utils import get_business_info, get_products
 from backend.modules.products import get_product_images
 from backend.modules.products import search_products
@@ -146,6 +150,8 @@ async def run_upselling_agent(
     api_key: Optional[str] = None,
     situation_summary: str = "",
     user_state: Optional[Dict[str, Any]] = None,
+    instructions: Optional[str] = None,
+    process_id: Optional[str] = None,
     **kwargs,
 ) -> str:
     eligible = await _business_upsell_allowed(business_id or "", user_state)
@@ -160,14 +166,22 @@ async def run_upselling_agent(
         if eligible
         else "Same-store only; no other vendors."
     )
+    proc_line = ""
+    if user_state and (process_id or "").strip():
+        proc = get_process_snapshot(user_state, process_id)
+        if proc:
+            proc_line = "\n" + format_handoff_process_context(str(process_id).strip(), proc)
     prompt = f"""Unavailable or unfulfillable focus product: {product}
-Instruction: Suggest substitutes and close complements. {scope}{extra}
+Instruction: Suggest substitutes and close complements. {scope}{extra}{proc_line}
 
 Conversation snippet:
 {format_conversation(conversation_messages) if conversation_messages else ""}
 
 Reply concisely."""
-    result = await upselling_agent.run(prompt, deps=deps)
+    run_kw: Dict[str, Any] = {}
+    if instructions and instructions.strip():
+        run_kw["instructions"] = instructions.strip()
+    result = await upselling_agent.run(prompt, deps=deps, **run_kw)
     return result.output
 
 

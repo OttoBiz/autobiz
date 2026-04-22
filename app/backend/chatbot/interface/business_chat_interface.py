@@ -5,7 +5,7 @@ Converted to Pydantic AI with analytics and inventory tools
 import uuid
 import logfire
 from fastapi import BackgroundTasks
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional, Tuple, Union
 from pydantic_ai import RunContext
 from backend.chatbot.agents.base_agent import BaseAgent
 from backend.chatbot.agents.central_agent import run_central_agent
@@ -19,6 +19,7 @@ from backend.db.db_utils import (
     get_inventory,
     update_product_stock,
     get_low_stock_products,
+    pick_random_logistics_company_id,
 )
 from backend.struct import (
     BusinessRequest,
@@ -41,13 +42,13 @@ from pydantic_ai.messages import (
 
 from backend.logging_config import get_logger
 from backend.chatbot.utils.agent_trace_stdout import agent_stdout, format_message_history_for_stdout
-from typing import Union
+from backend.chatbot.utils.history_summarizer import maybe_summarize_chat_history
 
 logger = get_logger(__name__)
 
 
-async def _get_business_info(business_id: str) -> Optional[str]:
-    """Resolve `businesses.business_type` (e.g. vendor, logistics, service). None if not found."""
+async def _get_business_info(business_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Load business row and `business_type`."""
     row = await get_business_info((business_id or "").strip())
     if not row:
         return None, None
@@ -248,16 +249,32 @@ async def get_low_stock_alerts(
     except Exception as e:
         return [{"error": f"Low stock check unavailable: {e}"}]
 
-async def _get_logistic_id_for_business(business_id: Union[str, uuid.UUID], user_state: Dict[str, Any]) -> Optional[str]:
-    """Get the logistic_id for a business"""
-    logistic_id = user_state.get("logistic_id")
-    if logistic_id:
-        return logistic_id
-    ## if logistic_id from state is none, check if business has a logistic company (logistic_id) attached to it in the business db table. if not , for now randomly assign a logistic company with it.
-    # log the logistic id and its source (business_id or randomly assigned)
-    # return the logistic_id 
-    user_state["logistic_id"] = logistic_id
-    return logistic_id , user_state
+async def _get_logistic_id_for_business(
+    business_id: Union[str, uuid.UUID],
+    user_state: Dict[str, Any],
+) -> Tuple[Optional[str], Dict[str, Any]]:
+    """Resolve logistics UUID for vendor party state: party cache → DB partner → random registry."""
+    bid = str(business_id).strip()
+    if not bid:
+        return None, user_state
+
+    if (user_state.get("delivery_route") or "").lower() == "vendor":
+        user_state.pop("logistic_id", None)
+        return None, user_state
+
+    # for key, src in (("assigned_logistic_id", "party_assigned"), ("logistic_id", "party_logistic_id")):
+    lid = user_state.get("logistic_id")
+    if lid:    
+        return lid, user_state
+
+    row = await get_business_info(bid) or {}
+    partner = row.get("partner_logistic_id")
+    if partner:
+        lid = str(partner).strip()
+        user_state["logistic_id"] = lid
+        return lid, user_state
+    
+    return lid, user_state
 
 async def business_chat(
     business_request: BusinessRequest,
@@ -287,9 +304,22 @@ async def _business_chat_inner(
 
         business_info, business_type = await _get_business_info(state_key_id)
         business_is_logistics = (business_type or "").lower() == "logistics"
-        logistic_id, business_user_state = state_key_id if business_is_logistics else await _get_logistic_id_for_business(state_key_id, business_user_state)
-        
+        if business_is_logistics:
+            logistic_id: Optional[str] = state_key_id
+        else:
+            logistic_id, business_user_state = await _get_logistic_id_for_business(
+                state_key_id, business_user_state
+            )
+            await modify_party_state(state_key_id, business_user_state)
+
         chat_history = list(business_user_state.get("chat_history", []))
+        existing_summary = business_user_state.get("chat_history_summary")
+        chat_history, new_summary, _ = await maybe_summarize_chat_history(
+            chat_history, existing_summary=existing_summary,
+        )
+        if new_summary:
+            business_user_state["chat_history_summary"] = new_summary
+            business_user_state["chat_history"] = chat_history
 
         agent_stdout(
             f"business_chat chat_history BEFORE agent.run (party_id={state_key_id})",
@@ -297,13 +327,17 @@ async def _business_chat_inner(
         )
         agent_stdout("business_chat_agent input", business_request.message)
         ## add additonal context as instructions conatin information about the business you are chatting with using the state_key_id which should be a business_id
-        business_info = f"Business information: {business_info}" if business_is_logistics else f"Business information: {business_info}, Logistics information: {logistic_id}"
+        business_info = (
+            f"Business information: {business_info}"
+            if business_is_logistics
+            else f"Business information: {business_info}, linked_logistics_id: {logistic_id or 'none'}"
+        )
         
         result = await business_chat_agent.run(
             business_request.message,
             deps=BusinessChatDeps(
                 business_id=state_key_id,
-                logistic_id=logistic_id,
+                logistic_id=logistic_id or "",
             ),
             message_history=chat_history,
             instructions=business_info,
@@ -427,11 +461,17 @@ async def _business_chat_inner(
         # Reload so party chat_history includes central appends; then persist this user turn only.
         business_user_state = await get_party_state(state_key_id) or business_user_state
         
-        placeholder_message = f"Message  for: \n process-id : {pid}\n customer-id: {rc.customer_id}\n product: {rc.product_name or ""}.\n Coordinating with relevant parties."
+        _pn = rc.product_name or ""
+        placeholder_message = (
+            f"Message  for: \n process-id : {pid}\n customer-id: {rc.customer_id}\n "
+            f"product: {_pn}.\n Coordinating with relevant parties."
+        )
         
         business_user_state.setdefault("chat_history", [])
         business_user_state["chat_history"].append(
-            ModelRequest(parts=[UserPromptPart(content=business_request.message)]),
+            ModelRequest(parts=[UserPromptPart(content=business_request.message)])
+        )
+        business_user_state["chat_history"].append(
             ModelResponse(parts=[TextPart(content=placeholder_message)])
         )
         

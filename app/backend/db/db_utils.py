@@ -556,6 +556,146 @@ async def update_order_status(
         return dict(row) if row else None
 
 
+async def record_paystack_webhook_event(
+    reference: str,
+    user_id: str,
+    business_id: str,
+    amount_kobo: Optional[int] = None,
+    currency: Optional[str] = None,
+) -> bool:
+    """
+    Idempotent insert for Paystack charge.success. Returns True if a new row was stored.
+    """
+    if not reference or not user_id or not business_id:
+        return False
+    pool = await get_db()
+    query = """
+        INSERT INTO paystack_webhook_events (reference, user_id, business_id, amount_kobo, currency)
+        VALUES ($1, $2::uuid, $3::uuid, $4, $5)
+        ON CONFLICT (reference) DO NOTHING
+        RETURNING reference
+    """
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                query, reference, user_id, business_id, amount_kobo, currency
+            )
+            return row is not None
+    except Exception:
+        logger.exception("record_paystack_webhook_event_failed | ref=%s", reference)
+        return False
+
+
+def _valid_uuid(s: str) -> bool:
+    try:
+        uuid.UUID(str(s).strip())
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+async def upsert_order_process_link(
+    order_id: str,
+    process_id: str,
+    user_id: str,
+    business_id: str,
+) -> None:
+    """Persist order ↔ chat process_id for reconciliation and cross-system sync."""
+    if not _valid_uuid(order_id) or not _valid_uuid(process_id):
+        logger.warning(
+            "upsert_order_process_link_skip_invalid_uuid | order_id=%s process_id=%s",
+            order_id,
+            process_id,
+        )
+        return
+    pool = await get_db()
+    query = """
+        INSERT INTO order_process_links (order_id, process_id, user_id, business_id, updated_at)
+        VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, NOW())
+        ON CONFLICT (order_id) DO UPDATE SET
+            process_id = EXCLUDED.process_id,
+            user_id = EXCLUDED.user_id,
+            business_id = EXCLUDED.business_id,
+            updated_at = NOW()
+    """
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(query, order_id, process_id, user_id, business_id)
+    except Exception:
+        logger.exception(
+            "upsert_order_process_link_failed | order_id=%s process_id=%s",
+            order_id,
+            process_id,
+        )
+
+
+async def mark_order_process_link_completed(order_id: str) -> None:
+    if not order_id or not _valid_uuid(order_id):
+        return
+    pool = await get_db()
+    query = """
+        UPDATE order_process_links
+        SET process_completed_at = COALESCE(process_completed_at, NOW()),
+            updated_at = NOW()
+        WHERE order_id = $1::uuid
+    """
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(query, order_id)
+    except Exception:
+        logger.exception("mark_order_process_link_completed_failed | order_id=%s", order_id)
+
+
+async def touch_order_process_link(order_id: str) -> None:
+    """Bump link row when the order row changes (status, tracking, etc.)."""
+    if not order_id or not _valid_uuid(order_id):
+        return
+    pool = await get_db()
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE order_process_links SET updated_at = NOW()
+                WHERE order_id = $1::uuid
+                """,
+                order_id,
+            )
+    except Exception:
+        logger.exception("touch_order_process_link_failed | order_id=%s", order_id)
+
+
+async def list_paystack_webhooks_missing_recent_order(
+    lookback_days: int = 7,
+) -> List[Dict[str, Any]]:
+    """
+    Heuristic: webhook recorded but no order for same user+business in the 14 days after the event.
+    Use for manual reconciliation / alerts (not a guarantee of payment-without-order).
+    """
+    pool = await get_db()
+    days = max(1, min(int(lookback_days), 365))
+    query = """
+        SELECT w.reference, w.user_id, w.business_id, w.amount_kobo, w.currency, w.created_at
+        FROM paystack_webhook_events w
+        WHERE w.created_at > NOW() - ($1::int * interval '1 day')
+        AND NOT EXISTS (
+            SELECT 1 FROM orders o
+            WHERE o.user_id = w.user_id
+              AND o.business_id = w.business_id
+              AND o.created_at >= w.created_at
+              AND o.created_at <= w.created_at + interval '14 days'
+        )
+        ORDER BY w.created_at DESC
+        LIMIT 500
+    """
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(query, days)
+            return [dict(r) for r in rows]
+    except Exception:
+        logger.exception("list_paystack_webhooks_missing_recent_order_failed")
+        return []
+
+
 async def get_order_by_id(order_id: str) -> Optional[Dict[str, Any]]:
     """Get order by ID."""
     pool = await get_db()

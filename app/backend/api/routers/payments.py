@@ -8,8 +8,9 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from backend.config import PAYSTACK_WEBHOOK_CONFIRMED_MAX
 from backend.db.cache_utils import get_user_state, modify_user_state, redis_conn
-from backend.db.db_utils import get_business_info
+from backend.db.db_utils import get_business_info, record_paystack_webhook_event
 from backend.payments.paystack_client import verify_webhook_signature
 
 logger = logging.getLogger(__name__)
@@ -106,19 +107,43 @@ async def paystack_webhook(request: Request):
         return JSONResponse({"detail": "missing user_id"}, status_code=400)
 
     vendor_id = str(business_id)
+    amount_kobo = data.get("amount")
+    currency = data.get("currency")
+    ak = None
+    if amount_kobo is not None:
+        try:
+            ak = int(amount_kobo)
+        except (TypeError, ValueError):
+            ak = None
+    inserted = await record_paystack_webhook_event(
+        reference=reference,
+        user_id=str(user_id),
+        business_id=vendor_id,
+        amount_kobo=ak,
+        currency=str(currency) if currency is not None else None,
+    )
+    logger.info(
+        "paystack_webhook | ref=%s user_id=%s business_id=%s db_inserted=%s",
+        reference,
+        user_id,
+        vendor_id,
+        inserted,
+    )
     try:
         us = await get_user_state(str(user_id), vendor_id) or {}
         conf = us.setdefault("paystack_webhook_confirmed", [])
         if isinstance(conf, list):
             entry = {
                 "reference": reference,
-                "amount_kobo": data.get("amount"),
-                "currency": data.get("currency"),
+                "amount_kobo": amount_kobo,
+                "currency": currency,
             }
             if not any(
                 isinstance(x, dict) and x.get("reference") == reference for x in conf
             ):
                 conf.append(entry)
+            if len(conf) > PAYSTACK_WEBHOOK_CONFIRMED_MAX:
+                del conf[: len(conf) - PAYSTACK_WEBHOOK_CONFIRMED_MAX]
         await modify_user_state(str(user_id), vendor_id, us)
     except Exception:
         logger.exception("paystack_webhook_state_update_failed")

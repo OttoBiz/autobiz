@@ -14,7 +14,12 @@ from backend.chatbot.agents.central_agent_utils import (
     create_structured_input,
     ensure_central_process,
 )
-from backend.chatbot.utils.agent_utils import get_or_create_user_state, save_user_state
+from backend.chatbot.utils.agent_utils import (
+    format_handoff_process_context,
+    get_or_create_user_state,
+    get_process_snapshot,
+    save_user_state,
+)
 from backend.db.cache_utils import get_user_state, modify_user_state
 from backend.config import BASE_URL, PAYSTACK_DEFAULT_CURRENCY
 from backend.db.db_utils import get_business_info, get_product_by_id, get_products
@@ -50,6 +55,7 @@ class ProductAgentDeps(BaseModel):
     user_id: str
     business_id: str
     chat_history: Optional[List[Any]] = None
+    process_id: Optional[str] = None
 
 
 # Initialize product agent
@@ -59,7 +65,7 @@ product_agent_base = BaseAgent(
 **Workflow**
 1. ALWAYS call `get_product_info` before answering. Never invent stock, price, or availability.
 2. No product_name given → list what the tool returns (concise bullets, max 8). Customer-facing: name + price only; no raw IDs or stock counts unless they ask.
-3. Purchase intent → call `fetch_payment_link`. If it returns ok=false or no payment_url, call `get_business_payment_info` and present bank-transfer details clearly.
+3. Purchase intent → if the customer came from browse/cache or the thread paused, call `get_product_info` again before payment so price/stock match the database; then `fetch_payment_link`. If it returns ok=false or no payment_url, call `get_business_payment_info` and present bank-transfer details clearly.
 4. When Paystack succeeds: give the customer the payment link AND the reference (needed for verification after paying, especially from WhatsApp).
 5. **No row matches the customer's exact ask** (empty tool result, or nothing that matches model/color/SKU they stated) → **immediately** call `notify_vendor` with the customer's exact request; then reply in 1–2 short sentences that you're checking with the store, and mention at most one or two real alternatives from tool results if any—no multi-option menus.
 6. Missing catalog or payment setup → call `notify_vendor`. Never tell the customer to email the owner, visit an external website, or leave the app.
@@ -209,22 +215,47 @@ async def get_business_payment_info(
         "paystack_public_key": business_info.get("paystack_public_key", ""),
     }
 
-
+@product_agent.tool
+async def modify_task_type(
+    ctx: RunContext[ProductAgentDeps],
+    process_id: str,
+    task_type: TaskType,
+) -> Dict[str, Any]:
+    """Modify task type for the current (existing) process. Use this to change the task type from PRODUCT_ENQUIRY to payment verification once product has been purchased."""
+    us = await get_user_state(ctx.deps.user_id, ctx.deps.business_id) or {}
+    pid = ensure_central_process(
+        us,
+        task_type=task_type or TaskType.PRODUCT_ENQUIRY,
+        customer_id=ctx.deps.user_id,
+        vendor_id=ctx.deps.business_id,
+        process_id=process_id
+    )
+    proc = us.get("processes", {}).get(process_id)
+    proc["task_type"] = task_type
+    us["processes"][process_id] = proc
+    await modify_user_state(ctx.deps.user_id, ctx.deps.business_id, us)
+    return {"status": "success", "message": "Task type modified to Logistics Coordination."}
+        
+        
+        
 @product_agent.tool
 async def notify_vendor(
     ctx: RunContext[ProductAgentDeps],
     message: str,
     product_name: str = "",
+    task_type: Optional[TaskType] = None,
+    process_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Pushes a request to the **vendor inbox** via the central agent. Use when: catalog has no match for what the customer asked, stock/price unknown, or payment setup missing. Pass a single clear sentence for `message` (what the customer wants + any specs)."""
     try:
         user_state = await get_user_state(ctx.deps.user_id, ctx.deps.business_id) or {}
         pid = ensure_central_process(
             user_state,
-            task_type=TaskType.PRODUCT_ENQUIRY,
+            task_type=task_type or TaskType.PRODUCT_ENQUIRY,
             customer_id=ctx.deps.user_id,
             vendor_id=ctx.deps.business_id,
             product_name=product_name,
+            process_id=process_id or ctx.deps.process_id,
         )
         await modify_user_state(ctx.deps.user_id, ctx.deps.business_id, user_state)
         agent_input = await create_structured_input(
@@ -240,7 +271,7 @@ async def notify_vendor(
         await run_central_agent(
             event_message=agent_input,
             user_state=user_state,
-            caller_agent="product_agent.notify_vendor",
+            caller_agent="product_agent",
         )
         return {"status": "vendor_notified", "message": "Message sent to vendor. The customer will be updated when the vendor responds."}
     except Exception as e:
@@ -259,6 +290,8 @@ async def run_product_agent(
     product_attributes_json: Optional[str] = None,
     debug: bool = False,
     append_chat_history: bool = True,
+    instructions: Optional[str] = None,
+    process_id: Optional[str] = None,
 ) -> tuple[str, Dict[str, Any]]:
     """
     Run product agent to handle customer product inquiries.
@@ -306,8 +339,14 @@ async def run_product_agent(
             dynamic_prompt = "\n\n**Business Payment Details:**\n" + "\n".join(bank_details)
             dynamic_prompt += "\n\nIf payment link is not available, provide these bank details for bank transfer."
 
+    proc = get_process_snapshot(user_state, process_id)
+    if proc and (not product_name or product_name.strip().upper() == "NONE") and proc.get("product_name"):
+        product_name = str(proc.get("product_name") or "").strip()
+
     # Prepare prompt
     prompt_parts = [f"Customer message: {customer_message}"]
+    if proc and (process_id or "").strip():
+        prompt_parts.append("\n" + format_handoff_process_context(str(process_id).strip(), proc))
     if product_attributes_json and product_attributes_json.strip():
         prompt_parts.append(
             f"\nProduct image / attribute hints (JSON): {product_attributes_json.strip()}"
@@ -331,9 +370,12 @@ async def run_product_agent(
     products = product_cache.get("retrieved_results", [])
 
     if products:
+        biz_cur = ((business_info.get("currency") or "").strip() or "NGN")
         products_info = "\n".join(
             [
-                f"- {p.get('name', p.get('product_name', ''))}: ${p.get('price', 0)} (Stock: {p.get('stock_quantity', p.get('items_left_in_stock', 0))})"
+                f"- {p.get('name', p.get('product_name', ''))}: {p.get('price', 0)} "
+                f"{(p.get('currency') or '').strip() or biz_cur} "
+                f"(Stock: {p.get('stock_quantity', p.get('items_left_in_stock', 0))})"
                 for p in products[:10]
             ]
         )
@@ -357,12 +399,17 @@ async def run_product_agent(
         user_id=user_id or "",
         business_id=business_id or "",
         chat_history=chat_history,
+        process_id=(process_id or "").strip() or None,
     )
 
     # Run agent with dynamic prompt
-    full_prompt = "\n".join(prompt_parts) + dynamic_prompt
+    full_prompt =  dynamic_prompt + "\n".join(prompt_parts) 
 
-    result = await product_agent.run(full_prompt, deps=deps)
+    # Session adjunct `instructions` (from orchestrator handoff) omits session product cache — specialist builds catalog lines above.
+    run_kw: Dict[str, Any] = {}
+    if instructions and instructions.strip():
+        run_kw["instructions"] = instructions.strip()
+    result = await product_agent.run(full_prompt, deps=deps, **run_kw)
 
     response = result.output
 

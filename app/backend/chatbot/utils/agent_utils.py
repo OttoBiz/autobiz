@@ -109,3 +109,23 @@ def format_chat_history(chat_history: List[Dict]) -> str:
     return "\n".join(formatted)
 
 
+def get_process_snapshot(user_state: Dict[str, Any], process_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Return processes[process_id] if it exists and is a dict."""
+    if not process_id or not str(process_id).strip():
+        return None
+    procs = user_state.get("processes")
+    if not isinstance(procs, dict):
+        return None
+    raw = procs.get(str(process_id).strip())
+    return raw if isinstance(raw, dict) else None
+
+
+def format_handoff_process_context(process_id: str, proc: Dict[str, Any]) -> str:
+    """Single line for specialist prompts (not duplicated in instructions slim profiles)."""
+    parts = [f"process_id={process_id}"]
+    for k in ("product_name", "order_id", "task_type", "status", "order_number"):
+        v = proc.get(k)
+        if v is not None and str(v).strip() != "":
+            parts.append(f"{k}={v}")
+    return "**Session process (handoff):** " + "; ".join(parts)
+

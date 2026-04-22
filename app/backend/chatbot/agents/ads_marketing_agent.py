@@ -7,6 +7,10 @@ from typing import Any, Dict, List, Optional
 from pydantic_ai import RunContext
 
 from backend.chatbot.agents.base_agent import BaseAgent
+from backend.chatbot.utils.agent_utils import (
+    format_handoff_process_context,
+    get_process_snapshot,
+)
 from backend.chatbot.agents.upselling_agent import (
     UpsellingAgentDeps,
     _business_upsell_allowed,
@@ -80,6 +84,8 @@ async def run_ads_marketing_agent(
     business_id: str = "",
     user_state: Optional[Dict[str, Any]] = None,
     logistics_summary: str = "",
+    instructions: Optional[str] = None,
+    process_id: Optional[str] = None,
     **kwargs,
 ) -> str:
     eligible = await _business_upsell_allowed(business_id or "", user_state)
@@ -90,11 +96,19 @@ async def run_ads_marketing_agent(
     )
     chat_history = (user_state or {}).get("chat_history", []) if user_state else []
     log_line = f"\nLogistics/order status (trusted): {logistics_summary}" if logistics_summary else ""
+    proc_line = ""
+    if user_state and (process_id or "").strip():
+        proc = get_process_snapshot(user_state, process_id)
+        if proc:
+            proc_line = "\n" + format_handoff_process_context(str(process_id).strip(), proc)
     prompt = f"""Purchased product: {purchased_product}
-Customer message: {customer_message}{log_line}
+Customer message: {customer_message}{log_line}{proc_line}
 
 {format_conversation(chat_history[-6:]) if chat_history else ""}
 
 Suggest complementary follow-ons appropriate after fulfillment is sorted."""
-    result = await ads_marketing_agent.run(prompt, deps=deps)
+    run_kw: Dict[str, Any] = {}
+    if instructions and instructions.strip():
+        run_kw["instructions"] = instructions.strip()
+    result = await ads_marketing_agent.run(prompt, deps=deps, **run_kw)
     return result.output
