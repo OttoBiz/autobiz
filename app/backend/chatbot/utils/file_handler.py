@@ -7,7 +7,7 @@ import uuid
 from typing import List, Dict, Any, Optional
 from fastapi import UploadFile
 from backend.chatbot.utils.file_processor import process_file
-from backend.chatbot.agents.media_processing_agent import process_receipt_image, process_document, process_image
+from backend.chatbot.agents.media import process_receipt_image, process_document, process_image
 
 
 async def save_file(file_content: bytes, filename: str, business_id: str, user_id: str) -> str:
