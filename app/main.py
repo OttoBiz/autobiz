@@ -12,7 +12,7 @@ import os
 
 # Import routers
 from backend.api.routers import customer, business, logistics, analytics, inventory, supply_chain
-from backend.whatsapp.routers import router as whatsapp_router
+from backend.api.routers.webhooks import whatsapp as whatsapp_webhook
 
 # Import legacy endpoints for backward compatibility
 from backend.chatbot.interface.user_chat_interface import chat
@@ -120,7 +120,7 @@ app.include_router(logistics.router, prefix="/api/v1")
 app.include_router(analytics.router, prefix="/api/v1")
 app.include_router(inventory.router, prefix="/api/v1")
 app.include_router(supply_chain.router, prefix="/api/v1")
-app.include_router(whatsapp_router, prefix="/whatsapp")
+app.include_router(whatsapp_webhook.router)
 
 # Mount static files for uploads
 if os.path.exists("uploads"):
