@@ -1,10 +1,11 @@
 import asyncio
 import hashlib
 import hmac
+import json
 import logging
 import os
 from datetime import datetime, timezone
-from typing import ClassVar, Optional
+from typing import Any, ClassVar, Optional, Union
 from urllib.parse import parse_qs
 
 import requests
@@ -17,6 +18,12 @@ from backend.chatbot.channels.base import (
     InboundMessage,
     MediaAttachment,
     WindowPolicy,
+)
+from backend.chatbot.channels.whatsapp_messages import (
+    ButtonMessage,
+    Flow,
+    ListMessage,
+    Template,
 )
 from backend.config import config
 
@@ -54,6 +61,56 @@ def _extract_media(message: dict) -> list[MediaAttachment]:
             )
         )
     return attachments
+
+
+def _extract_interactive(
+    message: dict,
+) -> tuple[str | None, dict | None]:
+    """Return `(text, interactive)` for an interactive inbound message.
+
+    Returns `(None, None)` for non-interactive messages so callers can chain
+    without branching.
+    """
+    interactive = message.get("interactive")
+    if not interactive:
+        return None, None
+
+    int_type = interactive.get("type")
+
+    if int_type == "button_reply":
+        reply = interactive.get("button_reply", {})
+        return reply.get("title"), {
+            "type": "button_reply",
+            "id": reply.get("id"),
+            "title": reply.get("title"),
+        }
+
+    if int_type == "list_reply":
+        reply = interactive.get("list_reply", {})
+        return reply.get("title"), {
+            "type": "list_reply",
+            "id": reply.get("id"),
+            "title": reply.get("title"),
+            "description": reply.get("description"),
+        }
+
+    if int_type == "nfm_reply":
+        reply = interactive.get("nfm_reply", {})
+        # `response_json` arrives as a JSON-encoded string; fall back to the
+        # raw value if parsing fails so we don't lose data.
+        raw_payload = reply.get("response_json")
+        try:
+            payload = json.loads(raw_payload) if raw_payload else {}
+        except (ValueError, TypeError):
+            payload = {"_raw": raw_payload}
+        return "flow_response", {
+            "type": "nfm_reply",
+            "name": reply.get("name"),
+            "body": reply.get("body"),
+            "payload": payload,
+        }
+
+    return None, None
 
 
 class WhatsappBot:
@@ -139,6 +196,24 @@ class WhatsappBot:
 _whatsapp_bot = WhatsappBot()
 
 
+def _post_message(phone_number_id: str, payload: dict[str, Any]) -> dict:
+    """Sync POST to the Cloud API messages endpoint. Returns parsed JSON."""
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {_whatsapp_bot.page_access_token}",
+    }
+    url = f"https://graph.facebook.com/v18.0/{phone_number_id}/messages"
+    response = requests.post(url, json=payload, headers=headers, timeout=10)
+    if response.status_code != 200:
+        logger.error(
+            "WhatsApp send failed: %s - %s", response.status_code, response.text
+        )
+    try:
+        return response.json()
+    except ValueError:
+        return {"status_code": response.status_code, "text": response.text}
+
+
 class WhatsappChannel(Channel):
     name: ClassVar[str] = "whatsapp"
 
@@ -150,6 +225,10 @@ class WhatsappChannel(Channel):
         business_id = metadata["phone_number_id"]
         customer_id = message["from"]
         text = message.get("text", {}).get("body") if message.get("text") else None
+
+        interactive_text, interactive = _extract_interactive(message)
+        if interactive_text is not None:
+            text = interactive_text
 
         identity = ChannelIdentity(
             business_id=business_id,
@@ -164,6 +243,7 @@ class WhatsappChannel(Channel):
             media=_extract_media(message),
             raw=raw,
             received_at=datetime.now(timezone.utc),
+            interactive=interactive,
         )
 
     async def send(self, identity: ChannelIdentity, text: str) -> None:
@@ -175,27 +255,43 @@ class WhatsappChannel(Channel):
         )
 
     async def send_template(
-        self, identity: ChannelIdentity, template: str, vars: dict
-    ) -> None:
-        payload = {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": identity.channel_user_id,
-            "type": "template",
-            "template": {
-                "name": template,
-                "language": {"code": vars.get("language", "en_US")},
-                "components": vars.get("components", []),
-            },
-        }
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {_whatsapp_bot.page_access_token}",
-        }
-        url = f"https://graph.facebook.com/v18.0/{identity.business_id}/messages"
-        await asyncio.to_thread(
-            requests.post, url, json=payload, headers=headers, timeout=10
-        )
+        self,
+        identity: ChannelIdentity,
+        template: Union[str, Template],
+        vars: dict | None = None,
+    ) -> dict:
+        if isinstance(template, Template):
+            payload = template.to_whatsapp_payload()
+        else:
+            payload = {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "type": "template",
+                "template": {
+                    "name": template,
+                    "language": {"code": (vars or {}).get("language", "en_US")},
+                    "components": (vars or {}).get("components", []),
+                },
+            }
+        payload["to"] = identity.channel_user_id
+        return await asyncio.to_thread(_post_message, identity.business_id, payload)
+
+    async def send_buttons(
+        self, identity: ChannelIdentity, msg: ButtonMessage
+    ) -> dict:
+        payload = msg.to_whatsapp_payload()
+        payload["to"] = identity.channel_user_id
+        return await asyncio.to_thread(_post_message, identity.business_id, payload)
+
+    async def send_list(self, identity: ChannelIdentity, msg: ListMessage) -> dict:
+        payload = msg.to_whatsapp_payload()
+        payload["to"] = identity.channel_user_id
+        return await asyncio.to_thread(_post_message, identity.business_id, payload)
+
+    async def send_flow(self, identity: ChannelIdentity, flow: Flow) -> dict:
+        payload = flow.to_whatsapp_payload()
+        payload["to"] = identity.channel_user_id
+        return await asyncio.to_thread(_post_message, identity.business_id, payload)
 
     def window_policy(self) -> WindowPolicy:
         return WindowPolicy(

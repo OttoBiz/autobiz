@@ -31,6 +31,11 @@ class InboundMessage(BaseModel):
     media: list[MediaAttachment]
     raw: dict
     received_at: datetime
+    # Populated when the inbound message originated from an interactive
+    # surface (button reply, list reply, or Flow submission). Channel
+    # adapters set this; downstream prompt builders can ignore it for plain
+    # text messages.
+    interactive: dict | None = None
 
 
 class OutboundMessage(BaseModel):

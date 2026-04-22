@@ -41,6 +41,11 @@ PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY", "")
 WHATSAPP_API_KEY = os.getenv("WHATSAPP_API_KEY", "")
 WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
 
+# WhatsApp Flow IDs. Each registered Flow on the WABA has a unique ID; the
+# `request_info` helper below targets a generic "request information" flow
+# that the business publishes once and reuses across agents.
+FLOW_REQUEST_INFO_ID = os.getenv("FLOW_REQUEST_INFO_ID", "")
+
 # Business Tier Plans
 TIER_FREE = "free"
 TIER_GOLD = "gold"
@@ -62,6 +67,7 @@ class Config:
     PAYSTACK_SECRET_KEY = PAYSTACK_SECRET_KEY
     WHATSAPP_API_KEY = WHATSAPP_API_KEY
     WHATSAPP_PHONE_NUMBER_ID = WHATSAPP_PHONE_NUMBER_ID
+    FLOW_REQUEST_INFO_ID = FLOW_REQUEST_INFO_ID
 
 config = Config()
 
