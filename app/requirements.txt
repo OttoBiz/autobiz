@@ -38,6 +38,9 @@ pytest~=8.0
 pytest-asyncio~=0.24
 fakeredis~=2.35
 
+# Smoke harness (tests/smoke) — interactive 3-pane TUI for end-to-end runs
+textual~=8.2
+
 # Utilities
 tiktoken~=0.8
 

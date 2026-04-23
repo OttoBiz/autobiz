@@ -32,13 +32,15 @@ class ConsoleChannel(Channel):
     name: ClassVar[str] = "console"
 
     def __init__(self) -> None:
-        # One queue per recipient address. Created lazily so a subscribe()
-        # before the first send() still returns the queue that the send will
-        # later write to.
+        # Per-recipient queues (subscribe() pattern) for callers that want a
+        # single recipient's stream. The TUI prefers `outbox` because it
+        # carries the full identity — needed to demux customer vs vendor
+        # without knowing addresses upfront.
         self._queues: dict[str, asyncio.Queue[str]] = {}
+        self.outbox: asyncio.Queue[tuple[ChannelIdentity, str]] = asyncio.Queue()
 
     def subscribe(self, recipient_id: str) -> asyncio.Queue[str]:
-        """Get the outbound queue for a recipient. Creates if missing."""
+        """Get the outbound queue for a single recipient. Creates if missing."""
         return self._queues.setdefault(recipient_id, asyncio.Queue())
 
     def parse_inbound(self, raw: dict) -> InboundMessage:
@@ -51,6 +53,7 @@ class ConsoleChannel(Channel):
 
     async def send(self, identity: ChannelIdentity, text: str) -> None:
         await self.subscribe(identity.channel_user_id).put(text)
+        await self.outbox.put((identity, text))
 
     async def send_template(
         self,
@@ -63,6 +66,7 @@ class ConsoleChannel(Channel):
         # message visible.
         rendered = f"[template:{template}] {vars or {}}"
         await self.subscribe(identity.channel_user_id).put(rendered)
+        await self.outbox.put((identity, rendered))
 
     def window_policy(self) -> WindowPolicy:
         # No 24h window in the harness — every send is deliverable. Keeps
