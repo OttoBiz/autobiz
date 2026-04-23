@@ -1,11 +1,14 @@
 """Channel-agnostic orchestrator — single entry point for inbound messages.
 
 Per-channel webhooks call `handle_inbound(InboundMessage)`. The orchestrator
-acquires the per-customer lock, enqueues the new message, drains queue + reads
-ledger, runs central_agent, sends the reply through the originating channel,
-and only then drains the inbox (drain-and-fail atomicity). The lock contention
-branch enqueues without running, so the in-flight central run picks the message
-up on its next user-triggered turn.
+acquires the per-customer lock, enqueues the new message, builds a prompt
+from queued user/system items, runs central_agent, sends the reply through
+the originating channel, and only then drains the inbox (drain-and-fail
+atomicity). The lock contention branch enqueues without running, so the
+in-flight central run picks the message up on its next user-triggered turn.
+
+Outbound ledger lookups (pending/resolved) are NOT pushed into the prompt —
+central_agent pulls them via its `get_outbound_status` tool when relevant.
 """
 
 from __future__ import annotations
@@ -20,8 +23,7 @@ from backend.chatbot.agents.deps import AgentDeps
 from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity, InboundMessage
 from backend.chatbot.messaging import dispatcher as messaging_dispatcher
-from backend.db import channel_identities, outbound_ledger
-from backend.db.outbound_ledger import OutboundTaskRow
+from backend.db import channel_identities
 
 logger = logging.getLogger(__name__)
 
@@ -50,19 +52,11 @@ async def handle_inbound(msg: InboundMessage) -> None:
 
         # Peek (not drain) so a failure mid-turn leaves items in place.
         items = inbox.peek(business_id, customer_id)
-        cursor = inbox.get_cursor(business_id, customer_id)
-        pending = await outbound_ledger.get_pending_for_customer(
-            business_id, customer_id
-        )
-        resolved = await outbound_ledger.get_resolved_since(
-            business_id, customer_id, cursor
-        )
 
-        prompt = _build_prompt(items, pending, resolved)
+        prompt = _build_prompt(items)
         deps = AgentDeps(
             customer_id=customer_id,
             business_id=business_id,
-            chat_history=None,
             state={},
             outbound=[],
         )
@@ -76,9 +70,6 @@ async def handle_inbound(msg: InboundMessage) -> None:
         # Destructive drain only after a successful send. Any exception above
         # leaves items in the inbox for the next turn (drain-and-fail atomicity).
         inbox.drain(business_id, customer_id)
-        if resolved:
-            new_cursor = max(r.resolved_at for r in resolved)
-            inbox.set_cursor(business_id, customer_id, new_cursor)
     finally:
         inbox.release_lock(business_id, customer_id, owner=owner)
 
@@ -97,23 +88,8 @@ def _identity_with_now(identity: ChannelIdentity) -> ChannelIdentity:
     )
 
 
-def _build_prompt(
-    items: list[dict],
-    pending: list[OutboundTaskRow],
-    resolved: list[OutboundTaskRow],
-) -> str:
-    parts: list[str] = []
-    if pending:
-        parts.append("Pending outbound tasks (still in progress):")
-        for t in pending:
-            parts.append(f"- {t.party}: {t.dispatch_prompt}")
-    if resolved:
-        parts.append(
-            "Recently resolved outbound tasks (use these to inform your reply):"
-        )
-        for t in resolved:
-            parts.append(f"- {t.party}: {t.customer_context}")
-    parts.append("Customer messages this turn:")
+def _build_prompt(items: list[dict]) -> str:
+    parts: list[str] = ["Customer messages this turn:"]
     for it in items:
         if it.get("type") == "user_message":
             text = it.get("payload", {}).get("text") or ""

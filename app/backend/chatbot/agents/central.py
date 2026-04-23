@@ -4,9 +4,11 @@ from typing import Any, Awaitable, Callable, Literal, NamedTuple
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
 
+from backend.chatbot import inbox
 from backend.chatbot.agents.deps import AgentDeps
 from backend.chatbot.messaging.reply import Reply
 from backend.config import MODEL_NAME
+from backend.db import outbound_ledger
 
 
 SUBAGENT_TIMEOUT_SECONDS = 30
@@ -141,7 +143,10 @@ SUBAGENTS (use via query_subagent):
 OUTBOUND:
 - Call the "outbound" subagent when you need vendor/logistics input (payment confirmation, stock checks, delivery coordination).
 - It returns immediately. Tell the customer you're on it.
-- When its result appears in your state, relay it to the customer.
+- To check on previously-dispatched outbound tasks, call `get_outbound_status`.
+  It returns `pending` (still in progress) and `resolved` (finished since you
+  last checked). Calling it acknowledges the resolved tasks — relay anything
+  new to the customer in this same reply.
 
 RESPONSE FORMAT:
 Reply with `Reply.text` only — plain prose. Do not return JSON, markdown structure, or
@@ -166,6 +171,53 @@ async def query_subagent(
         return_exceptions=True,
     )
     return [r if isinstance(r, dict) else {"error": str(r)} for r in results]
+
+
+async def _fetch_outbound_status(
+    business_id: Any, customer_id: Any
+) -> dict[str, list[dict[str, str | None]]]:
+    """Read pending + resolved-since-cursor for this customer; advance the cursor.
+
+    Extracted from the tool body so it can be exercised directly in tests
+    without standing up a full pydantic_ai RunContext.
+    """
+    biz_str = str(business_id)
+    cust_str = str(customer_id)
+
+    cursor = inbox.get_cursor(biz_str, cust_str)
+    pending = await outbound_ledger.get_pending_for_customer(business_id, customer_id)
+    resolved = await outbound_ledger.get_resolved_since(
+        business_id, customer_id, cursor
+    )
+
+    if resolved:
+        resolved_times = [r.resolved_at for r in resolved if r.resolved_at]
+        if resolved_times:
+            inbox.set_cursor(biz_str, cust_str, max(resolved_times))
+
+    return {
+        "pending": [
+            {"party": t.party, "request": t.dispatch_prompt} for t in pending
+        ],
+        "resolved": [
+            {"party": t.party, "outcome": t.customer_context} for t in resolved
+        ],
+    }
+
+
+@agent.tool
+async def get_outbound_status(
+    ctx: RunContext[AgentDeps],
+) -> dict[str, list[dict[str, str | None]]]:
+    """Fetch outbound vendor/logistics tasks for this customer.
+
+    Returns:
+    - pending: tasks still in progress (queued or running). Always shown.
+    - resolved: tasks finished since the last call. Calling this tool advances
+      a per-customer cursor, so each resolution is returned at most once —
+      relay anything new in your current reply.
+    """
+    return await _fetch_outbound_status(ctx.deps.business_id, ctx.deps.customer_id)
 
 
 @agent.instructions
