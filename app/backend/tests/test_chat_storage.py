@@ -134,3 +134,25 @@ async def test_load_recovers_from_corrupt_payload(fake_redis):
 
     # Should not raise — corrupt history degrades to empty.
     assert await chat_storage.load_history(biz, cust) == []
+
+
+@pytest.mark.asyncio
+async def test_outbound_history_round_trips_per_task_key(fake_redis):
+    task_key = "tk-abc"
+
+    await chat_storage.append_outbound_history(task_key, _msgs())
+    loaded = await chat_storage.load_outbound_history(task_key)
+
+    assert len(loaded) == 2
+    assert loaded[1].parts[0].content == "hello"
+    # Stored under the per-task key, not the per-customer key.
+    assert chat_storage._outbound_key(task_key) in fake_redis.store
+
+
+@pytest.mark.asyncio
+async def test_outbound_history_isolates_tasks(fake_redis):
+    await chat_storage.append_outbound_history("tk-1", _msgs())
+    await chat_storage.append_outbound_history("tk-2", _msgs() + _msgs())
+
+    assert len(await chat_storage.load_outbound_history("tk-1")) == 2
+    assert len(await chat_storage.load_outbound_history("tk-2")) == 4

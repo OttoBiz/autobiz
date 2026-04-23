@@ -51,6 +51,22 @@ def patch_transport(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def patch_chat_storage(monkeypatch):
+    """No real Redis writes during dispatch tests.
+
+    dispatch._run now persists the opening exchange via chat_storage so the
+    continuation helper has prior message_history to thread back in. Patch
+    those calls — the real round-trip is exercised in test_chat_storage.
+    """
+    fake = SimpleNamespace(
+        load_outbound_history=AsyncMock(return_value=[]),
+        append_outbound_history=AsyncMock(),
+    )
+    monkeypatch.setattr(outbound, "chat_storage", fake)
+    return fake
+
+
 @pytest.mark.asyncio
 async def test_dispatch_inserts_ledger_row_and_returns_task_key(patch_ledger, monkeypatch):
     run_mock = AsyncMock(return_value=SimpleNamespace(output="ok"))
@@ -268,6 +284,107 @@ async def test_dispatch_rejects_at_max_depth(patch_ledger, monkeypatch):
             dispatch_prompt="hi",
             parent_depth=outbound.OUTBOUND_MAX_DEPTH,
         )
+
+
+def _make_task_row(task_key: str = "tk-1", state: str = "running"):
+    from datetime import datetime, timedelta, timezone
+
+    from backend.db.outbound_ledger import OutboundTaskRow
+
+    now = datetime.now(timezone.utc)
+    return OutboundTaskRow(
+        task_key=task_key,
+        business_id=uuid4(),
+        customer_id=uuid4(),
+        party="vendor-1",
+        initiated_by="customer",
+        dispatch_prompt="ask vendor",
+        state=state,  # type: ignore[arg-type]
+        customer_context=None,
+        system_context=None,
+        dispatched_at=now,
+        resolved_at=None,
+        timeout_at=now + timedelta(minutes=5),
+    )
+
+
+@pytest.mark.asyncio
+async def test_deliver_party_reply_returns_when_task_missing(
+    patch_ledger, monkeypatch
+):
+    patch_ledger.get_by_key = AsyncMock(return_value=None)
+    run_mock = AsyncMock()
+    monkeypatch.setattr(outbound.outbound_agent, "run", run_mock)
+
+    await outbound.deliver_party_reply("nope", "hello")
+
+    run_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_deliver_party_reply_returns_when_task_not_running(
+    patch_ledger, monkeypatch
+):
+    patch_ledger.get_by_key = AsyncMock(
+        return_value=_make_task_row(state="succeeded")
+    )
+    run_mock = AsyncMock()
+    monkeypatch.setattr(outbound.outbound_agent, "run", run_mock)
+
+    await outbound.deliver_party_reply("tk-done", "hello")
+
+    run_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_deliver_party_reply_runs_agent_with_loaded_history(
+    patch_ledger, patch_chat_storage, monkeypatch
+):
+    task = _make_task_row(task_key="tk-live")
+    patch_ledger.get_by_key = AsyncMock(return_value=task)
+    patch_chat_storage.load_outbound_history = AsyncMock(return_value=["prior"])
+
+    captured: dict[str, Any] = {}
+
+    async def _capture(prompt, deps, message_history=None):
+        captured["prompt"] = prompt
+        captured["deps_task_key"] = deps.task_key
+        captured["history"] = message_history
+        return SimpleNamespace(output="ok", new_messages=lambda: ["m1", "m2"])
+
+    monkeypatch.setattr(
+        outbound.outbound_agent, "run", AsyncMock(side_effect=_capture)
+    )
+
+    await outbound.deliver_party_reply("tk-live", "hello again")
+
+    assert captured["prompt"] == "hello again"
+    assert captured["deps_task_key"] == "tk-live"
+    assert captured["history"] == ["prior"]
+    patch_chat_storage.append_outbound_history.assert_awaited_once_with(
+        "tk-live", ["m1", "m2"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_deliver_party_reply_marks_failed_on_agent_exception(
+    patch_ledger, monkeypatch
+):
+    task = _make_task_row(task_key="tk-boom")
+    patch_ledger.get_by_key = AsyncMock(return_value=task)
+
+    async def _boom(prompt, deps, message_history=None):
+        raise RuntimeError("model fell over")
+
+    monkeypatch.setattr(outbound.outbound_agent, "run", AsyncMock(side_effect=_boom))
+
+    await outbound.deliver_party_reply("tk-boom", "hi")
+
+    patch_ledger.mark_failed.assert_awaited_once()
+    assert (
+        patch_ledger.mark_failed.await_args.kwargs["system_context"]
+        == "model fell over"
+    )
 
 
 @pytest.mark.asyncio

@@ -24,7 +24,7 @@ from backend.chatbot.channels.base import ChannelIdentity
 from backend.chatbot.messaging import dispatcher as messaging_dispatcher
 from backend.chatbot.messaging.reply import Reply
 from backend.config import MODEL_NAME
-from backend.db import channel_identities, outbound_ledger
+from backend.db import channel_identities, chat_storage, outbound_ledger
 
 
 class OutboundCancelled(Exception):
@@ -201,26 +201,102 @@ async def dispatch(
             await outbound_ledger.mark_failed(task_key, system_context=str(exc))
             return
 
+        # Persist the opening exchange so the continuation helper has a real
+        # message_history to thread back into the agent.
+        await chat_storage.append_outbound_history(task_key, result.new_messages())
+
         if channel is None or customer_identity is None:
             # No transport for this thread; the ledger still carries the
             # resolution for the central agent to read on the next inbound.
             return
 
         try:
-            # `party` is the vendor's channel address — override channel_user_id
-            # so the reply goes to the vendor, not the customer.
-            target_identity = ChannelIdentity(
-                business_id=customer_identity.business_id,
-                customer_id=customer_identity.customer_id,
-                channel=customer_identity.channel,
-                channel_user_id=party,
-                last_inbound_at=customer_identity.last_inbound_at,
-            )
             await messaging_dispatcher.dispatch_to_party(
-                channel, target_identity, result.output, task_key=task_key
+                channel,
+                _vendor_identity(customer_identity, party),
+                result.output,
+                task_key=task_key,
             )
         except Exception as exc:
             await outbound_ledger.mark_failed(task_key, system_context=str(exc))
 
     asyncio.create_task(_run())
     return task_key
+
+
+def _vendor_identity(
+    customer_identity: ChannelIdentity, party: str
+) -> ChannelIdentity:
+    """Re-target a customer identity at the vendor `party` address.
+
+    `party` is the vendor's channel address — override channel_user_id so
+    the message goes to the vendor, not the customer.
+    """
+    return ChannelIdentity(
+        business_id=customer_identity.business_id,
+        customer_id=customer_identity.customer_id,
+        channel=customer_identity.channel,
+        channel_user_id=party,
+        last_inbound_at=customer_identity.last_inbound_at,
+    )
+
+
+async def deliver_party_reply(task_key: str, party_text: str) -> None:
+    """Continue an open outbound thread with a new message from the vendor.
+
+    The smoke harness calls this from the Vendor pane; the future Flow
+    webhook will call it from `nfm_reply` payloads keyed by `flow_token =
+    task_key`. Either way the path is the same:
+
+    1. Look up the task; bail if it isn't running (already resolved/cancelled).
+    2. Load prior message_history for this task.
+    3. Re-enter outbound_agent with the vendor's text.
+    4. Persist new messages and forward the agent's reply to the vendor.
+
+    `mark_completed` may fire inside the run; the after-tool hook still
+    routes the resolution as before.
+    """
+    task = await outbound_ledger.get_by_key(task_key)
+    if task is None or task.state != "running":
+        return
+
+    deps = OutboundDeps(
+        task_key=task.task_key,
+        business_id=task.business_id,
+        customer_id=task.customer_id,
+        party=task.party,
+        initiated_by=task.initiated_by,
+        dispatch_prompt=task.dispatch_prompt,
+    )
+
+    history = await chat_storage.load_outbound_history(task_key)
+    try:
+        result = await outbound_agent.run(
+            party_text, deps=deps, message_history=history
+        )
+    except OutboundCancelled:
+        return
+    except Exception as exc:
+        await outbound_ledger.mark_failed(task_key, system_context=str(exc))
+        return
+
+    await chat_storage.append_outbound_history(task_key, result.new_messages())
+
+    channel = await registry.get_for_customer(
+        str(task.business_id), str(task.customer_id)
+    )
+    customer_identity = await channel_identities.get_most_recent_identity(
+        task.business_id, task.customer_id
+    )
+    if channel is None or customer_identity is None:
+        return
+
+    try:
+        await messaging_dispatcher.dispatch_to_party(
+            channel,
+            _vendor_identity(customer_identity, task.party),
+            result.output,
+            task_key=task_key,
+        )
+    except Exception as exc:
+        await outbound_ledger.mark_failed(task_key, system_context=str(exc))

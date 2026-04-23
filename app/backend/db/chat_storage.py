@@ -37,6 +37,10 @@ def _key(business_id: UUID | str, customer_id: UUID | str) -> str:
     return f"chat:{business_id}:{customer_id}"
 
 
+def _outbound_key(task_key: str) -> str:
+    return f"outbound_chat:{task_key}"
+
+
 async def load_history(
     business_id: UUID | str, customer_id: UUID | str
 ) -> list[ModelMessage]:
@@ -81,3 +85,33 @@ async def clear_history(
 ) -> None:
     """Delete the stored history for a conversation. Idempotent."""
     redis_conn._client.delete(_key(business_id, customer_id))
+
+
+async def load_outbound_history(task_key: str) -> list[ModelMessage]:
+    """Per-task vendor conversation history. Same shape as load_history."""
+    raw = redis_conn._client.get(_outbound_key(task_key))
+    if not raw:
+        return []
+    try:
+        payload = json.loads(raw)
+        return ModelMessagesTypeAdapter.validate_python(payload)
+    except (ValueError, TypeError):
+        return []
+
+
+async def append_outbound_history(
+    task_key: str, new_messages: list[ModelMessage]
+) -> None:
+    """Append messages to a per-task vendor conversation. No-op on empty."""
+    if not new_messages:
+        return
+    existing = await load_outbound_history(task_key)
+    combined = existing + list(new_messages)
+    if len(combined) > MAX_MESSAGES:
+        combined = combined[-MAX_MESSAGES:]
+    payload = to_jsonable_python(combined)
+    redis_conn._client.set(
+        _outbound_key(task_key),
+        json.dumps(payload),
+        ex=HISTORY_TTL_SECONDS,
+    )
