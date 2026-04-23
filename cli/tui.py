@@ -32,8 +32,8 @@ from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity, InboundMessage
 
 from backend.chatbot.channels.console import ConsoleChannel
-from tests.smoke import system_log
-from tests.smoke.seed import ensure_smoke_data
+from cli import system_log
+from cli.seed import ensure_smoke_data
 
 
 CUSTOMER_TAB = "customer"

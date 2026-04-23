@@ -236,7 +236,7 @@ from backend.chatbot.channels.console import install
 channel = install()  # registers + wires a stub identity resolver
 ```
 
-The smoke CLI (`tests/smoke/cli.py`) and integration tests handle this
+The smoke CLI (`cli/cli.py`) and integration tests handle this
 automatically.
 
 ---

@@ -10,8 +10,8 @@ That means they need:
 
 Run from the repo root:
 
-    .venv/bin/python -m tests.smoke.cli --scenario healthcheck
-    .venv/bin/python -m tests.smoke.cli --scenario all
+    .venv/bin/python -m cli.cli --scenario healthcheck
+    .venv/bin/python -m cli.cli --scenario all
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity, InboundMessage
 
 from backend.chatbot.channels.console import ConsoleChannel
-from tests.smoke.seed import ensure_smoke_data
+from cli.seed import ensure_smoke_data
 
 ScenarioFn = Callable[[], Awaitable[int]]
 _REGISTRY: dict[str, ScenarioFn] = {}

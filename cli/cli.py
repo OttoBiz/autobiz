@@ -2,11 +2,11 @@
 
 Usage (interactive 4-tab TUI):
 
-    .venv/bin/python -m tests.smoke.cli
+    .venv/bin/python -m cli.cli
 
 Usage (headless scripted scenario, for CI):
 
-    .venv/bin/python -m tests.smoke.cli --scenario vendor_confirmation
+    .venv/bin/python -m cli.cli --scenario vendor_confirmation
 
 Required services:
     Redis     — `docker compose up redis` from app/
@@ -24,8 +24,8 @@ import os
 import sys
 from pathlib import Path
 
-# The backend package lives under app/; smoke harness lives at the repo root.
-_APP_DIR = Path(__file__).resolve().parents[2] / "app"
+# The backend package lives under app/; cli/ lives at the repo root.
+_APP_DIR = Path(__file__).resolve().parents[1] / "app"
 if str(_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_APP_DIR))
 
@@ -119,7 +119,7 @@ async def _async_main(args: argparse.Namespace) -> int:
         return 4
     print("✓ Schema migrations up to date")
 
-    from tests.smoke.seed import ensure_smoke_data, reset_smoke_state
+    from cli.seed import ensure_smoke_data, reset_smoke_state
 
     # Wipe per-customer state from prior sessions (chat history, outbound
     # tasks, channel identities, cursors, locks) so every CLI launch feels
@@ -151,13 +151,13 @@ async def _async_main(args: argparse.Namespace) -> int:
 
     try:
         if args.scenario:
-            from tests.smoke import scenarios
+            from cli import scenarios
 
             return await scenarios.run(args.scenario)
 
         # Interactive TUI mode. Imported lazily so the headless scenario
         # path doesn't pull in textual.
-        from tests.smoke.tui import SmokeApp
+        from cli.tui import SmokeApp
 
         app = SmokeApp(
             business_id=args.business_id,
@@ -171,7 +171,7 @@ async def _async_main(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        prog="tests.smoke.cli",
+        prog="cli.cli",
         description="Smoke harness — drive the agent stack as customer and vendor.",
     )
     parser.add_argument(

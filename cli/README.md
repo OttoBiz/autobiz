@@ -38,19 +38,19 @@ the CLI is a no-op against existing data.
 Interactive:
 
 ```bash
-.venv/bin/python -m tests.smoke.cli
+.venv/bin/python -m cli.cli
 ```
 
 Override the model for one session:
 
 ```bash
-.venv/bin/python -m tests.smoke.cli --model openai:gpt-4o
+.venv/bin/python -m cli.cli --model openai:gpt-4o
 ```
 
 Headless scripted scenario (CI mode — populated in task #9):
 
 ```bash
-.venv/bin/python -m tests.smoke.cli --scenario vendor_confirmation
+.venv/bin/python -m cli.cli --scenario vendor_confirmation
 ```
 
 ## TUI layout
