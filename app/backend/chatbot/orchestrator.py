@@ -17,6 +17,8 @@ import logging
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from pydantic_ai.usage import UsageLimits
+
 from backend.chatbot import inbox
 from backend.chatbot.agents.central import agent as central_agent
 from backend.chatbot.agents.deps import AgentDeps
@@ -24,6 +26,12 @@ from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity, InboundMessage
 from backend.chatbot.messaging import dispatcher as messaging_dispatcher
 from backend.db import channel_identities, chat_storage
+
+# Cap a single customer turn at 10 model requests. A normal turn is 1–3
+# requests (initial response, optional subagent call + finalization). Anything
+# higher means the agent is looping; failing fast surfaces the bug instead of
+# burning tokens for minutes before pydantic_ai's default 50 limit fires.
+_CENTRAL_USAGE_LIMITS = UsageLimits(request_limit=10)
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +70,10 @@ async def handle_inbound(msg: InboundMessage) -> None:
         )
         message_history = await chat_storage.load_history(business_id, customer_id)
         result = await central_agent.run(
-            prompt, deps=deps, message_history=message_history
+            prompt,
+            deps=deps,
+            message_history=message_history,
+            usage_limits=_CENTRAL_USAGE_LIMITS,
         )
 
         channel = registry.get(msg.identity.channel)

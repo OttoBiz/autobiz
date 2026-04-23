@@ -10,27 +10,38 @@ from backend.chatbot.messaging.reply import Reply
 from backend.config import MODEL_NAME
 from backend.db import outbound_ledger
 
-
 SUBAGENT_TIMEOUT_SECONDS = 30
 
 
 class Task(BaseModel):
     agent_name: Literal[
-        "product", "payment", "logistics", "customer_relation", "outbound"
+        "product", "payment", "logistics", "outbound"
     ] = Field(description="Which subagent to call.")
+    # NOTE: "customer_relation" temporarily disabled — it was being invoked
+    # for greetings/small-talk and looping the central agent. Re-enable by
+    # adding it back to this Literal and uncommenting the registry entry below.
     prompt: str = Field(
         description="Detailed query for the subagent. Include all relevant context (product name, order id, amounts, etc)."
+    )
+    party_type: Literal["vendor", "logistics"] | None = Field(
+        default=None,
+        description=(
+            "For agent_name='outbound' only: which external party to contact "
+            "('vendor' for stock/restock/payment confirmation, 'logistics' for "
+            "delivery/pickup coordination). Required when calling outbound; "
+            "ignored otherwise."
+        ),
     )
 
 
 class SubagentDef(NamedTuple):
     description: str
-    handler: Callable[[AgentDeps, str], Awaitable[dict[str, Any]]]
+    # outbound takes an extra `party_type` arg; product/payment/etc. don't.
+    # _dispatch_task handles the per-handler call signature.
+    handler: Callable[..., Awaitable[dict[str, Any]]]
 
 
-async def _run_with_timeout(
-    name: str, coro: Awaitable[Any]
-) -> dict[str, Any]:
+async def _run_with_timeout(name: str, coro: Awaitable[Any]) -> dict[str, Any]:
     # Timeout fallback so a single hung subagent can't block the central reply;
     # the error dict surfaces to central so it can decide what to tell the customer.
     try:
@@ -57,9 +68,7 @@ async def _handle_payment(deps: AgentDeps, prompt: str) -> dict[str, Any]:
 async def _handle_logistics(deps: AgentDeps, prompt: str) -> dict[str, Any]:
     from backend.chatbot.agents.logistics import logistics_agent
 
-    return await _run_with_timeout(
-        "logistics", logistics_agent.run(prompt, deps=deps)
-    )
+    return await _run_with_timeout("logistics", logistics_agent.run(prompt, deps=deps))
 
 
 async def _handle_customer_relation(deps: AgentDeps, prompt: str) -> dict[str, Any]:
@@ -70,22 +79,33 @@ async def _handle_customer_relation(deps: AgentDeps, prompt: str) -> dict[str, A
     )
 
 
-async def _handle_outbound(deps: AgentDeps, prompt: str) -> dict[str, Any]:
+async def _handle_outbound(
+    deps: AgentDeps, prompt: str, party_type: str | None = None
+) -> dict[str, Any]:
     from backend.chatbot.agents.outbound import dispatch
     from backend.db.db_utils import get_business_info
+
+    if party_type not in ("vendor", "logistics"):
+        return {
+            "error": "missing_party_type",
+            "detail": (
+                "outbound tasks require party_type='vendor' or 'logistics'. "
+                "Re-issue the task with the correct party_type."
+            ),
+        }
 
     business_info = await get_business_info(str(deps.business_id))
     business_name = business_info.get("name", "") if business_info else None
     task_key = await dispatch(
         business_id=deps.business_id,
         customer_id=deps.customer_id,
-        party="vendor",
+        party=party_type,
         initiated_by="customer",
         dispatch_prompt=prompt,
         business_name=business_name,
         parent_depth=deps.current_depth,
     )
-    return {"status": "pending", "task_key": task_key}
+    return {"status": "pending", "task_key": task_key, "party": party_type}
 
 
 def _register_handlers() -> dict[str, SubagentDef]:
@@ -102,10 +122,11 @@ def _register_handlers() -> dict[str, SubagentDef]:
             description="Track orders, get delivery status, collect delivery addresses.",
             handler=_handle_logistics,
         ),
-        "customer_relation": SubagentDef(
-            description="Handle complaints, feedback, and escalation decisions.",
-            handler=_handle_customer_relation,
-        ),
+        # Temporarily disabled — was being called for greetings and looping.
+        # "customer_relation": SubagentDef(
+        #     description="Handle complaints, feedback, and escalation decisions.",
+        #     handler=_handle_customer_relation,
+        # ),
         "outbound": SubagentDef(
             description="Contact vendor or logistics. Returns immediately — runs in background. Use when you need human confirmation or info the system doesn't have.",
             handler=_handle_outbound,
@@ -130,27 +151,32 @@ You are an AI sales assistant for a business. You help customers with product en
 
 You have full conversation history and customer state. Use it to give contextual replies.
 
-RULES:
-- You are the ONLY one who talks to the customer. Subagents return data to you — you craft the final response.
-- If a query spans multiple topics, call multiple subagents in one query_subagent call and combine their results into ONE response.
-- Never forward raw subagent output to the customer. Synthesize it naturally.
-- When an outbound task is pending, mention it if relevant ("Still waiting on vendor confirmation").
-- When an outbound task resolves, inform the customer proactively.
+DECIDE FIRST — DO YOU NEED A SUBAGENT?
 
-SUBAGENTS (use via query_subagent):
+Reply DIRECTLY (no subagent) when the customer:
+- Greets you ("hi", "hello", "good morning", "how are you")
+- Says thanks, goodbye, or other small talk
+- Asks who you are or what you do
+- Asks something you can answer from general knowledge
+- Sends a vague message — ask a clarifying question instead of guessing a subagent
+
+Use a SUBAGENT only when you need data the system holds or external action:
 {subagents}
 
+PROCESS:
+1. Read the customer's message and the conversation history.
+2. If you need data, call `query_subagent` ONCE with every task you need bundled in the same call.
+3. Take the subagent result, write your final reply, and STOP. Do NOT call `query_subagent` again about the same topic — pick the best wording from the result, do not "double-check" with another subagent call.
+4. Never forward raw subagent output to the customer. Synthesize it in your own voice.
+
 OUTBOUND:
-- Call the "outbound" subagent when you need vendor/logistics input (payment confirmation, stock checks, delivery coordination).
-- It returns immediately. Tell the customer you're on it.
-- To check on previously-dispatched outbound tasks, call `get_outbound_status`.
-  It returns `pending` (still in progress) and `resolved` (finished since you
-  last checked). Calling it acknowledges the resolved tasks — relay anything
-  new to the customer in this same reply.
+- Use the "outbound" subagent when you need vendor or logistics input (stock check, payment confirmation, delivery coordination).
+- ALWAYS set `party_type` on outbound tasks: "vendor" or "logistics".
+- It returns immediately. Tell the customer you're on it ("checking with the vendor, one moment").
+- Call `get_outbound_status` ONCE per turn (only if relevant) to fetch pending/resolved outbound tasks for this customer. Relay any newly-resolved outcomes in your reply.
 
 RESPONSE FORMAT:
-Reply with `Reply.text` only — plain prose. Do not return JSON, markdown structure, or
-any UI hint; the channel layer owns formatting.
+Plain prose only. No JSON, no markdown structure, no UI hints — the channel layer owns formatting.
 """
 
 
@@ -167,10 +193,17 @@ async def query_subagent(
 ) -> list[dict[str, Any]]:
     """Call one or more subagents in parallel. Each task specifies the subagent name and a detailed prompt."""
     results = await asyncio.gather(
-        *(_get_subagents()[task.agent_name].handler(ctx.deps, task.prompt) for task in tasks),
+        *(_dispatch_task(ctx.deps, task) for task in tasks),
         return_exceptions=True,
     )
     return [r if isinstance(r, dict) else {"error": str(r)} for r in results]
+
+
+async def _dispatch_task(deps: AgentDeps, task: Task) -> dict[str, Any]:
+    handler = _get_subagents()[task.agent_name].handler
+    if task.agent_name == "outbound":
+        return await handler(deps, task.prompt, task.party_type)
+    return await handler(deps, task.prompt)
 
 
 async def _fetch_outbound_status(
@@ -196,9 +229,7 @@ async def _fetch_outbound_status(
             inbox.set_cursor(biz_str, cust_str, max(resolved_times))
 
     return {
-        "pending": [
-            {"party": t.party, "request": t.dispatch_prompt} for t in pending
-        ],
+        "pending": [{"party": t.party, "request": t.dispatch_prompt} for t in pending],
         "resolved": [
             {"party": t.party, "outcome": t.customer_context} for t in resolved
         ],

@@ -65,7 +65,7 @@ RULES:
 - If the party declines or cannot help, still call `mark_completed` describing the negative outcome.
 
 RESPONSE FORMAT:
-Reply with `Reply.text` only — plain prose to the party. Do not pick a UI surface;
+Reply with output structure only — plain prose to the party. Do not pick a UI surface;
 the dispatcher handles delivery and reply-tracking so the party's reply routes
 back to this ticket.
 """
@@ -224,9 +224,7 @@ async def dispatch(
     return task_key
 
 
-def _vendor_identity(
-    customer_identity: ChannelIdentity, party: str
-) -> ChannelIdentity:
+def _vendor_identity(customer_identity: ChannelIdentity, party: str) -> ChannelIdentity:
     """Re-target a customer identity at the vendor `party` address.
 
     `party` is the vendor's channel address — override channel_user_id so
