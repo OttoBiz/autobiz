@@ -3,10 +3,8 @@
 Resolution state lives in the `outbound_tasks` ledger, not on deps. The agent
 calls `mark_completed(customer_context, system_context)` when it's done; the
 after-tool hook fans out via the resolution router. The agent's run output is
-a plain-text `Reply`. The dispatch helper wraps that text in a tracking
-primitive (a WhatsApp Flow whose `flow_token` is the task_key) so the vendor's
-reply is mappable back to this exact ticket — a single party can have many
-open tickets concurrently.
+a plain-text `Reply`; the messaging dispatcher owns delivery and reply-tracking
+(see `messaging/dispatcher.py` for the per-channel wrapping).
 """
 
 from __future__ import annotations
@@ -67,9 +65,9 @@ RULES:
 - If the party declines or cannot help, still call `mark_completed` describing the negative outcome.
 
 RESPONSE FORMAT:
-Reply with `Reply.text` only — plain prose to the party. Do not pick a UI surface; the
-dispatcher wraps your text in the right tracking primitive (on WhatsApp, a Flow keyed
-by this task) so the party's reply is routed back to this ticket.
+Reply with `Reply.text` only — plain prose to the party. Do not pick a UI surface;
+the dispatcher handles delivery and reply-tracking so the party's reply routes
+back to this ticket.
 """
 
 _hooks: Hooks[OutboundDeps] = Hooks()
@@ -162,6 +160,15 @@ async def dispatch(
     if next_depth > OUTBOUND_MAX_DEPTH:
         raise ValueError(f"max_depth {OUTBOUND_MAX_DEPTH} exceeded")
 
+    # Resolve transport once at dispatch entry so the background agent run
+    # never reaches back into the registry mid-flight. Both can be None
+    # (system-initiated thread with no prior customer identity); _run handles
+    # that by leaving the resolution in the ledger only.
+    channel = await registry.get_for_customer(str(business_id), str(customer_id))
+    customer_identity = await channel_identities.get_most_recent_identity(
+        business_id, customer_id
+    )
+
     task_key = uuid4().hex
     timeout_at = datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)
     await outbound_ledger.insert_task(
@@ -194,27 +201,20 @@ async def dispatch(
             await outbound_ledger.mark_failed(task_key, system_context=str(exc))
             return
 
+        if channel is None or customer_identity is None:
+            # No transport for this thread; the ledger still carries the
+            # resolution for the central agent to read on the next inbound.
+            return
+
         try:
-            channel = await registry.get_for_customer(
-                str(business_id), str(customer_id)
-            )
-            if channel is None:
-                return
-            identity = await channel_identities.get_most_recent_identity(
-                business_id, customer_id
-            )
-            if identity is None:
-                # No prior identity to send to (e.g. party-only thread); the
-                # ledger still carries the resolution for the central agent.
-                return
             # `party` is the vendor's channel address — override channel_user_id
             # so the reply goes to the vendor, not the customer.
             target_identity = ChannelIdentity(
-                business_id=identity.business_id,
-                customer_id=identity.customer_id,
-                channel=identity.channel,
+                business_id=customer_identity.business_id,
+                customer_id=customer_identity.customer_id,
+                channel=customer_identity.channel,
                 channel_user_id=party,
-                last_inbound_at=identity.last_inbound_at,
+                last_inbound_at=customer_identity.last_inbound_at,
             )
             await messaging_dispatcher.dispatch_to_party(
                 channel, target_identity, result.output, task_key=task_key

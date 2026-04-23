@@ -33,6 +33,24 @@ def patch_ledger(monkeypatch):
     return fake
 
 
+@pytest.fixture(autouse=True)
+def patch_transport(monkeypatch):
+    """Stub the dispatch-entry transport resolution so tests don't hit Redis/DB.
+
+    `outbound.dispatch` now resolves the channel + identity once upfront (not
+    mid-flight inside _run). Tests don't care about transport here — they
+    assert on ledger + agent wiring — so default both lookups to None.
+    """
+    monkeypatch.setattr(
+        outbound.registry, "get_for_customer", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        outbound.channel_identities,
+        "get_most_recent_identity",
+        AsyncMock(return_value=None),
+    )
+
+
 @pytest.mark.asyncio
 async def test_dispatch_inserts_ledger_row_and_returns_task_key(patch_ledger, monkeypatch):
     run_mock = AsyncMock(return_value=SimpleNamespace(output="ok"))
