@@ -119,20 +119,33 @@ async def _async_main(args: argparse.Namespace) -> int:
         return 4
     print("✓ Schema migrations up to date")
 
-    from tests.smoke.seed import ensure_smoke_data
+    from tests.smoke.seed import ensure_smoke_data, reset_smoke_state
+
+    # Wipe per-customer state from prior sessions (chat history, outbound
+    # tasks, channel identities, cursors, locks) so every CLI launch feels
+    # like a clean start. Use --keep-state to skip when debugging.
+    if not args.keep_state:
+        try:
+            await reset_smoke_state(args.business_id, args.customer_id)
+        except Exception as exc:
+            print(f"✗ Could not clear prior smoke state: {exc}")
+            return 5
+        print(
+            f"✓ Cleared prior state for business={args.business_id[:8]} "
+            f"customer={args.customer_id[:8]}"
+        )
 
     try:
         await ensure_smoke_data(args.business_id, args.customer_id)
     except Exception as exc:
         print(f"✗ Could not seed business/customer rows: {exc}")
         return 5
-    print(
-        f"✓ Seeded business={args.business_id[:8]} customer={args.customer_id[:8]}"
-    )
+    print(f"✓ Seeded business={args.business_id[:8]} customer={args.customer_id[:8]}")
 
     # Register the in-process channel + identity resolver before the
     # orchestrator runs its first turn.
     from tests.smoke.console_channel import install as install_console
+
     install_console()
     print("✓ ConsoleChannel registered")
 
@@ -180,6 +193,16 @@ def main() -> int:
     parser.add_argument(
         "--scenario",
         help="Run a scripted scenario instead of the interactive TUI.",
+    )
+    parser.add_argument(
+        "--keep-state",
+        dest="keep_state",
+        action="store_true",
+        help=(
+            "Don't wipe prior per-customer state at startup. By default the "
+            "CLI clears chat history, outbound tasks, channel identities, "
+            "and cursors for the smoke customer so every launch feels fresh."
+        ),
     )
     args = parser.parse_args()
 

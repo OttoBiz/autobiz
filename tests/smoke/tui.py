@@ -33,6 +33,7 @@ from backend.chatbot.channels.base import ChannelIdentity, InboundMessage
 
 from tests.smoke import system_log
 from tests.smoke.console_channel import ConsoleChannel
+from tests.smoke.seed import ensure_smoke_data
 
 
 CUSTOMER_TAB = "customer"
@@ -243,12 +244,26 @@ class SmokeApp(App):
         )
 
     async def _run_orchestrator(self, msg: InboundMessage) -> None:
+        # Re-seed before every turn. The docker `ottobiz-backend` container
+        # runs uvicorn --reload and on every reload re-runs populate.py,
+        # which TRUNCATEs `businesses` and `users` CASCADE — wiping our
+        # seeded rows mid-session. Re-seed is idempotent (ON CONFLICT DO
+        # NOTHING / NOT EXISTS) so this is cheap and bulletproof.
+        await self._reseed()
         try:
             await orchestrator.handle_inbound(msg)
         except Exception as exc:
             self._log("customer-log", f"[red]✗ orchestrator error: {exc}[/red]")
         finally:
             self._reap_tasks()
+
+    async def _reseed(self) -> None:
+        try:
+            await ensure_smoke_data(self.business_id, self.customer_id)
+        except Exception as exc:
+            # Log but don't block the turn — the next call may still succeed
+            # if the failure was transient.
+            self._log("system-log", f"[yellow]reseed failed: {exc}[/yellow]")
 
     async def _send_as_party(self, party: str, text: str) -> None:
         log_id = _PARTY_PANES[party][1]
@@ -285,10 +300,18 @@ class SmokeApp(App):
         )
 
     async def _run_party_reply(self, task_key: str, text: str, log_id: str) -> None:
+        # Same defensive re-seed as customer turns — see _run_orchestrator.
+        await self._reseed()
         try:
-            await outbound.deliver_party_reply(task_key, text)
+            status = await outbound.deliver_party_reply(task_key, text)
         except Exception as exc:
             self._log(log_id, f"[red]✗ deliver_party_reply error: {exc}[/red]")
+        else:
+            if status:
+                # Task already resolved / unknown / no transport. Surface the
+                # message so the operator knows why nothing came back instead
+                # of staring at a frozen "thinking…" line.
+                self._log(log_id, f"[yellow]ℹ {status}[/yellow]")
         finally:
             self._reap_tasks()
 

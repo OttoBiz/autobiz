@@ -15,6 +15,7 @@ from __future__ import annotations
 from decimal import Decimal
 from uuid import UUID
 
+from backend.db.cache_utils import redis_conn
 from backend.db.connection import get_db
 
 
@@ -55,6 +56,66 @@ _DEMO_PRODUCTS = [
         "category": "accessories",
     },
 ]
+
+
+async def reset_smoke_state(business_id: str, customer_id: str) -> None:
+    """Wipe per-customer state so a fresh CLI launch feels fresh.
+
+    Clears every store keyed on (business_id, customer_id) for the smoke
+    pair: postgres-side outbound tasks, channel identities, orders and
+    transactions; redis-side chat history, inbox, lock, cursor, outbound
+    chat history. Idempotent — safe even when nothing exists yet.
+
+    Does NOT touch the business or customer rows themselves; that's
+    `ensure_smoke_data`'s job.
+    """
+    biz_uuid = UUID(business_id)
+    cust_uuid = UUID(customer_id)
+
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        # Outbound chat histories live in Redis keyed by task_key, so grab
+        # the keys before deleting the ledger rows.
+        task_keys = [
+            row["task_key"]
+            for row in await conn.fetch(
+                "SELECT task_key FROM outbound_tasks WHERE business_id=$1 AND customer_id=$2",
+                biz_uuid,
+                cust_uuid,
+            )
+        ]
+        await conn.execute(
+            "DELETE FROM outbound_tasks WHERE business_id=$1 AND customer_id=$2",
+            biz_uuid,
+            cust_uuid,
+        )
+        await conn.execute(
+            "DELETE FROM transactions WHERE business_id=$1 AND user_id=$2",
+            biz_uuid,
+            cust_uuid,
+        )
+        await conn.execute(
+            "DELETE FROM orders WHERE business_id=$1 AND user_id=$2",
+            biz_uuid,
+            cust_uuid,
+        )
+        await conn.execute(
+            "DELETE FROM channel_identities WHERE business_id=$1 AND customer_id=$2",
+            biz_uuid,
+            cust_uuid,
+        )
+
+    client = redis_conn._client
+    keys = [
+        f"chat:{business_id}:{customer_id}",
+        f"inbox:{business_id}:{customer_id}",
+        f"lock:inbox:{business_id}:{customer_id}",
+        f"central_agent_cursor:{business_id}:{customer_id}",
+        f"{customer_id}:{business_id}",  # legacy user_state cache key
+    ]
+    keys.extend(f"outbound_chat:{tk}" for tk in task_keys)
+    if keys:
+        client.delete(*keys)
 
 
 async def ensure_smoke_data(business_id: str, customer_id: str) -> None:
