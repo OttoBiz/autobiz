@@ -29,7 +29,6 @@ from backend.chatbot.channels.base import (  # noqa: E402
     ChannelIdentity,
     InboundMessage,
 )
-from backend.chatbot.messaging.reply import Reply  # noqa: E402
 
 
 _BIZ_ID = str(uuid4())
@@ -91,7 +90,7 @@ def patch_central(monkeypatch):
     new_messages = MagicMock(return_value=["msg-a", "msg-b"])
     run = AsyncMock(
         return_value=SimpleNamespace(
-            output=Reply(text="agent reply"), new_messages=new_messages
+            output="agent reply", new_messages=new_messages
         )
     )
     monkeypatch.setattr(orchestrator.central_agent, "run", run)
@@ -171,6 +170,11 @@ async def test_lock_contention_enqueues_without_running_central(
 async def test_drain_skipped_when_send_fails(
     patch_inbox, patch_identity, patch_central, patch_registry, patch_chat_storage
 ):
+    # Seed peek so _drain_and_reply actually runs central + dispatch; the test
+    # is checking that a send failure aborts drain, not the empty-queue path.
+    patch_inbox.peek.return_value = [
+        {"type": "user_message", "payload": {"text": "hello"}}
+    ]
     patch_registry.channel.send.side_effect = RuntimeError("boom")
 
     with pytest.raises(RuntimeError):

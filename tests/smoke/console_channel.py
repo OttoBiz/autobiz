@@ -69,8 +69,7 @@ class ConsoleChannel(Channel):
         await self.outbox.put((identity, rendered))
 
     def window_policy(self) -> WindowPolicy:
-        # No 24h window in the harness — every send is deliverable. Keeps
-        # channels/handler.py from picking the template fallback during tests.
+        # No 24h window in the harness — every send is deliverable.
         return WindowPolicy(
             has_window=False, window_hours=None, out_of_window_behavior="drop"
         )

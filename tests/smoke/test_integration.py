@@ -31,7 +31,6 @@ from backend.chatbot import inbox, orchestrator  # noqa: E402
 from backend.chatbot.agents import central as central_mod  # noqa: E402
 from backend.chatbot.agents import outbound as outbound_mod  # noqa: E402
 from backend.chatbot.channels.base import ChannelIdentity, InboundMessage  # noqa: E402
-from backend.chatbot.messaging.reply import Reply  # noqa: E402
 
 from tests.smoke.console_channel import install as install_console  # noqa: E402
 
@@ -202,7 +201,7 @@ async def test_customer_message_reaches_console_channel(
     """Customer types → orchestrator → central_agent → ConsoleChannel.outbox."""
     central_run = AsyncMock(
         return_value=SimpleNamespace(
-            output=Reply(text="hello, customer!"),
+            output="hello, customer!",
             new_messages=lambda: [],
         )
     )
@@ -237,7 +236,7 @@ async def test_outbound_dispatch_lands_on_console_channel(
         "run",
         AsyncMock(
             return_value=SimpleNamespace(
-                output=Reply(text="hi vendor, do you have stock?"),
+                output="hi vendor, do you have stock?",
                 new_messages=lambda: [],
             )
         ),
@@ -279,7 +278,7 @@ async def test_vendor_reply_continues_outbound_thread(
         "run",
         AsyncMock(
             return_value=SimpleNamespace(
-                output=Reply(text="vendor, please confirm stock"),
+                output="vendor, please confirm stock",
                 new_messages=lambda: [],
             )
         ),
@@ -298,7 +297,7 @@ async def test_vendor_reply_continues_outbound_thread(
     # Second run: continuation triggered by vendor's reply.
     continuation_run = AsyncMock(
         return_value=SimpleNamespace(
-            output=Reply(text="thanks, will let the customer know"),
+            output="thanks, will let the customer know",
             new_messages=lambda: [],
         )
     )
@@ -354,7 +353,7 @@ async def test_full_roundtrip_customer_to_vendor_to_customer(
         )
         captured_task_keys.append(task_key["task_key"])
         return SimpleNamespace(
-            output=Reply(text="Checking with the vendor, one moment."),
+            output="Checking with the vendor, one moment.",
             new_messages=lambda: [],
         )
 
@@ -366,7 +365,7 @@ async def test_full_roundtrip_customer_to_vendor_to_customer(
         "run",
         AsyncMock(
             return_value=SimpleNamespace(
-                output=Reply(text="Hi vendor, do you have red shoes in stock?"),
+                output="Hi vendor, do you have red shoes in stock?",
                 new_messages=lambda: [],
             )
         ),
@@ -405,7 +404,7 @@ async def test_full_roundtrip_customer_to_vendor_to_customer(
 
         await outbound_resolution.route(deps.task_key)
         return SimpleNamespace(
-            output=Reply(text="thanks, noted"),
+            output="thanks, noted",
             new_messages=lambda: [],
         )
 

@@ -4,11 +4,8 @@ from typing import Any, Awaitable, Callable, Literal, NamedTuple
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
 
-from backend.chatbot import inbox
 from backend.chatbot.agents.deps import AgentDeps
-from backend.chatbot.messaging.reply import Reply
 from backend.config import MODEL_NAME
-from backend.db import outbound_ledger
 
 SUBAGENT_TIMEOUT_SECONDS = 30
 
@@ -169,12 +166,25 @@ PROCESS:
 3. Take the subagent result, write your final reply, and STOP. Do NOT call `query_subagent` again about the same topic — pick the best wording from the result, do not "double-check" with another subagent call.
 4. Never forward raw subagent output to the customer. Synthesize it in your own voice.
 
+THE INBOX PROMPT:
+- Every turn's prompt lists the items in this customer's inbox queue in order.
+  Items are either:
+    - "- <text>" (a customer message), or
+    - "- (system) <summary>" (a system event — most commonly an outbound
+      reply from a vendor or logistics partner that just came back).
+- Treat system events as first-class inputs. If a system event says the
+  vendor confirmed stock / gave a price / quoted a lead time, relay that to
+  the customer in your own words — you do NOT need to call any subagent to
+  look it up, the info is already in the prompt.
+- If the same information appears in both a customer message and a system
+  event, say it once. Never repeat the same sentence to the customer twice.
+
 OUTBOUND:
 - Use the "outbound" subagent when you need vendor or logistics input (stock check, payment confirmation, delivery coordination).
 - ALWAYS set `party_type` on outbound tasks: "vendor" or "logistics".
-- The outbound subagent returns IMMEDIATELY with `status: pending`. The actual {party} conversation runs in the background and may take minutes. Tell the customer you're on it ("checking with the vendor, one moment") and STOP — write your final reply and end the turn.
-- DO NOT call `get_outbound_status` in the same turn you just dispatched an outbound task. The result will not be ready and polling burns the per-turn request budget.
-- Only call `get_outbound_status` if the CUSTOMER asks for an update on a previously-dispatched task (e.g., "any update?", "did the vendor reply?"). Call it AT MOST ONCE per turn. If `resolved` contains items, mention each one ONCE in your reply, then write the reply and stop. Calling it twice in one turn returns nothing the second time and indicates you are looping.
+- The outbound subagent returns IMMEDIATELY with `status: pending`. The actual conversation with the vendor/logistics partner runs in the background and may take minutes. Tell the customer you're on it ("checking with the vendor, one moment") and STOP — write your final reply and end the turn.
+- You do NOT poll for vendor replies. When the vendor responds the system will wake you up with a new turn whose prompt contains the vendor's outcome as a "(system)" item. Just relay it then.
+- If the customer asks "any update?" while a task is still pending, tell them you're still waiting on the vendor / logistics partner and will share the moment you hear back.
 
 RESPONSE FORMAT:
 Plain prose only. No JSON, no markdown structure, no UI hints — the channel layer owns formatting.
@@ -184,7 +194,7 @@ Plain prose only. No JSON, no markdown structure, no UI hints — the channel la
 agent = Agent(
     model=model,
     deps_type=AgentDeps,
-    output_type=Reply,
+    output_type=str,
 )
 
 
@@ -205,76 +215,6 @@ async def _dispatch_task(deps: AgentDeps, task: Task) -> dict[str, Any]:
     if task.agent_name == "outbound":
         return await handler(deps, task.prompt, task.party_type)
     return await handler(deps, task.prompt)
-
-
-async def _fetch_outbound_status(
-    business_id: Any, customer_id: Any
-) -> dict[str, list[dict[str, str | None]]]:
-    """Read pending + resolved-since-cursor for this customer; advance the cursor.
-
-    Extracted from the tool body so it can be exercised directly in tests
-    without standing up a full pydantic_ai RunContext.
-    """
-    biz_str = str(business_id)
-    cust_str = str(customer_id)
-
-    cursor = inbox.get_cursor(biz_str, cust_str)
-    pending = await outbound_ledger.get_pending_for_customer(business_id, customer_id)
-    resolved = await outbound_ledger.get_resolved_since(
-        business_id, customer_id, cursor
-    )
-
-    if resolved:
-        resolved_times = [r.resolved_at for r in resolved if r.resolved_at]
-        if resolved_times:
-            inbox.set_cursor(biz_str, cust_str, max(resolved_times))
-
-    return {
-        "pending": [{"party": t.party, "request": t.dispatch_prompt} for t in pending],
-        "resolved": [
-            {"party": t.party, "outcome": t.customer_context} for t in resolved
-        ],
-    }
-
-
-@agent.tool
-async def get_outbound_status(
-    ctx: RunContext[AgentDeps],
-) -> dict[str, Any]:
-    """Fetch outbound vendor/logistics tasks for this customer.
-
-    Returns:
-    - pending: tasks still in progress (queued or running).
-    - resolved: tasks finished since the last call. Cursor advances on the
-      FIRST call this turn, so subsequent calls in the same turn return
-      empty lists — call this tool at most once per turn.
-    """
-    deps = ctx.deps
-    cache_key = (str(deps.business_id), str(deps.customer_id))
-    cached = _OUTBOUND_STATUS_TURN_CACHE.get(cache_key)
-    if cached is not None:
-        # Same turn already fetched — return a "no-new-info" payload so the
-        # model can see it's looping and stop. We do NOT re-return the
-        # original resolved list, because that would prompt re-relaying.
-        return {
-            "pending": cached["pending"],
-            "resolved": [],
-            "note": "already_fetched_this_turn — write your reply and stop polling",
-        }
-    payload = await _fetch_outbound_status(deps.business_id, deps.customer_id)
-    _OUTBOUND_STATUS_TURN_CACHE[cache_key] = payload
-    return payload
-
-
-# Per-(business, customer) cache of get_outbound_status payloads cleared at
-# the start of every orchestrator turn (orchestrator calls
-# clear_outbound_status_cache before central_agent.run). Keeps a single turn
-# from re-fetching and re-relaying the same resolution multiple times.
-_OUTBOUND_STATUS_TURN_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
-
-
-def clear_outbound_status_cache(business_id: Any, customer_id: Any) -> None:
-    _OUTBOUND_STATUS_TURN_CACHE.pop((str(business_id), str(customer_id)), None)
 
 
 @agent.instructions

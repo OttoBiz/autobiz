@@ -1,15 +1,14 @@
 """Tests for the outbound resolution router.
 
-Mocks the ledger, channel registry, channel handler, inbox lock, and the
-coordinator agent. No real DB or Redis.
+The router translates a resolved ledger row into queued inbox items. Mocks the
+ledger, the coordinator agent, the inbox lock, and `orchestrator.deliver_system_event`
+so we can assert the wiring without a real DB, Redis, or LLM.
 """
 
 from __future__ import annotations
 
 import os
 
-# Match the pattern in test_inbox.py: DEBUG=true so cache.py picks the
-# non-cluster Redis client. Tests don't actually touch Redis (lock is mocked).
 os.environ.setdefault("DEBUG", "true")
 os.environ.setdefault("REDIS_SERVER_HOST", "localhost")
 os.environ.setdefault("REDIS_SERVER_PORT", "6379")
@@ -19,40 +18,13 @@ import logging  # noqa: E402
 import sys  # noqa: E402
 from datetime import datetime, timedelta, timezone  # noqa: E402
 from types import ModuleType, SimpleNamespace  # noqa: E402
-from typing import ClassVar  # noqa: E402
 from unittest.mock import AsyncMock, MagicMock  # noqa: E402
 from uuid import uuid4  # noqa: E402
 
 import pytest  # noqa: E402
 
-from backend.chatbot.channels.base import (  # noqa: E402
-    Channel,
-    ChannelIdentity,
-    InboundMessage,
-    WindowPolicy,
-)
 from backend.chatbot.routers import outbound_resolution  # noqa: E402
 from backend.db.outbound_ledger import OutboundTaskRow  # noqa: E402
-
-
-class _FakeChannel(Channel):
-    name: ClassVar[str] = "fake"
-
-    def parse_inbound(self, raw: dict) -> InboundMessage:  # pragma: no cover
-        raise NotImplementedError
-
-    async def send(self, identity: ChannelIdentity, text: str) -> None:  # pragma: no cover
-        raise NotImplementedError
-
-    async def send_template(  # pragma: no cover
-        self, identity: ChannelIdentity, template: str, vars: dict
-    ) -> None:
-        raise NotImplementedError
-
-    def window_policy(self) -> WindowPolicy:
-        return WindowPolicy(
-            has_window=True, window_hours=24, out_of_window_behavior="template"
-        )
 
 
 def _make_task(
@@ -86,16 +58,11 @@ def patch_get_by_key(monkeypatch):
 
 
 @pytest.fixture
-def patch_get_for_customer(monkeypatch):
+def patch_deliver(monkeypatch):
     mock = AsyncMock()
-    monkeypatch.setattr(outbound_resolution.registry, "get_for_customer", mock)
-    return mock
-
-
-@pytest.fixture
-def patch_handle_resolution(monkeypatch):
-    mock = AsyncMock()
-    monkeypatch.setattr(outbound_resolution, "handle_resolution", mock)
+    monkeypatch.setattr(
+        outbound_resolution.orchestrator, "deliver_system_event", mock
+    )
     return mock
 
 
@@ -129,20 +96,19 @@ def patch_coordinator(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_route_returns_early_when_task_missing(
-    patch_get_by_key, patch_get_for_customer, patch_handle_resolution, patch_lock
+    patch_get_by_key, patch_deliver, patch_lock
 ):
     patch_get_by_key.return_value = None
 
     await outbound_resolution.route("tk-missing")
 
-    patch_get_for_customer.assert_not_awaited()
-    patch_handle_resolution.assert_not_awaited()
+    patch_deliver.assert_not_awaited()
     patch_lock.acquire.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_route_returns_early_when_state_not_terminal(
-    patch_get_by_key, patch_get_for_customer, patch_handle_resolution, patch_lock
+    patch_get_by_key, patch_deliver, patch_lock
 ):
     patch_get_by_key.return_value = _make_task(
         state="running", customer_context="hi", system_context="back-office"
@@ -150,49 +116,43 @@ async def test_route_returns_early_when_state_not_terminal(
 
     await outbound_resolution.route("tk-running")
 
-    patch_get_for_customer.assert_not_awaited()
-    patch_handle_resolution.assert_not_awaited()
+    patch_deliver.assert_not_awaited()
     patch_lock.acquire.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_customer_context_only_calls_handler_not_coordinator(
-    patch_get_by_key,
-    patch_get_for_customer,
-    patch_handle_resolution,
-    patch_lock,
-    patch_coordinator,
+async def test_customer_context_is_enqueued_as_system_event(
+    patch_get_by_key, patch_deliver, patch_lock, patch_coordinator
 ):
     task = _make_task(customer_context="order shipped")
     patch_get_by_key.return_value = task
-    channel = _FakeChannel()
-    patch_get_for_customer.return_value = channel
 
     await outbound_resolution.route(task.task_key)
 
-    patch_get_for_customer.assert_awaited_once_with(
-        str(task.business_id), str(task.customer_id)
-    )
-    patch_handle_resolution.assert_awaited_once_with(task, channel)
-    patch_lock.acquire.assert_not_called()
+    patch_deliver.assert_awaited_once()
+    biz, cust, item = patch_deliver.await_args.args
+    assert biz == str(task.business_id)
+    assert cust == str(task.customer_id)
+    assert item["type"] == "system_event"
+    assert item["payload"]["summary"] == "order shipped"
+    assert item["payload"]["source"] == "outbound_reply"
+    assert item["payload"]["party"] == task.party
+    assert item["payload"]["task_key"] == task.task_key
+    # Customer_context-only tasks don't touch the coordinator at all.
     patch_coordinator.coordinator_agent.run.assert_not_awaited()
+    patch_lock.acquire.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_system_context_only_runs_coordinator_not_handler(
-    patch_get_by_key,
-    patch_get_for_customer,
-    patch_handle_resolution,
-    patch_lock,
-    patch_coordinator,
+async def test_system_context_only_runs_coordinator_and_skips_deliver(
+    patch_get_by_key, patch_deliver, patch_lock, patch_coordinator
 ):
     task = _make_task(system_context="restock SKU-1")
     patch_get_by_key.return_value = task
 
     await outbound_resolution.route(task.task_key)
 
-    patch_get_for_customer.assert_not_awaited()
-    patch_handle_resolution.assert_not_awaited()
+    patch_deliver.assert_not_awaited()
     patch_lock.acquire.assert_called_once()
     patch_lock.release.assert_called_once()
     patch_coordinator.coordinator_agent.run.assert_awaited_once()
@@ -207,39 +167,32 @@ async def test_system_context_only_runs_coordinator_not_handler(
 
 
 @pytest.mark.asyncio
-async def test_both_contexts_run_handler_and_coordinator(
-    patch_get_by_key,
-    patch_get_for_customer,
-    patch_handle_resolution,
-    patch_lock,
-    patch_coordinator,
+async def test_both_contexts_run_coordinator_then_deliver(
+    patch_get_by_key, patch_deliver, patch_lock, patch_coordinator
 ):
     task = _make_task(
         customer_context="we are on it", system_context="open follow-up"
     )
     patch_get_by_key.return_value = task
-    channel = _FakeChannel()
-    patch_get_for_customer.return_value = channel
 
     await outbound_resolution.route(task.task_key)
 
-    patch_handle_resolution.assert_awaited_once_with(task, channel)
-    patch_coordinator.coordinator_agent.run.assert_awaited_once()
+    # Coordinator acquired and released the lock first.
+    patch_lock.acquire.assert_called_once()
     patch_lock.release.assert_called_once()
+    patch_coordinator.coordinator_agent.run.assert_awaited_once()
+    # Then the customer-facing summary was enqueued via deliver_system_event.
+    patch_deliver.assert_awaited_once()
+    _biz, _cust, item = patch_deliver.await_args.args
+    assert item["payload"]["summary"] == "we are on it"
 
 
 @pytest.mark.asyncio
 async def test_coordinator_import_failure_logs_and_continues(
-    patch_get_by_key,
-    patch_get_for_customer,
-    patch_handle_resolution,
-    patch_lock,
-    monkeypatch,
-    caplog,
+    patch_get_by_key, patch_deliver, patch_lock, monkeypatch, caplog
 ):
-    # Force the lazy import to fail by inserting a stub module that raises
-    # on attribute access — actually, simpler: shadow with None so import-from
-    # fails. We use a module stub missing the required names.
+    # Shadow the coordinator module with a stub missing the required names so
+    # the `from ... import` inside `_run_coordinator` raises ImportError.
     broken = ModuleType("backend.chatbot.agents.coordinator")
     monkeypatch.setitem(sys.modules, "backend.chatbot.agents.coordinator", broken)
 
@@ -249,23 +202,21 @@ async def test_coordinator_import_failure_logs_and_continues(
     with caplog.at_level(logging.WARNING, logger=outbound_resolution.logger.name):
         await outbound_resolution.route(task.task_key)
 
-    # Lock acquired and released even though coordinator was unavailable.
     patch_lock.acquire.assert_called_once()
     patch_lock.release.assert_called_once()
     assert any("coordinator not available" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.asyncio
-async def test_lock_contention_skips_coordinator_and_no_release(
-    patch_get_by_key,
-    patch_get_for_customer,
-    patch_handle_resolution,
-    patch_lock,
-    patch_coordinator,
-    caplog,
+async def test_coordinator_lock_contention_skips_run_but_still_delivers(
+    patch_get_by_key, patch_deliver, patch_lock, patch_coordinator, caplog
 ):
+    # Coordinator can't acquire the lock, but a concurrent customer_context
+    # should still reach the customer via deliver_system_event.
     patch_lock.acquire.return_value = False
-    task = _make_task(system_context="contended")
+    task = _make_task(
+        customer_context="here's the quote", system_context="back-office note"
+    )
     patch_get_by_key.return_value = task
 
     with caplog.at_level(logging.INFO, logger=outbound_resolution.logger.name):
@@ -273,23 +224,5 @@ async def test_lock_contention_skips_coordinator_and_no_release(
 
     patch_coordinator.coordinator_agent.run.assert_not_awaited()
     patch_lock.release.assert_not_called()
+    patch_deliver.assert_awaited_once()
     assert any("lock contention" in r.getMessage() for r in caplog.records)
-
-
-@pytest.mark.asyncio
-async def test_no_channel_for_customer_skips_handler_and_warns(
-    patch_get_by_key,
-    patch_get_for_customer,
-    patch_handle_resolution,
-    patch_lock,
-    caplog,
-):
-    task = _make_task(customer_context="hi")
-    patch_get_by_key.return_value = task
-    patch_get_for_customer.return_value = None
-
-    with caplog.at_level(logging.WARNING, logger=outbound_resolution.logger.name):
-        await outbound_resolution.route(task.task_key)
-
-    patch_handle_resolution.assert_not_awaited()
-    assert any("no channel for resolution" in r.getMessage() for r in caplog.records)

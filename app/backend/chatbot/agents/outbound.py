@@ -3,8 +3,8 @@
 Resolution state lives in the `outbound_tasks` ledger, not on deps. The agent
 calls `mark_completed(customer_context, system_context)` when it's done; the
 after-tool hook fans out via the resolution router. The agent's run output is
-a plain-text `Reply`; the messaging dispatcher owns delivery and reply-tracking
-(see `messaging/dispatcher.py` for the per-channel wrapping).
+plain text; the messaging dispatcher owns delivery and reply-tracking (see
+`messaging/dispatcher.py` for the per-channel wrapping).
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from pydantic_ai.messages import ToolCallPart
 from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity
 from backend.chatbot.messaging import dispatcher as messaging_dispatcher
-from backend.chatbot.messaging.reply import Reply
 from backend.config import MODEL_NAME
 from backend.db import channel_identities, chat_storage, outbound_ledger
 
@@ -56,18 +55,30 @@ specific issue. You are NOT {party} — you are CONTACTING them. This
 ticket concerns customer {customer_id} (do not mention this id to {party}).
 
 CONVERSATION FLOW
-- The first run is the OPENING message: write a clear, polite question or
-  request DIRECTED AT {party}. Do NOT call mark_completed on this run —
-  you have not heard back yet.
+- The first run is the OPENING message. Write a single clear, polite message
+  DIRECTED AT {party} that asks for EVERYTHING the customer needs in one go —
+  don't leave out fields you'll have to come back for. For product/stock
+  tickets that normally means: availability, unit price, minimum order /
+  pack size, and expected lead time or restock date. For logistics tickets:
+  pickup address, handoff window, cost, and tracking. Adapt to the task.
+- Do NOT call mark_completed on the opening run — you have not heard back.
 - Each later run is triggered by {party}'s reply. Read what they said.
-- If their reply is incomplete, ambiguous, or you need more detail to act
-  on the customer's behalf, ASK A FOLLOW-UP — write another message
-  addressed to {party}. A ticket can take several back-and-forths.
-- Only call mark_completed when {party} has given you a definitive answer
-  AND you have everything the customer needs:
-    - customer_context: customer-safe summary (set this whenever there's
-      something to tell the customer).
-    - system_context: internal notes / DB actions the customer shouldn't see.
+- Before calling mark_completed, check every field the customer's question
+  implies. If ANY required field is missing, ambiguous, or non-committal
+  ("we'll see", "soon", "should be fine"), ASK A FOLLOW-UP — write another
+  message addressed to {party} naming the exact fields you still need. A
+  ticket can take several back-and-forths; that is expected.
+- Only call mark_completed when {party} has given a definitive, actionable
+  answer on every required field (or has clearly declined / cannot help).
+  Then:
+    - customer_context: customer-safe summary containing the concrete
+      answers ("In stock at ₦15,000/pair, 10-unit minimum, ships in 2 days").
+      No hedging, no "I'll let you know" — that is the agent's job to have
+      already finished. Set this whenever there's something to tell the
+      customer.
+    - system_context: internal notes / DB actions the customer shouldn't
+      see (e.g., "restock SKU-123 by +50 units", "vendor confirmed price
+      change to ₦15,000"). Omit if nothing system-side needs to happen.
   At least one must be non-empty.
 - If {party} clearly declines or cannot help, still call mark_completed
   with that outcome so the customer can be informed.
@@ -116,10 +127,10 @@ async def _on_mark_completed(
     return result
 
 
-outbound_agent: Agent[OutboundDeps, Reply] = Agent(
+outbound_agent: Agent[OutboundDeps, str] = Agent(
     model=MODEL_NAME,
     deps_type=OutboundDeps,
-    output_type=Reply,
+    output_type=str,
     capabilities=[_hooks],
 )
 
@@ -141,8 +152,12 @@ async def mark_completed(
 ) -> dict[str, bool]:
     """Resolve this outbound task. At least one context must be non-empty.
 
-    - customer_context: customer-safe summary. Omit if the outcome has no
-      customer-facing component.
+    Do not call this until {party} has given concrete, actionable answers to
+    every field the customer's question implies. If anything is still missing
+    or non-committal, ask a follow-up instead.
+
+    - customer_context: customer-safe summary with the concrete answers.
+      Omit if the outcome has no customer-facing component.
     - system_context: internal notes for DB updates, follow-ups, back-office
       actions. Omit if nothing system-side needs to happen.
     """

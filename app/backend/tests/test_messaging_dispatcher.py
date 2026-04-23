@@ -15,7 +15,6 @@ import pytest
 
 from backend.chatbot.channels.base import ChannelIdentity
 from backend.chatbot.messaging import dispatcher
-from backend.chatbot.messaging.reply import Reply
 
 
 def _identity() -> ChannelIdentity:
@@ -36,7 +35,7 @@ def _channel() -> SimpleNamespace:
 async def test_dispatch_to_customer_sends_plain_text():
     channel = _channel()
 
-    await dispatcher.dispatch_to_customer(channel, _identity(), Reply(text="hello"))
+    await dispatcher.dispatch_to_customer(channel, _identity(), "hello")
 
     channel.send.assert_awaited_once()
     _identity_arg, text = channel.send.await_args.args
@@ -48,7 +47,7 @@ async def test_dispatch_to_party_appends_task_ref_marker():
     channel = _channel()
 
     await dispatcher.dispatch_to_party(
-        channel, _identity(), Reply(text="When can you ship?"), task_key="tk-abc"
+        channel, _identity(), "When can you ship?", task_key="tk-abc"
     )
 
     channel.send.assert_awaited_once()

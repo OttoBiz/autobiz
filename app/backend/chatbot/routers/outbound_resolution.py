@@ -1,16 +1,21 @@
 """Outbound resolution router — fan-out from a completed outbound task.
 
-Called directly from the outbound agent's `after_tool_execute(mark_completed)`
-hook. Reads the ledger row, pushes any `customer_context` through the channel
-handler, and runs the coordinator (under the per-customer lock) when there is
-`system_context` to act on.
+Called from the outbound agent's `after_tool_execute(mark_completed)` hook.
+Translates a resolved ledger row into queued inbox items:
+
+- `customer_context` → enqueued as a `system_event` and central_agent is
+  woken up to phrase and send it (single delivery path — no direct push).
+- `system_context` → runs the coordinator, which can update back-office
+  state and (optionally) surface its own `system_event` to the customer.
+
+Everything that ends up facing the customer goes through the same per-customer
+queue that customer inbound messages go through, so the customer never sees
+the same outcome twice.
 """
 
-from uuid import uuid4
+from datetime import datetime, timezone
 
-from backend.chatbot import inbox
-from backend.chatbot.channels import registry
-from backend.chatbot.channels.handler import handle_resolution
+from backend.chatbot import inbox, orchestrator
 from backend.db import outbound_ledger
 from backend.db.outbound_ledger import OutboundTaskRow
 from backend.logging_config import get_logger
@@ -19,36 +24,48 @@ logger = get_logger(__name__)
 
 
 async def route(task_key: str) -> None:
-    """Fan out from a completed outbound task. Called by the outbound after_tool_execute hook."""
     task = await outbound_ledger.get_by_key(task_key)
     if task is None or task.state not in ("succeeded", "failed"):
         return
 
-    if task.customer_context:
-        channel = await registry.get_for_customer(
-            str(task.business_id), str(task.customer_id)
-        )
-        if channel is not None:
-            await handle_resolution(task, channel)
-        else:
-            logger.warning(
-                "no channel for resolution task=%s biz=%s cust=%s",
-                task_key,
-                task.business_id,
-                task.customer_id,
-            )
-
+    # Run the coordinator first so any `surface_to_customer` events it emits
+    # land in the inbox BEFORE central drains — the customer sees one coherent
+    # turn that covers both the vendor's direct reply and any back-office
+    # follow-ups.
     if task.system_context:
         await _run_coordinator(task)
 
+    if task.customer_context:
+        item = _outbound_reply_item(task)
+        await orchestrator.deliver_system_event(
+            str(task.business_id), str(task.customer_id), item
+        )
+
+
+def _outbound_reply_item(task: OutboundTaskRow) -> dict:
+    return {
+        "type": "system_event",
+        "payload": {
+            "summary": task.customer_context or "",
+            "source": "outbound_reply",
+            "party": task.party,
+            "task_key": task.task_key,
+        },
+        "enqueued_at": datetime.now(timezone.utc).isoformat(),
+    }
+
 
 async def _run_coordinator(task: OutboundTaskRow) -> None:
-    owner = uuid4().hex
+    # Coordinator needs the per-customer lock because it reads/writes shared
+    # state (inbox via surface_to_customer, DB via its back-office tools).
+    # We take the lock here and release it before the customer_context branch
+    # runs — `deliver_system_event` takes the lock fresh for the drain.
+    import uuid
+
+    owner = uuid.uuid4().hex
     if not inbox.acquire_lock(
         str(task.business_id), str(task.customer_id), owner=owner
     ):
-        # Coordinator is reactive — drop on contention; the next central or
-        # coordinator turn will re-read the ledger.
         logger.info("coordinator lock contention; dropping task=%s", task.task_key)
         return
     try:
