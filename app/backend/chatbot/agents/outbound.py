@@ -51,23 +51,35 @@ class OutboundDeps(BaseModel):
 
 
 instructions = """
-You are an outbound agent for {business_name}. You handle exactly ONE issue per conversation.
-This request concerns customer {customer_id}.
+You are reaching out to {party} on behalf of {business_name} about ONE
+specific issue. You are NOT {party} — you are CONTACTING them. This
+ticket concerns customer {customer_id} (do not mention this id to {party}).
 
-RULES:
-- You are talking to {party} (a vendor/logistics partner), NOT the customer.
-- Be professional and direct. State what you need clearly.
-- When you have a definitive outcome, call `mark_completed` with:
-    - `customer_context`: a customer-safe summary of what happened. Required if you need to relay anything to the customer.
-    - `system_context`: internal-only notes — DB updates, follow-ups, vendor-facing details the customer shouldn't see.
-  At least one of the two must be non-empty. A single reply can produce both.
-- Do NOT end the conversation without calling `mark_completed`.
-- If the party declines or cannot help, still call `mark_completed` describing the negative outcome.
+CONVERSATION FLOW
+- The first run is the OPENING message: write a clear, polite question or
+  request DIRECTED AT {party}. Do NOT call mark_completed on this run —
+  you have not heard back yet.
+- Each later run is triggered by {party}'s reply. Read what they said.
+- If their reply is incomplete, ambiguous, or you need more detail to act
+  on the customer's behalf, ASK A FOLLOW-UP — write another message
+  addressed to {party}. A ticket can take several back-and-forths.
+- Only call mark_completed when {party} has given you a definitive answer
+  AND you have everything the customer needs:
+    - customer_context: customer-safe summary (set this whenever there's
+      something to tell the customer).
+    - system_context: internal notes / DB actions the customer shouldn't see.
+  At least one must be non-empty.
+- If {party} clearly declines or cannot help, still call mark_completed
+  with that outcome so the customer can be informed.
 
-RESPONSE FORMAT:
-Reply with output structure only — plain prose to the party. Do not pick a UI surface;
-the dispatcher handles delivery and reply-tracking so the party's reply routes
-back to this ticket.
+VOICE
+- You are {business_name}'s representative. Be professional, concise, and
+  explicit about what you need.
+- Never include UUIDs, internal ids, or system jargon in messages to {party}.
+
+RESPONSE FORMAT
+- Plain prose addressed to {party}. The dispatcher attaches the reference
+  tag for reply tracking — do not add one yourself.
 """
 
 _hooks: Hooks[OutboundDeps] = Hooks()
@@ -239,24 +251,24 @@ def _vendor_identity(customer_identity: ChannelIdentity, party: str) -> ChannelI
     )
 
 
-async def deliver_party_reply(task_key: str, party_text: str) -> None:
+async def deliver_party_reply(task_key: str, party_text: str) -> str | None:
     """Continue an open outbound thread with a new message from the vendor.
 
-    The smoke harness calls this from the Vendor pane; the future Flow
-    webhook will call it from `nfm_reply` payloads keyed by `flow_token =
-    task_key`. Either way the path is the same:
-
-    1. Look up the task; bail if it isn't running (already resolved/cancelled).
-    2. Load prior message_history for this task.
-    3. Re-enter outbound_agent with the vendor's text.
-    4. Persist new messages and forward the agent's reply to the vendor.
-
-    `mark_completed` may fire inside the run; the after-tool hook still
-    routes the resolution as before.
+    Returns:
+        None on success (the agent's reply was dispatched to the party).
+        A short status string when the message can't be delivered (task
+        unknown / already resolved / no transport). Callers — both the
+        smoke TUI and the future Flow webhook — surface this string so
+        the operator isn't left staring at a silent UI.
     """
     task = await outbound_ledger.get_by_key(task_key)
-    if task is None or task.state != "running":
-        return
+    if task is None:
+        return f"task {task_key[:8]} not found"
+    if task.state != "running":
+        return (
+            f"task {task_key[:8]} is {task.state}; the agent already closed "
+            "this ticket and won't process new replies on it"
+        )
 
     deps = OutboundDeps(
         task_key=task.task_key,
@@ -273,10 +285,10 @@ async def deliver_party_reply(task_key: str, party_text: str) -> None:
             party_text, deps=deps, message_history=history
         )
     except OutboundCancelled:
-        return
+        return f"task {task_key[:8]} was cancelled mid-run"
     except Exception as exc:
         await outbound_ledger.mark_failed(task_key, system_context=str(exc))
-        return
+        return f"outbound agent errored on task {task_key[:8]}: {exc}"
 
     await chat_storage.append_outbound_history(task_key, result.new_messages())
 
@@ -287,7 +299,7 @@ async def deliver_party_reply(task_key: str, party_text: str) -> None:
         task.business_id, task.customer_id
     )
     if channel is None or customer_identity is None:
-        return
+        return f"task {task_key[:8]}: no transport for party — reply not delivered"
 
     try:
         await messaging_dispatcher.dispatch_to_party(
@@ -298,3 +310,5 @@ async def deliver_party_reply(task_key: str, party_text: str) -> None:
         )
     except Exception as exc:
         await outbound_ledger.mark_failed(task_key, system_context=str(exc))
+        return f"dispatch failed for task {task_key[:8]}: {exc}"
+    return None

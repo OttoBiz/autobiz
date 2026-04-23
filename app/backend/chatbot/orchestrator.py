@@ -20,7 +20,10 @@ from uuid import uuid4
 from pydantic_ai.usage import UsageLimits
 
 from backend.chatbot import inbox
-from backend.chatbot.agents.central import agent as central_agent
+from backend.chatbot.agents.central import (
+    agent as central_agent,
+    clear_outbound_status_cache,
+)
 from backend.chatbot.agents.deps import AgentDeps
 from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity, InboundMessage
@@ -69,6 +72,9 @@ async def handle_inbound(msg: InboundMessage) -> None:
             outbound=[],
         )
         message_history = await chat_storage.load_history(business_id, customer_id)
+        # Clear the per-turn outbound-status cache so a fresh fetch is
+        # allowed once per turn — see central.get_outbound_status.
+        clear_outbound_status_cache(business_id, customer_id)
         result = await central_agent.run(
             prompt,
             deps=deps,

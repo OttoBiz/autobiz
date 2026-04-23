@@ -172,8 +172,9 @@ PROCESS:
 OUTBOUND:
 - Use the "outbound" subagent when you need vendor or logistics input (stock check, payment confirmation, delivery coordination).
 - ALWAYS set `party_type` on outbound tasks: "vendor" or "logistics".
-- It returns immediately. Tell the customer you're on it ("checking with the vendor, one moment").
-- Call `get_outbound_status` ONCE per turn (only if relevant) to fetch pending/resolved outbound tasks for this customer. Relay any newly-resolved outcomes in your reply.
+- The outbound subagent returns IMMEDIATELY with `status: pending`. The actual {party} conversation runs in the background and may take minutes. Tell the customer you're on it ("checking with the vendor, one moment") and STOP — write your final reply and end the turn.
+- DO NOT call `get_outbound_status` in the same turn you just dispatched an outbound task. The result will not be ready and polling burns the per-turn request budget.
+- Only call `get_outbound_status` if the CUSTOMER asks for an update on a previously-dispatched task (e.g., "any update?", "did the vendor reply?"). Call it AT MOST ONCE per turn. If `resolved` contains items, mention each one ONCE in your reply, then write the reply and stop. Calling it twice in one turn returns nothing the second time and indicates you are looping.
 
 RESPONSE FORMAT:
 Plain prose only. No JSON, no markdown structure, no UI hints — the channel layer owns formatting.
@@ -239,16 +240,41 @@ async def _fetch_outbound_status(
 @agent.tool
 async def get_outbound_status(
     ctx: RunContext[AgentDeps],
-) -> dict[str, list[dict[str, str | None]]]:
+) -> dict[str, Any]:
     """Fetch outbound vendor/logistics tasks for this customer.
 
     Returns:
-    - pending: tasks still in progress (queued or running). Always shown.
-    - resolved: tasks finished since the last call. Calling this tool advances
-      a per-customer cursor, so each resolution is returned at most once —
-      relay anything new in your current reply.
+    - pending: tasks still in progress (queued or running).
+    - resolved: tasks finished since the last call. Cursor advances on the
+      FIRST call this turn, so subsequent calls in the same turn return
+      empty lists — call this tool at most once per turn.
     """
-    return await _fetch_outbound_status(ctx.deps.business_id, ctx.deps.customer_id)
+    deps = ctx.deps
+    cache_key = (str(deps.business_id), str(deps.customer_id))
+    cached = _OUTBOUND_STATUS_TURN_CACHE.get(cache_key)
+    if cached is not None:
+        # Same turn already fetched — return a "no-new-info" payload so the
+        # model can see it's looping and stop. We do NOT re-return the
+        # original resolved list, because that would prompt re-relaying.
+        return {
+            "pending": cached["pending"],
+            "resolved": [],
+            "note": "already_fetched_this_turn — write your reply and stop polling",
+        }
+    payload = await _fetch_outbound_status(deps.business_id, deps.customer_id)
+    _OUTBOUND_STATUS_TURN_CACHE[cache_key] = payload
+    return payload
+
+
+# Per-(business, customer) cache of get_outbound_status payloads cleared at
+# the start of every orchestrator turn (orchestrator calls
+# clear_outbound_status_cache before central_agent.run). Keeps a single turn
+# from re-fetching and re-relaying the same resolution multiple times.
+_OUTBOUND_STATUS_TURN_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
+
+
+def clear_outbound_status_cache(business_id: Any, customer_id: Any) -> None:
+    _OUTBOUND_STATUS_TURN_CACHE.pop((str(business_id), str(customer_id)), None)
 
 
 @agent.instructions
