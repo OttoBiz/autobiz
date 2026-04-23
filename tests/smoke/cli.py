@@ -1,6 +1,6 @@
 """Smoke-harness entry point.
 
-Usage (interactive 3-tab TUI):
+Usage (interactive 4-tab TUI):
 
     .venv/bin/python -m tests.smoke.cli
 
@@ -55,6 +55,21 @@ def _check_provider_key() -> tuple[str, str] | None:
     return None
 
 
+async def _run_migrations_if_needed() -> None:
+    """Apply pending SQL migrations using the project's MigrationRunner."""
+    from backend.db.migrate import MigrationRunner
+
+    dsn = os.getenv("DATABASE_URL")
+    if not dsn:
+        raise RuntimeError("DATABASE_URL not set; cannot run migrations.")
+    runner = MigrationRunner(dsn)
+    await runner.connect()
+    try:
+        await runner.run_migrations()
+    finally:
+        await runner.close()
+
+
 def _print_setup_help(model_name: str) -> None:
     print("✗ No model provider API key found in environment.")
     print()
@@ -94,6 +109,26 @@ async def _async_main(args: argparse.Namespace) -> int:
         print("  Start it with `docker compose up postgres` from app/.")
         return 3
     print("✓ Postgres pool ready")
+
+    # Apply pending migrations so `businesses`, `users`, etc. exist before
+    # the seed step tries to insert into them. No-op if already applied.
+    try:
+        await _run_migrations_if_needed()
+    except Exception as exc:
+        print(f"✗ Migration run failed: {exc}")
+        return 4
+    print("✓ Schema migrations up to date")
+
+    from tests.smoke.seed import ensure_smoke_data
+
+    try:
+        await ensure_smoke_data(args.business_id, args.customer_id)
+    except Exception as exc:
+        print(f"✗ Could not seed business/customer rows: {exc}")
+        return 5
+    print(
+        f"✓ Seeded business={args.business_id[:8]} customer={args.customer_id[:8]}"
+    )
 
     # Register the in-process channel + identity resolver before the
     # orchestrator runs its first turn.

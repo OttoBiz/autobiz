@@ -1,13 +1,15 @@
 # Smoke harness
 
-A 3-tab TUI that lets you drive the **real** agent stack — same orchestrator,
+A 4-tab TUI that lets you drive the **real** agent stack — same orchestrator,
 same `central_agent`, same `outbound_agent`, same Redis/Postgres/ledger — from
 your terminal. The only thing swapped out is the channel: `ConsoleChannel`
 takes the place of WhatsApp, so every `channel.send()` lands in a TUI pane
 instead of going to Meta.
 
-You play the customer in one tab and the vendor/logistics party in another;
-the agent does its real thing in between.
+You play the customer in one tab, the vendor in another, and logistics in a
+third; the agent does its real thing in between. Business and customer rows
+are seeded automatically at startup with deterministic UUIDs so re-running
+the CLI is a no-op against existing data.
 
 ## Requirements
 
@@ -53,17 +55,33 @@ Headless scripted scenario (CI mode — populated in task #9):
 
 ## TUI layout
 
-- `Ctrl+1` — **Customer** tab. Type to send as the customer; bot replies stream in.
-- `Ctrl+2` — **Outbound (Vendor / Logistics)** tab. Every party-bound message
-  the agent dispatches lands here, tagged with a short `task_key`. Type to
-  reply as the currently-selected party.
-  - `/list` lists open tasks.
-  - `/select <task_key prefix>` switches the active conversation.
-  - The most recent dispatch is auto-selected so you can usually just type.
-- `Ctrl+3` — **System** tab. Read-only stream of orchestrator / outbound /
+- `F1` — **Customer** tab. Type to send as the customer; bot replies stream in.
+- `F2` — **Vendor** tab. Every vendor-bound message the agent dispatches
+  lands here, tagged with a short `task_key`. Type to reply as the
+  currently-selected vendor task.
+- `F3` — **Logistics** tab. Same as Vendor but for logistics-bound tasks.
+- `F4` — **System** tab. Read-only stream of orchestrator / outbound /
   resolution-router / sweeper logs.
+- `Ctrl+→` / `Ctrl+←` — cycle through tabs (F-keys are unreliable on some
+  terminal multiplexers; the arrow shortcuts always work).
 
-`Ctrl+C` exits.
+The Vendor and Logistics tabs each support:
+- `/list` — list open tasks for that party.
+- `/select <task_key prefix>` — switch the active conversation.
+- The most recent dispatch is auto-selected so you can usually just type.
+
+`Ctrl+Q` (or `Ctrl+C`) exits. Both bindings are priority bindings, so they
+fire even while an Input has focus.
+
+## Why agent calls don't freeze the UI
+
+Each customer / vendor / logistics submission is dispatched as a background
+asyncio task instead of being awaited inline in the input handler. That keeps
+keystrokes, tab switching, and quit responsive while the LLM round-trip
+runs (often 5–30s). You'll see a `agent thinking…` line in the relevant pane
+the moment you hit enter; the bot's reply lands in the same pane when it's
+ready. The orchestrator's per-customer Redis lock still serializes turns, so
+you can't accidentally interleave two in-flight customer messages.
 
 ## What's wired up
 
@@ -84,7 +102,7 @@ Headless scripted scenario (CI mode — populated in task #9):
                                                               ConsoleChannel.send
                                                                        │
                                                                        ▼
-                                                              [Outbound tab]
+                                                       [Vendor tab or Logistics tab]
                                                                        │
                                                           you type as vendor/logistics
                                                                        │
