@@ -31,8 +31,8 @@ from backend.chatbot.agents import outbound
 from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity, InboundMessage
 
+from backend.chatbot.channels.console import ConsoleChannel
 from tests.smoke import system_log
-from tests.smoke.console_channel import ConsoleChannel
 from tests.smoke.seed import ensure_smoke_data
 
 

@@ -12,7 +12,7 @@ import pytest  # noqa: E402
 from backend.chatbot.channels import registry  # noqa: E402
 from backend.chatbot.channels.base import ChannelIdentity  # noqa: E402
 
-from tests.smoke.console_channel import ConsoleChannel, install  # noqa: E402
+from backend.chatbot.channels.console import ConsoleChannel, install  # noqa: E402
 
 
 def _identity(recipient: str = "+15550001") -> ChannelIdentity:

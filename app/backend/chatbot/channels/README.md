@@ -221,12 +221,23 @@ will be rejected by Meta; route those replies through `send_template`.
 
 ---
 
-### Console (`tests/smoke/console_channel.py`)
+### Console (`console.py`)
 
 In-process channel for the smoke-test harness — **not a production
 transport**. No HTTP surface. Outbound messages land on `asyncio.Queue`s
 that the smoke TUI subscribes to, so end-to-end flows can run without
-external services. Install with `console_channel.install()`.
+external services.
+
+Unlike WhatsApp and HTTP, the Console channel does **not** self-register
+at import time. Call `install()` explicitly from test code:
+
+```python
+from backend.chatbot.channels.console import install
+channel = install()  # registers + wires a stub identity resolver
+```
+
+The smoke CLI (`tests/smoke/cli.py`) and integration tests handle this
+automatically.
 
 ---
 

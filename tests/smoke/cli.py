@@ -144,7 +144,7 @@ async def _async_main(args: argparse.Namespace) -> int:
 
     # Register the in-process channel + identity resolver before the
     # orchestrator runs its first turn.
-    from tests.smoke.console_channel import install as install_console
+    from backend.chatbot.channels.console import install as install_console
 
     install_console()
     print("✓ ConsoleChannel registered")

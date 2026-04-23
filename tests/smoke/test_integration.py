@@ -32,7 +32,7 @@ from backend.chatbot.agents import central as central_mod  # noqa: E402
 from backend.chatbot.agents import outbound as outbound_mod  # noqa: E402
 from backend.chatbot.channels.base import ChannelIdentity, InboundMessage  # noqa: E402
 
-from tests.smoke.console_channel import install as install_console  # noqa: E402
+from backend.chatbot.channels.console import install as install_console  # noqa: E402
 
 
 _BIZ = str(uuid4())

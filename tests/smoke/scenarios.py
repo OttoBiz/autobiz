@@ -25,7 +25,7 @@ from backend.chatbot import orchestrator
 from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity, InboundMessage
 
-from tests.smoke.console_channel import ConsoleChannel
+from backend.chatbot.channels.console import ConsoleChannel
 from tests.smoke.seed import ensure_smoke_data
 
 ScenarioFn = Callable[[], Awaitable[int]]

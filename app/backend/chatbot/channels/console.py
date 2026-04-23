@@ -1,5 +1,11 @@
 """Console channel — in-process Channel impl for the smoke harness.
 
+Lives alongside the production channels for discoverability but does NOT
+self-register at import time — callers must invoke `install()` explicitly
+(the smoke CLI and integration tests do). Production code must not install
+it; it would short-circuit the real identity resolver and catch no webhook
+payloads.
+
 Replaces WhatsApp (or any real transport) so the TUI / scenario runner can
 drive the orchestrator end-to-end without external services. Outbound sends
 land on per-recipient asyncio.Queues; the TUI subscribes to those queues to
