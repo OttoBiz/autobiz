@@ -15,7 +15,7 @@ os.environ.setdefault("REDIS_SERVER_HOST", "localhost")
 os.environ.setdefault("REDIS_SERVER_PORT", "6379")
 os.environ.setdefault("REDIS_SERVER_PASSWORD", "")
 
-from datetime import datetime, timedelta, timezone  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 from unittest.mock import AsyncMock, MagicMock  # noqa: E402
 from uuid import uuid4  # noqa: E402
@@ -88,11 +88,23 @@ def patch_identity(monkeypatch):
 
 @pytest.fixture
 def patch_central(monkeypatch):
+    new_messages = MagicMock(return_value=["msg-a", "msg-b"])
     run = AsyncMock(
-        return_value=SimpleNamespace(output=Reply(text="agent reply"))
+        return_value=SimpleNamespace(
+            output=Reply(text="agent reply"), new_messages=new_messages
+        )
     )
     monkeypatch.setattr(orchestrator.central_agent, "run", run)
     return run
+
+
+@pytest.fixture
+def patch_chat_storage(monkeypatch):
+    load = AsyncMock(return_value=[])
+    append = AsyncMock()
+    monkeypatch.setattr(orchestrator.chat_storage, "load_history", load)
+    monkeypatch.setattr(orchestrator.chat_storage, "append_history", append)
+    return SimpleNamespace(load=load, append=append)
 
 
 @pytest.fixture
@@ -109,13 +121,14 @@ def patch_registry(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_happy_path_runs_central_sends_and_drains_after(
-    patch_inbox, patch_identity, patch_central, patch_registry
+    patch_inbox, patch_identity, patch_central, patch_registry, patch_chat_storage
 ):
     msg = _inbound("hi there")
     # Mirror real Redis: peek returns whatever was just enqueued.
     patch_inbox.peek.return_value = [
         {"type": "user_message", "payload": {"text": "hi there"}}
     ]
+    patch_chat_storage.load.return_value = ["prior-msg"]
 
     await orchestrator.handle_inbound(msg)
 
@@ -125,14 +138,19 @@ async def test_happy_path_runs_central_sends_and_drains_after(
     patch_central.assert_awaited_once()
     prompt_arg = patch_central.await_args.args[0]
     assert "hi there" in prompt_arg
+    # message_history loaded from chat_storage and threaded through.
+    assert patch_central.await_args.kwargs["message_history"] == ["prior-msg"]
     patch_registry.channel.send.assert_awaited_once_with(msg.identity, "agent reply")
     patch_inbox.drain.assert_called_once_with(_BIZ_ID, _CUST_ID)
+    patch_chat_storage.append.assert_awaited_once_with(
+        _BIZ_ID, _CUST_ID, ["msg-a", "msg-b"]
+    )
     patch_inbox.release.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_lock_contention_enqueues_without_running_central(
-    patch_inbox, patch_identity, patch_central, patch_registry
+    patch_inbox, patch_identity, patch_central, patch_registry, patch_chat_storage
 ):
     patch_inbox.acquire.return_value = False
 
@@ -143,13 +161,15 @@ async def test_lock_contention_enqueues_without_running_central(
     patch_registry.channel.send.assert_not_awaited()
     patch_inbox.drain.assert_not_called()
     patch_identity.assert_not_awaited()
+    patch_chat_storage.load.assert_not_awaited()
+    patch_chat_storage.append.assert_not_awaited()
     # Lock was never held by us, so we must not release it.
     patch_inbox.release.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_drain_skipped_when_send_fails(
-    patch_inbox, patch_identity, patch_central, patch_registry
+    patch_inbox, patch_identity, patch_central, patch_registry, patch_chat_storage
 ):
     patch_registry.channel.send.side_effect = RuntimeError("boom")
 
@@ -158,6 +178,9 @@ async def test_drain_skipped_when_send_fails(
 
     patch_central.assert_awaited_once()
     patch_inbox.drain.assert_not_called()
+    # History must NOT be persisted on failure — the failed turn would otherwise
+    # be replayed twice (once now, once when the inbox items get re-processed).
+    patch_chat_storage.append.assert_not_awaited()
     # Lock must always release.
     patch_inbox.release.assert_called_once()
 

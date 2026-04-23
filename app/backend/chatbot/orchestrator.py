@@ -23,7 +23,7 @@ from backend.chatbot.agents.deps import AgentDeps
 from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity, InboundMessage
 from backend.chatbot.messaging import dispatcher as messaging_dispatcher
-from backend.db import channel_identities
+from backend.db import channel_identities, chat_storage
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +60,20 @@ async def handle_inbound(msg: InboundMessage) -> None:
             state={},
             outbound=[],
         )
-        result = await central_agent.run(prompt, deps=deps)
+        message_history = await chat_storage.load_history(business_id, customer_id)
+        result = await central_agent.run(
+            prompt, deps=deps, message_history=message_history
+        )
 
         channel = registry.get(msg.identity.channel)
         await messaging_dispatcher.dispatch_to_customer(
             channel, msg.identity, result.output
+        )
+
+        # Persist only on successful send. If dispatch fails the prior history
+        # remains untouched and the inbox items stay for the next turn.
+        await chat_storage.append_history(
+            business_id, customer_id, result.new_messages()
         )
 
         # Destructive drain only after a successful send. Any exception above
