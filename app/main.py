@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.api.routers import analytics, inventory, supply_chain
+from backend.api.routers.webhooks import http as http_webhook
 from backend.api.routers.webhooks import whatsapp as whatsapp_webhook
 from backend.chatbot.sweeper import sweep_loop
 
@@ -113,6 +114,7 @@ app.include_router(analytics.router, prefix="/api/v1")
 app.include_router(inventory.router, prefix="/api/v1")
 app.include_router(supply_chain.router, prefix="/api/v1")
 app.include_router(whatsapp_webhook.router)
+app.include_router(http_webhook.router)
 
 # Mount static files for uploads
 if os.path.exists("uploads"):
@@ -141,6 +143,8 @@ async def health_check():
             "inventory": "/api/v1/inventory",
             "supply_chain": "/api/v1/supply-chain",
             "whatsapp_webhook": "/webhooks/whatsapp",
+            "http_inbound": "/webhooks/http",
+            "http_stream": "/webhooks/http/stream/{channel_user_id}",
         }
     }
 
