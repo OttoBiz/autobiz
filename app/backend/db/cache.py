@@ -14,7 +14,10 @@ from redis import Redis
 from redis.cluster import RedisCluster
 
 # load_dotenv()
-DEBUG = os.getenv("DEBUG")
+# Accept any common truthy spelling — historically `app/.env` ships with
+# `DEBUG=True` (capital T), but the comparison below was case-sensitive
+# against "true", silently kicking us into the production cluster path.
+DEBUG = (os.getenv("DEBUG") or "").strip().lower() in ("1", "true", "yes")
 REDIS_URL = os.getenv("REDIS_URL")
 
 
@@ -35,17 +38,20 @@ class JSONEncoder(json.JSONEncoder):
 
 class Cache:
     def __init__(self, host, port, password):
-        if DEBUG == "true":
+        # decode_responses=True everywhere — without it get()/lrange() return
+        # bytes, which silently breaks every str-comparison call site
+        # (notably inbox.release_lock). REDIS_URL wins when set so dev and
+        # prod use the same code path.
+        if REDIS_URL:
+            self._client = Redis.from_url(REDIS_URL, decode_responses=True)
+        elif DEBUG:
             self._client = Redis(
                 host=host, port=port, password=password, decode_responses=True
             )
         else:
-            if REDIS_URL:
-                self._client = Redis.from_url(REDIS_URL)
-            else:
-                self._client = RedisCluster(
-                    host=host, port=port, password=password, decode_responses=True
-                )
+            self._client = RedisCluster(
+                host=host, port=port, password=password, decode_responses=True
+            )
 
     def set(self, key: str, val: dict) -> None:
         self._client.set(key, json.dumps(val, cls=JSONEncoder))

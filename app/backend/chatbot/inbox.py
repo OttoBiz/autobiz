@@ -66,6 +66,13 @@ def release_lock(business_id: str, customer_id: str, owner: str) -> bool:
             try:
                 pipe.watch(key)
                 current = pipe.get(key)
+                # The redis client may be configured with decode_responses=True
+                # (returns str) or False (returns bytes). Normalize before
+                # comparing — without this, every release_lock returned False
+                # because b"abc" != "abc", so locks lived until TTL expiry
+                # (60s) and back-to-back customer turns silently dropped.
+                if isinstance(current, bytes):
+                    current = current.decode()
                 if current != owner:
                     pipe.unwatch()
                     return False
