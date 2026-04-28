@@ -116,7 +116,7 @@ def _register_handlers() -> dict[str, SubagentDef]:
             handler=_handle_payment,
         ),
         "logistics": SubagentDef(
-            description="Track orders, get delivery status, collect delivery addresses.",
+            description="Look up the customer's existing orders and their tracking/delivery status from our DB. READ-ONLY — does not contact any external partner.",
             handler=_handle_logistics,
         ),
         # Temporarily disabled — was being called for greetings and looping.
@@ -125,7 +125,7 @@ def _register_handlers() -> dict[str, SubagentDef]:
         #     handler=_handle_customer_relation,
         # ),
         "outbound": SubagentDef(
-            description="Contact vendor or logistics. Returns immediately — runs in background. Use when you need human confirmation or info the system doesn't have.",
+            description="Reach out to a vendor or logistics partner externally (async). Use for anything that needs a human at the other end — stock checks, payment confirmation, dispatch scheduling, pickup coordination, address changes. Returns immediately with status=pending; the reply comes back as a (system) item next turn.",
             handler=_handle_outbound,
         ),
     }
@@ -192,6 +192,13 @@ THE INBOX PROMPT:
 OUTBOUND:
 - Use the "outbound" subagent when you need vendor or logistics input (stock check, payment confirmation, delivery coordination).
 - ALWAYS set `party_type` on outbound tasks: "vendor" or "logistics".
+- The "logistics" subagent and outbound-with-party_type='logistics' are
+  NOT interchangeable. "logistics" only reads our DB (where's order #X,
+  what's its tracking number). If the customer wants the partner to
+  ACT — schedule a pickup, reschedule a delivery, change a drop-off
+  address, confirm dispatch — that's outbound, NOT logistics. Don't
+  send these to the logistics subagent; it has no way to message the
+  partner and will leave the customer waiting.
 - The outbound subagent returns IMMEDIATELY with `status: pending`. The actual conversation with the vendor/logistics partner runs in the background and may take minutes. Tell the customer you're on it ("checking with the vendor, one moment") and STOP — write your final reply and end the turn.
 - You do NOT poll for vendor replies. When the vendor responds the system will wake you up with a new turn whose prompt contains the vendor's outcome as a "(system)" item. Just relay it then.
 - If the customer asks "any update?" while a task is still pending, tell them you're still waiting on the vendor / logistics partner and will share the moment you hear back.
