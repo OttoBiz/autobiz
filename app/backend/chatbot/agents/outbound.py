@@ -10,9 +10,16 @@ plain text; the messaging dispatcher owns delivery and reply-tracking (see
 from __future__ import annotations
 
 import asyncio
+import os
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal
+from typing import Any, Iterator, Literal
 from uuid import UUID, uuid4
+
+# Avoid logfire's "not configured" warning on import paths that don't run
+# `backend.observability.setup()` (notably unit tests). Production entry
+# points (main.py, cli/tui.py) call setup() and override this default.
+os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
 
 from pydantic import BaseModel
 from pydantic_ai import Agent, RunContext, ToolDefinition
@@ -25,6 +32,22 @@ from backend.chatbot.messaging import dispatcher as messaging_dispatcher
 from backend.config import MODEL_NAME
 from backend.db import channel_identities, chat_storage, outbound_ledger
 
+try:
+    import logfire
+
+    _LOGFIRE_AVAILABLE = True
+except ImportError:
+    _LOGFIRE_AVAILABLE = False
+
+
+@contextmanager
+def _maybe_span(name: str, **attrs: Any) -> Iterator[None]:
+    if _LOGFIRE_AVAILABLE:
+        with logfire.span(name, **attrs):
+            yield
+    else:
+        yield
+
 
 class OutboundCancelled(Exception):
     """Raised by the per-turn cancellation guard to abort an in-flight run."""
@@ -35,6 +58,11 @@ class OutboundCancelled(Exception):
 
 
 OUTBOUND_MAX_DEPTH = 3
+
+# Sent to the party once the ticket resolves, so they aren't left wondering
+# whether their reply landed. Canned on purpose — the model's post-resolution
+# wrap-up could repeat customer-only details or go off-script.
+_RESOLUTION_ACK_TEXT = "Thanks — that's everything we needed. We'll take it from here."
 
 
 class OutboundDeps(BaseModel):
@@ -171,6 +199,49 @@ async def mark_completed(
     return {"acknowledged": True}
 
 
+def _vendor_identity(customer_identity: ChannelIdentity, party: str) -> ChannelIdentity:
+    """Re-target a customer identity at the vendor `party` address."""
+    return ChannelIdentity(
+        business_id=customer_identity.business_id,
+        customer_id=customer_identity.customer_id,
+        channel=customer_identity.channel,
+        channel_user_id=party,
+        last_inbound_at=customer_identity.last_inbound_at,
+    )
+
+
+async def _send_to_party(
+    *,
+    task_key: str,
+    business_id: UUID,
+    customer_id: UUID,
+    party: str,
+    text: str,
+) -> str | None:
+    """Resolve transport for this customer and forward `text` to `party`.
+
+    Returns None on success, a status string when transport is missing or
+    dispatch raised.
+    """
+    channel = await registry.get_for_customer(str(business_id), str(customer_id))
+    customer_identity = await channel_identities.get_most_recent_identity(
+        business_id, customer_id
+    )
+    if channel is None or customer_identity is None:
+        return f"task {task_key[:8]}: no transport for party — reply not delivered"
+    try:
+        await messaging_dispatcher.dispatch_to_party(
+            channel,
+            _vendor_identity(customer_identity, party),
+            text,
+            task_key=task_key,
+        )
+    except Exception as exc:
+        await outbound_ledger.mark_failed(task_key, system_context=str(exc))
+        return f"dispatch failed for task {task_key[:8]}: {exc}"
+    return None
+
+
 async def dispatch(
     *,
     business_id: UUID,
@@ -186,15 +257,6 @@ async def dispatch(
     next_depth = parent_depth + 1
     if next_depth > OUTBOUND_MAX_DEPTH:
         raise ValueError(f"max_depth {OUTBOUND_MAX_DEPTH} exceeded")
-
-    # Resolve transport once at dispatch entry so the background agent run
-    # never reaches back into the registry mid-flight. Both can be None
-    # (system-initiated thread with no prior customer identity); _run handles
-    # that by leaving the resolution in the ledger only.
-    channel = await registry.get_for_customer(str(business_id), str(customer_id))
-    customer_identity = await channel_identities.get_most_recent_identity(
-        business_id, customer_id
-    )
 
     task_key = uuid4().hex
     timeout_at = datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)
@@ -220,57 +282,47 @@ async def dispatch(
 
     async def _run() -> None:
         await outbound_ledger.mark_running(task_key)
-        try:
-            result = await outbound_agent.run(dispatch_prompt, deps=deps)
-        except OutboundCancelled:
-            return
-        except Exception as exc:
-            await outbound_ledger.mark_failed(task_key, system_context=str(exc))
-            return
+        with _maybe_span(
+            "outbound.dispatch._run",
+            task_key=task_key,
+            party=party,
+            initiated_by=initiated_by,
+        ):
+            try:
+                result = await outbound_agent.run(dispatch_prompt, deps=deps)
+            except OutboundCancelled:
+                return
+            except Exception as exc:
+                await outbound_ledger.mark_failed(task_key, system_context=str(exc))
+                return
 
-        # Persist the opening exchange so the continuation helper has a real
-        # message_history to thread back into the agent.
-        await chat_storage.append_outbound_history(task_key, result.new_messages())
+            await chat_storage.append_outbound_history(task_key, result.new_messages())
 
-        if channel is None or customer_identity is None:
-            # No transport for this thread; the ledger still carries the
-            # resolution for the central agent to read on the next inbound.
-            return
+            # Opening run shouldn't call mark_completed — but if the model
+            # ignores instructions and resolves on the first turn, the
+            # router has already routed to the customer. Don't echo the
+            # model's wrap-up text to the party.
+            if await outbound_ledger.get_state(task_key) != "running":
+                return
 
-        try:
-            await messaging_dispatcher.dispatch_to_party(
-                channel,
-                _vendor_identity(customer_identity, party),
-                result.output,
+            await _send_to_party(
                 task_key=task_key,
+                business_id=business_id,
+                customer_id=customer_id,
+                party=party,
+                text=result.output,
             )
-        except Exception as exc:
-            await outbound_ledger.mark_failed(task_key, system_context=str(exc))
 
     asyncio.create_task(_run())
     return task_key
-
-
-def _vendor_identity(customer_identity: ChannelIdentity, party: str) -> ChannelIdentity:
-    """Re-target a customer identity at the vendor `party` address.
-
-    `party` is the vendor's channel address — override channel_user_id so
-    the message goes to the vendor, not the customer.
-    """
-    return ChannelIdentity(
-        business_id=customer_identity.business_id,
-        customer_id=customer_identity.customer_id,
-        channel=customer_identity.channel,
-        channel_user_id=party,
-        last_inbound_at=customer_identity.last_inbound_at,
-    )
 
 
 async def deliver_party_reply(task_key: str, party_text: str) -> str | None:
     """Continue an open outbound thread with a new message from the vendor.
 
     Returns:
-        None on success (the agent's reply was dispatched to the party).
+        None on success (the agent's reply was dispatched, OR the agent
+        resolved the ticket so nothing further goes to the party).
         A short status string when the message can't be delivered (task
         unknown / already resolved / no transport). Callers — both the
         smoke TUI and the future Flow webhook — surface this string so
@@ -293,37 +345,48 @@ async def deliver_party_reply(task_key: str, party_text: str) -> str | None:
         initiated_by=task.initiated_by,
         dispatch_prompt=task.dispatch_prompt,
     )
-
     history = await chat_storage.load_outbound_history(task_key)
-    try:
-        result = await outbound_agent.run(
-            party_text, deps=deps, message_history=history
-        )
-    except OutboundCancelled:
-        return f"task {task_key[:8]} was cancelled mid-run"
-    except Exception as exc:
-        await outbound_ledger.mark_failed(task_key, system_context=str(exc))
-        return f"outbound agent errored on task {task_key[:8]}: {exc}"
 
-    await chat_storage.append_outbound_history(task_key, result.new_messages())
+    with _maybe_span(
+        "deliver_party_reply",
+        task_key=task_key,
+        party=task.party,
+        history_len=len(history),
+    ):
+        try:
+            result = await outbound_agent.run(
+                party_text, deps=deps, message_history=history
+            )
+        except OutboundCancelled:
+            return f"task {task_key[:8]} was cancelled mid-run"
+        except Exception as exc:
+            await outbound_ledger.mark_failed(task_key, system_context=str(exc))
+            return f"outbound agent errored on task {task_key[:8]}: {exc}"
 
-    channel = await registry.get_for_customer(
-        str(task.business_id), str(task.customer_id)
-    )
-    customer_identity = await channel_identities.get_most_recent_identity(
-        task.business_id, task.customer_id
-    )
-    if channel is None or customer_identity is None:
-        return f"task {task_key[:8]}: no transport for party — reply not delivered"
+        await chat_storage.append_outbound_history(task_key, result.new_messages())
 
-    try:
-        await messaging_dispatcher.dispatch_to_party(
-            channel,
-            _vendor_identity(customer_identity, task.party),
-            result.output,
+        # If the agent called mark_completed, `_on_mark_completed` already
+        # routed customer_context to the customer side. The model's wrap-up
+        # text isn't sent — instead the party gets a short canned ack so the
+        # thread closes politely. Other terminal states (failed/cancelled)
+        # don't get an ack: the party didn't successfully help, sending
+        # "thanks!" would be odd.
+        post_state = await outbound_ledger.get_state(task_key)
+        if post_state == "succeeded":
+            return await _send_to_party(
+                task_key=task_key,
+                business_id=task.business_id,
+                customer_id=task.customer_id,
+                party=task.party,
+                text=_RESOLUTION_ACK_TEXT,
+            )
+        if post_state != "running":
+            return None
+
+        return await _send_to_party(
             task_key=task_key,
+            business_id=task.business_id,
+            customer_id=task.customer_id,
+            party=task.party,
+            text=result.output,
         )
-    except Exception as exc:
-        await outbound_ledger.mark_failed(task_key, system_context=str(exc))
-        return f"dispatch failed for task {task_key[:8]}: {exc}"
-    return None

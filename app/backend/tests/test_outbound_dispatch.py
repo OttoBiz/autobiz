@@ -388,6 +388,90 @@ async def test_deliver_party_reply_marks_failed_on_agent_exception(
 
 
 @pytest.mark.asyncio
+async def test_deliver_party_reply_sends_ack_when_resolved(
+    patch_ledger, patch_chat_storage, monkeypatch
+):
+    """When mark_completed flips state to 'succeeded', send the canned ack
+    instead of the model's wrap-up text."""
+    from datetime import datetime, timezone
+
+    from backend.chatbot.channels.base import ChannelIdentity
+
+    task = _make_task_row(task_key="tk-ack")
+    patch_ledger.get_by_key = AsyncMock(return_value=task)
+    # The post-run get_state lookup sees the resolved state.
+    patch_ledger.get_state = AsyncMock(return_value="succeeded")
+
+    monkeypatch.setattr(
+        outbound.outbound_agent,
+        "run",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                output="model wrap-up that should NOT be sent",
+                new_messages=lambda: [],
+            )
+        ),
+    )
+
+    fake_channel = SimpleNamespace(send=AsyncMock())
+    fake_identity = ChannelIdentity(
+        business_id=str(task.business_id),
+        customer_id=str(task.customer_id),
+        channel="console",
+        channel_user_id="customer-addr",
+        last_inbound_at=datetime.now(timezone.utc),
+    )
+    monkeypatch.setattr(
+        outbound.registry, "get_for_customer", AsyncMock(return_value=fake_channel)
+    )
+    monkeypatch.setattr(
+        outbound.channel_identities,
+        "get_most_recent_identity",
+        AsyncMock(return_value=fake_identity),
+    )
+
+    dispatch_mock = AsyncMock()
+    monkeypatch.setattr(
+        outbound.messaging_dispatcher, "dispatch_to_party", dispatch_mock
+    )
+
+    result = await outbound.deliver_party_reply("tk-ack", "vendor reply")
+
+    assert result is None
+    dispatch_mock.assert_awaited_once()
+    sent_text = dispatch_mock.await_args.args[2]
+    assert sent_text == outbound._RESOLUTION_ACK_TEXT
+    assert "model wrap-up" not in sent_text
+
+
+@pytest.mark.asyncio
+async def test_deliver_party_reply_silent_on_failed_state(
+    patch_ledger, patch_chat_storage, monkeypatch
+):
+    """A non-succeeded terminal state (failed/cancelled) does NOT ack."""
+    task = _make_task_row(task_key="tk-failed")
+    patch_ledger.get_by_key = AsyncMock(return_value=task)
+    patch_ledger.get_state = AsyncMock(return_value="failed")
+
+    monkeypatch.setattr(
+        outbound.outbound_agent,
+        "run",
+        AsyncMock(
+            return_value=SimpleNamespace(output="x", new_messages=lambda: [])
+        ),
+    )
+    dispatch_mock = AsyncMock()
+    monkeypatch.setattr(
+        outbound.messaging_dispatcher, "dispatch_to_party", dispatch_mock
+    )
+
+    result = await outbound.deliver_party_reply("tk-failed", "vendor reply")
+
+    assert result is None
+    dispatch_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_dispatch_passes_current_depth_to_deps(patch_ledger, monkeypatch):
     captured: dict[str, Any] = {}
 
