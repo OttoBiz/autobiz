@@ -43,7 +43,8 @@ async def get_products(
 
     query = """
         SELECT id, business_id, name, description, price, stock_quantity,
-               sku, category, attributes, is_active, created_at, updated_at
+               sku, category, attributes, is_active, is_negotiable,
+               created_at, updated_at
         FROM products
         WHERE is_active = true
     """
