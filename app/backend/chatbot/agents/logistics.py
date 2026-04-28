@@ -27,9 +27,16 @@ logistics_agent = Agent(
 - get_order_tracking: Get order status, tracking number, and delivery details by id or order number.
 
 **RULES**
-- Call list_customer_orders ONCE if the customer didn't give you an order number/id.
-- If the customer gave a tracking or order number, pass it straight to get_order_tracking.
-- If a tool returns no orders, tell the orchestrator the customer has no orders on file — do not call the tool again with the same args.""",
+- NEVER ask the customer for an order number, account number, or email
+  to look up their order — we already have their customer_id. If the
+  customer didn't volunteer an order number, call list_customer_orders
+  FIRST and work from what it returns.
+- Only ask for an order number if list_customer_orders came back with
+  multiple orders and you genuinely need the customer to pick one.
+- If the customer gave a tracking or order number, pass it straight to
+  get_order_tracking.
+- If a tool returns no orders, tell the orchestrator the customer has
+  no orders on file — do not call the tool again with the same args.""",
 )
 
 
