@@ -18,7 +18,12 @@ router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 @router.get("/whatsapp")
 def whatsapp_verify(request: Request) -> PlainTextResponse:
-    return PlainTextResponse(_whatsapp_bot.verify_webhook(request))
+    body = _whatsapp_bot.verify_webhook(request)
+    # Meta accepts the handshake by echoing `hub.challenge` verbatim. Any
+    # other body means the token/mode didn't match — surface that as 403 so
+    # bad probes don't appear successful in logs and dashboards.
+    status = 200 if body == request.query_params.get("hub.challenge") else 403
+    return PlainTextResponse(body, status_code=status)
 
 
 @router.post("/whatsapp")
