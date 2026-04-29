@@ -3,17 +3,19 @@
 Called from the outbound agent's `after_tool_execute(mark_completed)` hook.
 Translates a resolved ledger row into queued inbox items:
 
-- `customer_context` → enqueued as a `system_event` and central_agent is
-  woken up to phrase and send it (single delivery path — no direct push).
+- `customer_context` → enqueued as a `system_event`.
 - `system_context` → runs the coordinator, which can update back-office
-  state and (optionally) surface its own `system_event` to the customer.
+  state and (optionally) surface its own `system_event` to the customer via
+  its `surface_to_customer` tool.
 
-Everything that ends up facing the customer goes through the same per-customer
-queue that customer inbound messages go through, so the customer never sees
-the same outcome twice.
+Once everything is queued we call `orchestrator.wake_central` once so central
+drains the combined queue in a single turn — the customer sees one coherent
+message that covers both the vendor's direct answer and any coordinator
+follow-ups. No direct `channel.send` push, no ledger poll from central.
 """
 
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from backend.chatbot import inbox, orchestrator
 from backend.db import outbound_ledger
@@ -28,18 +30,24 @@ async def route(task_key: str) -> None:
     if task is None or task.state not in ("succeeded", "failed"):
         return
 
-    # Run the coordinator first so any `surface_to_customer` events it emits
-    # land in the inbox BEFORE central drains — the customer sees one coherent
-    # turn that covers both the vendor's direct reply and any back-office
-    # follow-ups.
+    biz = str(task.business_id)
+    cust = str(task.customer_id)
+
+    # Coordinator runs first under its own lock. It may enqueue customer-facing
+    # items via `surface_to_customer` — those land in the same inbox as the
+    # outbound reply below, so central sees the full picture on one turn.
     if task.system_context:
         await _run_coordinator(task)
 
     if task.customer_context:
-        item = _outbound_reply_item(task)
-        await orchestrator.deliver_system_event(
-            str(task.business_id), str(task.customer_id), item
-        )
+        inbox.enqueue(biz, cust, _outbound_reply_item(task))
+
+    # Drain the queue whenever this route could have enqueued anything —
+    # either the outbound reply itself, or a coordinator-surfaced summary.
+    # `wake_central` no-ops on an empty queue, so it's safe to call even if
+    # the coordinator decided not to surface anything.
+    if task.customer_context or task.system_context:
+        await orchestrator.wake_central(biz, cust)
 
 
 def _outbound_reply_item(task: OutboundTaskRow) -> dict:
@@ -58,11 +66,9 @@ def _outbound_reply_item(task: OutboundTaskRow) -> dict:
 async def _run_coordinator(task: OutboundTaskRow) -> None:
     # Coordinator needs the per-customer lock because it reads/writes shared
     # state (inbox via surface_to_customer, DB via its back-office tools).
-    # We take the lock here and release it before the customer_context branch
-    # runs — `deliver_system_event` takes the lock fresh for the drain.
-    import uuid
-
-    owner = uuid.uuid4().hex
+    # We release it before `route` calls wake_central — wake_central takes the
+    # lock fresh for the drain.
+    owner = uuid4().hex
     if not inbox.acquire_lock(
         str(task.business_id), str(task.customer_id), owner=owner
     ):
@@ -93,8 +99,19 @@ async def _run_coordinator(task: OutboundTaskRow) -> None:
 
 
 def _build_coordinator_prompt(task: OutboundTaskRow) -> str:
-    return (
-        f"An outbound task to {task.party} just completed.\n"
-        f"system_context: {task.system_context}\n"
-        f"Use your tools to make any back-office updates and decide whether to surface anything to the customer."
+    # Include customer_context so the coordinator knows what the customer is
+    # already about to hear — it must NOT call surface_to_customer with a
+    # near-duplicate of customer_context. Only surface when there is something
+    # the customer_context does not already cover.
+    parts = [f"An outbound task to {task.party} just completed."]
+    if task.customer_context:
+        parts.append(
+            f"customer_context (already queued for the customer): {task.customer_context}"
+        )
+    parts.append(f"system_context (for you to act on): {task.system_context}")
+    parts.append(
+        "Make any back-office updates you need. Only call surface_to_customer "
+        "if there is something the customer still needs to know BEYOND what's "
+        "already in customer_context — otherwise skip it to avoid duplicates."
     )
+    return "\n".join(parts)

@@ -74,9 +74,8 @@ async def deliver_system_event(
 ) -> None:
     """Enqueue a system_event and wake central_agent to drain.
 
-    Called by the outbound resolution router (vendor/logistics reply) and,
-    indirectly, by the coordinator's `surface_to_customer` tool. Contract
-    matches `handle_inbound`: acquire lock, enqueue, drain, release.
+    Called by the outbound resolution router (vendor/logistics reply).
+    Contract matches `handle_inbound`: acquire lock, enqueue, drain, release.
 
     On lock contention the item is still enqueued. If an in-flight central
     turn has already passed its `peek()` the item will sit until the next
@@ -95,6 +94,33 @@ async def deliver_system_event(
         return
     try:
         inbox.enqueue(business_id, customer_id, item)
+        await _drain_and_reply(business_id, customer_id, identity_hint=None)
+    finally:
+        inbox.release_lock(business_id, customer_id, owner=owner)
+
+
+async def wake_central(business_id: str, customer_id: str) -> None:
+    """Drain whatever is already queued for this customer.
+
+    Used when items have been enqueued out-of-band (e.g., coordinator's
+    `surface_to_customer` tool enqueued while holding the inbox lock under a
+    different `owner`, or `outbound_resolution.route` enqueued an outbound
+    reply item directly). Acquires the lock, peeks the queue, runs central
+    if there's anything to drain, releases.
+
+    Safe to call with an empty queue — `_drain_and_reply` short-circuits.
+    Lock contention is not an error: the concurrent holder will drain on its
+    own `peek()`, so we just return.
+    """
+    owner = uuid4().hex
+    if not inbox.acquire_lock(business_id, customer_id, owner=owner):
+        logger.info(
+            "wake_central: lock contention; concurrent holder will drain biz=%s cust=%s",
+            business_id,
+            customer_id,
+        )
+        return
+    try:
         await _drain_and_reply(business_id, customer_id, identity_hint=None)
     finally:
         inbox.release_lock(business_id, customer_id, owner=owner)
