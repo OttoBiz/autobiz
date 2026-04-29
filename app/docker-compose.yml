@@ -19,6 +19,8 @@ services:
       # Override only values that differ inside the container (service hostnames vs localhost)
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-ottobiz}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redispassword}@redis:6379/0
+      # Keep logs off the bind-mounted /app so the non-root container user can write them.
+      - LOG_FILE=/tmp/app.log
       # MODEL_NAME, MODEL_API_KEY, OPENAI_API_KEY, DEBUG — read from .env via env_file above
     volumes:
       - ./:/app
