@@ -35,6 +35,18 @@ from backend.chatbot.channels.console import ConsoleChannel
 from cli import system_log
 from cli.seed import ensure_smoke_data
 
+# Disable logfire's console output — the TUI's RichLog occupies the terminal,
+# so structured span output would clobber the layout. Stdlib `logger.info`
+# calls still reach the System pane via cli/system_log.py.
+import os as _os
+_os.environ.setdefault("LOGFIRE_CONSOLE", "0")
+from backend.observability import setup as setup_observability  # noqa: E402
+
+# Wire pydantic_ai tracing before any agent module pulls Agent objects up,
+# so every run executed under the smoke TUI ships spans to Logfire (cloud,
+# if LOGFIRE_TOKEN is set; otherwise spans are dropped after processing).
+setup_observability()
+
 
 CUSTOMER_TAB = "customer"
 VENDOR_TAB = "vendor"

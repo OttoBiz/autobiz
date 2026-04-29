@@ -15,8 +15,10 @@ from backend.api.routers import analytics, inventory, supply_chain
 from backend.api.routers.webhooks import http as http_webhook
 from backend.api.routers.webhooks import whatsapp as whatsapp_webhook
 from backend.chatbot.sweeper import sweep_loop
+from backend.observability import setup as setup_observability
 
 load_dotenv()
+setup_observability()
 
 # Import database connection for lifecycle management
 try:

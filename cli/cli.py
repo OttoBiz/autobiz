@@ -91,6 +91,12 @@ async def _async_main(args: argparse.Namespace) -> int:
     if args.model:
         os.environ["MODEL_NAME"] = args.model
 
+    # Wire logfire instrumentation before any agent module is imported so
+    # every agent run is traced. Console output is on for headless runs;
+    # the TUI overrides LOGFIRE_CONSOLE=0 to avoid clobbering its layout.
+    from backend.observability import setup as setup_observability
+    setup_observability()
+
     from backend.config import MODEL_NAME
 
     provider = _check_provider_key()
