@@ -82,8 +82,10 @@ class Cache:
         self._client.rpush(key, json.dumps(value, cls=JSONEncoder))
 
     def pop_all_from_list(self, key: str) -> list:
-        items = self._client.lrange(key, 0, -1)
-        self._client.delete(key)
+        pipe = self._client.pipeline()
+        pipe.lrange(key, 0, -1)
+        pipe.delete(key)
+        items, _ = pipe.execute()
         return [json.loads(item) for item in items]
 
     def flush_db(self):
