@@ -41,21 +41,23 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-ottobiz}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redispassword}@redis:6379/0
       - LOG_FILE=/tmp/app.log
-      # Pass-throughs from the Dokploy Environment tab. Bare names mean
-      # "use the value from the host shell" — Dokploy injects them into
-      # the compose process, so they reach the container as-is.
-      - MODEL_NAME
-      - MODEL_API_KEY
-      - OPENAI_API_KEY
-      - LOGFIRE_TOKEN
-      - DEBUG
+      # Pass-throughs from the Dokploy Environment tab. Use explicit
+      # ${VAR} interpolation rather than bare names: Dokploy writes
+      # env vars to a .env file used for compose interpolation, but
+      # does not export them to the shell, so bare-name pass-throughs
+      # come up empty in the container.
+      - MODEL_NAME=${MODEL_NAME:-}
+      - MODEL_API_KEY=${MODEL_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - LOGFIRE_TOKEN=${LOGFIRE_TOKEN:-}
+      - DEBUG=${DEBUG:-}
       # WhatsApp Cloud API credentials. VERIFY_TOKEN is the shared
       # secret for the GET /webhooks/whatsapp handshake; APP_SECRET is
       # used to validate signatures on inbound POSTs; PAGE_ACCESS_TOKEN
       # is the long-lived token for sending messages out.
-      - VERIFY_TOKEN
-      - APP_SECRET
-      - PAGE_ACCESS_TOKEN
+      - VERIFY_TOKEN=${VERIFY_TOKEN:-}
+      - APP_SECRET=${APP_SECRET:-}
+      - PAGE_ACCESS_TOKEN=${PAGE_ACCESS_TOKEN:-}
     networks:
       - default
       - dokploy-network
