@@ -49,17 +49,23 @@ services:
       - OPENAI_API_KEY
       - LOGFIRE_TOKEN
       - DEBUG
+      # WhatsApp Cloud API credentials. VERIFY_TOKEN is the shared
+      # secret for the GET /webhooks/whatsapp handshake; APP_SECRET is
+      # used to validate signatures on inbound POSTs; PAGE_ACCESS_TOKEN
+      # is the long-lived token for sending messages out.
+      - VERIFY_TOKEN
+      - APP_SECRET
+      - PAGE_ACCESS_TOKEN
     networks:
       - default
       - dokploy-network
     command: uvicorn main:app --host 0.0.0.0 --port 8000
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=dokploy-network
-      - traefik.http.routers.ottobiz.rule=Host(`${APP_DOMAIN}`)
-      - traefik.http.routers.ottobiz.entrypoints=websecure
-      - traefik.http.routers.ottobiz.tls.certResolver=letsencrypt
-      - traefik.http.services.ottobiz.loadbalancer.server.port=8000
+    # Ingress (host, port, TLS) is configured in the Dokploy "Domains"
+    # tab on this compose service — Dokploy generates the right Traefik
+    # configuration for its swarm-mode setup. Don't add traefik.* labels
+    # here; on a swarm-provider Traefik they're picked up inconsistently
+    # for non-swarm compose containers and conflict with Dokploy's own
+    # config.
 
   postgres:
     image: postgres:15-alpine
