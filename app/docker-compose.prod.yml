@@ -10,11 +10,16 @@
 #     TLS via Let's Encrypt.
 #   - No bind-mount and no --reload — the image is the source of truth.
 #
-# Required env vars (set in the Dokploy "Environment" tab, not in .env):
+# Required env vars (set in the Dokploy "Environment" tab — this file
+# does NOT load a .env, so Dokploy is the only source of secrets):
 #   APP_DOMAIN          e.g. api.yourdomain.com
 #   POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
 #   REDIS_PASSWORD
-#   MODEL_API_KEY, OPENAI_API_KEY, LOGFIRE_TOKEN, ...
+#   MODEL_API_KEY, OPENAI_API_KEY, LOGFIRE_TOKEN, MODEL_NAME, DEBUG
+#
+# DATABASE_URL and REDIS_URL are intentionally constructed below from
+# the parts above, so a stray `localhost` in any .env can never override
+# the in-container service hostnames `postgres` / `redis`.
 
 services:
   backend:
@@ -30,12 +35,20 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    env_file:
-      - .env
     environment:
+      # Built from POSTGRES_*/REDIS_PASSWORD set in Dokploy. Service names
+      # `postgres` and `redis` resolve over the compose default network.
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-ottobiz}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-redispassword}@redis:6379/0
       - LOG_FILE=/tmp/app.log
+      # Pass-throughs from the Dokploy Environment tab. Bare names mean
+      # "use the value from the host shell" — Dokploy injects them into
+      # the compose process, so they reach the container as-is.
+      - MODEL_NAME
+      - MODEL_API_KEY
+      - OPENAI_API_KEY
+      - LOGFIRE_TOKEN
+      - DEBUG
     networks:
       - default
       - dokploy-network
