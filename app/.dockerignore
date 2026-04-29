@@ -1,0 +1,49 @@
+.git
+.gitignore
+.github
+.dockerignore
+dockerfile
+docker-compose*.yml
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv
+venv
+env
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+.tox
+
+# Secrets & local config
+.env
+.env.*
+!.env.example
+
+# Logs and runtime artifacts
+*.log
+app.log
+test_results.json
+uploads
+states
+
+# Node / frontend (frontend has its own image)
+node_modules
+frontend/node_modules
+frontend/.next
+frontend/dist
+frontend/build
+
+# Editor / OS
+.vscode
+.idea
+.DS_Store
+*.swp
+*.swo
