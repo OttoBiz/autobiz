@@ -188,7 +188,15 @@ async def dispatch_outbound(
 async def surface_to_customer(
     ctx: RunContext[CoordinatorDeps], summary: str
 ) -> dict[str, Any]:
-    """Push a system_event into the customer inbox for central_agent to phrase."""
+    """Push a system_event into the customer inbox for central_agent to phrase.
+
+    Only call this when there is something the customer needs to know that is
+    NOT already in the triggering task's `customer_context` — that field is
+    queued separately for the customer, and duplicating it here would produce
+    the same message twice. Use this for back-office-triggered notices the
+    customer doesn't otherwise learn about (e.g., "we switched to a backup
+    supplier", "we topped up stock and your order is now ready").
+    """
     item = {
         "type": "system_event",
         "payload": {
