@@ -50,11 +50,14 @@ class FakeChannel(Channel):
 
 @pytest.fixture(autouse=True)
 def _reset_registry():
+    saved_registry = dict(registry._REGISTRY)
+    saved_resolver = registry._identity_resolver
     registry._REGISTRY.clear()
     registry._identity_resolver = None
     yield
     registry._REGISTRY.clear()
-    registry._identity_resolver = None
+    registry._REGISTRY.update(saved_registry)
+    registry._identity_resolver = saved_resolver
 
 
 def test_register_and_get():
