@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 
 from backend.db.connection import get_db
+from backend.db.seed_whatsapp import seed_whatsapp_business_from_env
 
 # Hardcoded UUIDs matching frontend/app/page.tsx
 FRONTEND_USER_IDS = {
@@ -298,6 +299,10 @@ async def populate_db_on_startup() -> None:
         await _load_users(pool)
         await _load_businesses(pool)
         await _load_products(pool)
+        # Bind a tenant row to the deployed WhatsApp number when the
+        # required env vars are present; no-op otherwise. Runs after the
+        # frontend fixtures so this row coexists with the dummy ones.
+        await seed_whatsapp_business_from_env(pool)
         logging.info("Database populated successfully")
     except Exception as e:
         logging.error(f"populate_db_on_startup failed: {e}")
