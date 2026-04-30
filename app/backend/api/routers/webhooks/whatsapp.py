@@ -1,17 +1,29 @@
-"""WhatsApp webhook — parses inbound payloads and hands them to the orchestrator.
+"""WhatsApp webhook — verifies signature, parses inbound, hands to orchestrator.
 
-Mirrors the verification handshake from `backend/whatsapp/routers.py` so this
-router can replace it. Importing `chatbot.channels.whatsapp` registers the
-channel as a side effect.
+GET handles Meta's verification handshake. POST verifies the X-Hub-Signature-256
+header against the raw body, parses the payload via the registered channel,
+swaps WA-native IDs for internal UUIDs (`whatsapp_resolver.resolve_inbound`),
+then dispatches to the orchestrator.
+
+Importing `chatbot.channels.whatsapp` registers the channel as a side effect.
 """
 
-from fastapi import APIRouter, Request
+import json
+import logging
+
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
 import backend.chatbot.channels.whatsapp  # noqa: F401  triggers channel registration
 from backend.chatbot import orchestrator
 from backend.chatbot.channels import registry
 from backend.chatbot.channels.whatsapp import _whatsapp_bot
+from backend.chatbot.channels.whatsapp_resolver import (
+    UnknownWhatsAppBusiness,
+    resolve_inbound,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
@@ -28,8 +40,28 @@ def whatsapp_verify(request: Request) -> PlainTextResponse:
 
 @router.post("/whatsapp")
 async def whatsapp_webhook(request: Request) -> dict:
-    payload = await request.json()
+    raw_body = await request.body()
+    signature = request.headers.get("x-hub-signature-256") or request.headers.get(
+        "x-hub-signature", ""
+    )
+    if not _whatsapp_bot.verify_signature(raw_body, signature):
+        raise HTTPException(status_code=403, detail="invalid signature")
+
+    try:
+        payload = json.loads(raw_body)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid json")
+
     channel = registry.get("whatsapp")
     msg = channel.parse_inbound(payload)
+    # `parse_inbound` returns an identity carrying WA-native IDs; resolve
+    # them to internal UUIDs before the orchestrator touches the DB.
+    try:
+        msg = await resolve_inbound(msg)
+    except UnknownWhatsAppBusiness as exc:
+        logger.warning("dropping inbound for unknown business: %s", exc)
+        # 200 so Meta stops retrying — we don't own this number.
+        return {"ok": True, "ignored": "unknown_business"}
+
     await orchestrator.handle_inbound(msg)
     return {"ok": True}

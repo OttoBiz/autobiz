@@ -34,10 +34,11 @@ def _reload_whatsapp_channel():
 @pytest.fixture
 def identity() -> ChannelIdentity:
     return ChannelIdentity(
-        business_id="PHONE_NUMBER_ID_123",
-        customer_id="2348012345678",
+        business_id="00000000-0000-0000-0000-000000000001",
+        customer_id="00000000-0000-0000-0000-000000000002",
         channel="whatsapp",
         channel_user_id="2348012345678",
+        channel_business_id="PHONE_NUMBER_ID_123",
         last_inbound_at=None,
     )
 

@@ -139,6 +139,7 @@ def test_parse_inbound_text(webhook_payload: dict) -> None:
     assert msg.identity.business_id == "PHONE_NUMBER_ID_123"
     assert msg.identity.customer_id == "2348012345678"
     assert msg.identity.channel_user_id == "2348012345678"
+    assert msg.identity.channel_business_id == "PHONE_NUMBER_ID_123"
 
 
 def test_parse_inbound_image_attachment(image_webhook_payload: dict) -> None:
@@ -166,10 +167,11 @@ async def test_send_delegates_to_whatsapp_bot() -> None:
     module = _reload_whatsapp_channel()
     channel = module.WhatsappChannel()
     identity = ChannelIdentity(
-        business_id="PHONE_NUMBER_ID_123",
-        customer_id="2348012345678",
+        business_id="00000000-0000-0000-0000-000000000001",
+        customer_id="00000000-0000-0000-0000-000000000002",
         channel="whatsapp",
         channel_user_id="2348012345678",
+        channel_business_id="PHONE_NUMBER_ID_123",
         last_inbound_at=None,
     )
 
@@ -187,10 +189,11 @@ async def test_send_template_posts_template_payload() -> None:
     module = _reload_whatsapp_channel()
     channel = module.WhatsappChannel()
     identity = ChannelIdentity(
-        business_id="PHONE_NUMBER_ID_123",
-        customer_id="2348012345678",
+        business_id="00000000-0000-0000-0000-000000000001",
+        customer_id="00000000-0000-0000-0000-000000000002",
         channel="whatsapp",
         channel_user_id="2348012345678",
+        channel_business_id="PHONE_NUMBER_ID_123",
         last_inbound_at=None,
     )
 

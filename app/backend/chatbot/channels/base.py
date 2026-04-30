@@ -17,6 +17,11 @@ class ChannelIdentity(BaseModel):
     channel: str
     channel_user_id: str
     last_inbound_at: datetime | None
+    # Channel-native sender ID for the business (symmetric to
+    # `channel_user_id` on the customer side). For WhatsApp this holds the
+    # Meta `phone_number_id`; the channel adapter uses it to build the
+    # outbound API URL. None for channels that don't need it (e.g. console).
+    channel_business_id: str | None = None
 
 
 class MediaAttachment(BaseModel):

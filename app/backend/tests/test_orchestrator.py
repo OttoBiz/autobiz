@@ -215,8 +215,14 @@ def test_whatsapp_webhook_invokes_orchestrator(monkeypatch):
 
     fake_msg = _inbound("from webhook")
     fake_channel = SimpleNamespace(parse_inbound=MagicMock(return_value=fake_msg))
+
+    async def fake_resolve_inbound(msg: InboundMessage) -> InboundMessage:
+        return msg
+
     monkeypatch.setattr(whatsapp_webhook.orchestrator, "handle_inbound", fake_handle_inbound)
     monkeypatch.setattr(whatsapp_webhook.registry, "get", lambda name: fake_channel)
+    monkeypatch.setattr(whatsapp_webhook, "resolve_inbound", fake_resolve_inbound)
+    # Bypass HMAC check; APP_SECRET unset in tests so verify_signature returns True.
 
     app = FastAPI()
     app.include_router(whatsapp_webhook.router)

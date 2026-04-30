@@ -196,6 +196,13 @@ class WhatsappBot:
 _whatsapp_bot = WhatsappBot()
 
 
+def _wa_sender(identity: "ChannelIdentity") -> str:
+    """The Meta `phone_number_id` to use as sender. Prefer the channel-native
+    field, fall back to `business_id` for compatibility with identities
+    constructed before the split."""
+    return identity.channel_business_id or identity.business_id
+
+
 def _post_message(phone_number_id: str, payload: dict[str, Any]) -> dict:
     """Sync POST to the Cloud API messages endpoint. Returns parsed JSON."""
     headers = {
@@ -218,12 +225,21 @@ class WhatsappChannel(Channel):
     name: ClassVar[str] = "whatsapp"
 
     def parse_inbound(self, raw: dict) -> InboundMessage:
+        """Parse a Meta payload into an InboundMessage.
+
+        The returned identity carries WhatsApp-native IDs in
+        `channel_business_id` (the Meta `phone_number_id`) and
+        `channel_user_id` (the customer's `wa_id`). `business_id` and
+        `customer_id` are placeholders here — the webhook route runs
+        `whatsapp_resolver.resolve_identity` to swap in the matching
+        internal UUIDs before handing off to the orchestrator.
+        """
         value = _extract_value(raw)
         metadata = value["metadata"]
         message = value["messages"][0]
 
-        business_id = metadata["phone_number_id"]
-        customer_id = message["from"]
+        phone_number_id = metadata["phone_number_id"]
+        wa_id = message["from"]
         text = message.get("text", {}).get("body") if message.get("text") else None
 
         interactive_text, interactive = _extract_interactive(message)
@@ -231,10 +247,11 @@ class WhatsappChannel(Channel):
             text = interactive_text
 
         identity = ChannelIdentity(
-            business_id=business_id,
-            customer_id=customer_id,
+            business_id=phone_number_id,
+            customer_id=wa_id,
             channel=self.name,
-            channel_user_id=customer_id,
+            channel_user_id=wa_id,
+            channel_business_id=phone_number_id,
             last_inbound_at=datetime.now(timezone.utc),
         )
         return InboundMessage(
@@ -259,7 +276,7 @@ class WhatsappChannel(Channel):
         # has has_window=False so the smoke TUI is unaffected.
         await asyncio.to_thread(
             _whatsapp_bot.send_message,
-            identity.business_id,
+            identity.channel_business_id or identity.business_id,
             identity.channel_user_id,
             text,
         )
@@ -284,24 +301,24 @@ class WhatsappChannel(Channel):
                 },
             }
         payload["to"] = identity.channel_user_id
-        return await asyncio.to_thread(_post_message, identity.business_id, payload)
+        return await asyncio.to_thread(_post_message, _wa_sender(identity), payload)
 
     async def send_buttons(
         self, identity: ChannelIdentity, msg: ButtonMessage
     ) -> dict:
         payload = msg.to_whatsapp_payload()
         payload["to"] = identity.channel_user_id
-        return await asyncio.to_thread(_post_message, identity.business_id, payload)
+        return await asyncio.to_thread(_post_message, _wa_sender(identity), payload)
 
     async def send_list(self, identity: ChannelIdentity, msg: ListMessage) -> dict:
         payload = msg.to_whatsapp_payload()
         payload["to"] = identity.channel_user_id
-        return await asyncio.to_thread(_post_message, identity.business_id, payload)
+        return await asyncio.to_thread(_post_message, _wa_sender(identity), payload)
 
     async def send_flow(self, identity: ChannelIdentity, flow: Flow) -> dict:
         payload = flow.to_whatsapp_payload()
         payload["to"] = identity.channel_user_id
-        return await asyncio.to_thread(_post_message, identity.business_id, payload)
+        return await asyncio.to_thread(_post_message, _wa_sender(identity), payload)
 
     def window_policy(self) -> WindowPolicy:
         return WindowPolicy(
