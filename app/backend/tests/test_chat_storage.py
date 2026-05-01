@@ -84,7 +84,7 @@ async def test_append_then_load_round_trips_messages(fake_redis):
     assert isinstance(loaded[1], ModelResponse)
     assert loaded[1].parts[0].content == "hello"
     # TTL set on write.
-    assert fake_redis.ttls[chat_storage._key(biz, cust)] == chat_storage.HISTORY_TTL_SECONDS
+    assert fake_redis.ttls[chat_storage._customer_key(biz, cust)] == chat_storage.HISTORY_TTL_SECONDS
 
 
 @pytest.mark.asyncio
@@ -130,7 +130,7 @@ async def test_clear_removes_history(fake_redis):
 @pytest.mark.asyncio
 async def test_load_recovers_from_corrupt_payload(fake_redis):
     biz, cust = uuid4(), uuid4()
-    fake_redis.store[chat_storage._key(biz, cust)] = "{not valid json"
+    fake_redis.store[chat_storage._customer_key(biz, cust)] = "{not valid json"
 
     # Should not raise — corrupt history degrades to empty.
     assert await chat_storage.load_history(biz, cust) == []
