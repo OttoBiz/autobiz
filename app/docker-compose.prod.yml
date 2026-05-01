@@ -58,6 +58,14 @@ services:
       - VERIFY_TOKEN=${VERIFY_TOKEN:-}
       - APP_SECRET=${APP_SECRET:-}
       - PAGE_ACCESS_TOKEN=${PAGE_ACCESS_TOKEN:-}
+      # Auto-seeder for the WhatsApp business row. Without
+      # WHATSAPP_PHONE_NUMBER_ID the resolver can't map inbound
+      # webhooks to a tenant and drops them as "unknown_business".
+      - WHATSAPP_PHONE_NUMBER_ID=${WHATSAPP_PHONE_NUMBER_ID:-}
+      - SEED_BUSINESS_NAME=${SEED_BUSINESS_NAME:-}
+      - SEED_BUSINESS_PHONE=${SEED_BUSINESS_PHONE:-}
+      - SEED_BUSINESS_ID=${SEED_BUSINESS_ID:-}
+      - SEED_PRODUCTS_CSV=${SEED_PRODUCTS_CSV:-}
     networks:
       - default
       - dokploy-network
