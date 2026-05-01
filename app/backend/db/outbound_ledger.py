@@ -17,7 +17,9 @@ class OutboundTaskRow(BaseModel):
     task_key: str
     business_id: UUID
     customer_id: UUID
-    party: str
+    contact_id: UUID | None       # SET NULL on contact deletion preserves history rows
+    contact_name: str             # snapshot at dispatch time
+    contact_role: str             # snapshot at dispatch time
     initiated_by: Literal["customer", "system"]
     dispatch_prompt: str
     state: Literal[
@@ -37,8 +39,9 @@ class OutboundTaskRow(BaseModel):
 
 
 _COLUMNS = (
-    "task_key, business_id, customer_id, party, initiated_by, dispatch_prompt, "
-    "state, customer_context, system_context, dispatched_at, resolved_at, timeout_at"
+    "task_key, business_id, customer_id, contact_id, contact_name, contact_role, "
+    "initiated_by, dispatch_prompt, state, customer_context, system_context, "
+    "dispatched_at, resolved_at, timeout_at"
 )
 
 
@@ -46,18 +49,21 @@ async def insert_task(
     task_key: str,
     business_id: UUID,
     customer_id: UUID,
-    party: str,
     initiated_by: str,
     dispatch_prompt: str,
     timeout_at: datetime,
+    *,
+    contact_id: UUID | None,
+    contact_name: str,
+    contact_role: str,
 ) -> None:
     pool = await get_db()
     query = """
         INSERT INTO outbound_tasks (
-            task_key, business_id, customer_id, party,
+            task_key, business_id, customer_id, contact_id, contact_name, contact_role,
             initiated_by, dispatch_prompt, timeout_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     """
     async with pool.acquire() as conn:
         await conn.execute(
@@ -65,7 +71,9 @@ async def insert_task(
             task_key,
             business_id,
             customer_id,
-            party,
+            contact_id,
+            contact_name,
+            contact_role,
             initiated_by,
             dispatch_prompt,
             timeout_at,
@@ -142,6 +150,31 @@ async def get_by_key(task_key: str) -> OutboundTaskRow | None:
     query = f"SELECT {_COLUMNS} FROM outbound_tasks WHERE task_key = $1"
     async with pool.acquire() as conn:
         row = await conn.fetchrow(query, task_key)
+    return OutboundTaskRow(**dict(row)) if row else None
+
+
+async def find_open_task_by_contact(
+    business_id: UUID,
+    contact_id: UUID,
+) -> OutboundTaskRow | None:
+    """Most recently dispatched `running` task for this contact, or None.
+
+    Tenant-scoped (business_id) for defense-in-depth — contact_id is
+    globally unique so the join is 1:1, but scoping prevents a stale or
+    forged contact_id leaking another tenant's task.
+    """
+    pool = await get_db()
+    query = f"""
+        SELECT {_COLUMNS}
+        FROM outbound_tasks
+        WHERE business_id = $1
+          AND contact_id  = $2
+          AND state       = 'running'
+        ORDER BY dispatched_at DESC
+        LIMIT 1
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(query, business_id, contact_id)
     return OutboundTaskRow(**dict(row)) if row else None
 
 
