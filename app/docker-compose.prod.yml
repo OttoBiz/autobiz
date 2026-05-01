@@ -24,6 +24,7 @@
 services:
   backend:
     image: ottobiz:latest
+    pull_policy: always
     build:
       context: .
       dockerfile: dockerfile
