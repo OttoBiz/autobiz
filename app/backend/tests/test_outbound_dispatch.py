@@ -9,6 +9,7 @@ after-tool hook fan-out, and before-model cancellation guard.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -18,6 +19,31 @@ import pytest
 
 from backend.chatbot.agents import outbound
 from backend.chatbot.routers import outbound_resolution
+from backend.db.contacts import Contact
+
+
+def _make_contact(business_id: UUID | None = None) -> Contact:
+    now = datetime.now(timezone.utc)
+    return Contact(
+        id=uuid4(),
+        business_id=business_id or uuid4(),
+        name="Vendor X",
+        role="vendor",
+        channel="whatsapp",
+        channel_user_id="vendor-wa-1",
+        channel_business_id=None,
+        notes=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+@pytest.fixture(autouse=True)
+def patch_contacts(monkeypatch):
+    """Default: any contact lookup returns a fresh contact with a matching biz."""
+    fake = SimpleNamespace(get_by_id=AsyncMock(side_effect=lambda cid: _make_contact()))
+    monkeypatch.setattr(outbound, "contacts", fake)
+    return fake
 
 
 @pytest.fixture
@@ -37,17 +63,13 @@ def patch_ledger(monkeypatch):
 def patch_transport(monkeypatch):
     """Stub the dispatch-entry transport resolution so tests don't hit Redis/DB.
 
-    `outbound.dispatch` now resolves the channel + identity once upfront (not
-    mid-flight inside _run). Tests don't care about transport here — they
-    assert on ledger + agent wiring — so default both lookups to None.
+    `outbound._send_to_party` now resolves the contact's channel identity via
+    `_contact_identity`. Default it to None so the send path returns a status
+    string rather than touching the registry. Tests that exercise message
+    delivery override this with their own AsyncMock.
     """
     monkeypatch.setattr(
-        outbound.registry, "get_for_customer", AsyncMock(return_value=None)
-    )
-    monkeypatch.setattr(
-        outbound.channel_identities,
-        "get_most_recent_identity",
-        AsyncMock(return_value=None),
+        outbound, "_contact_identity", AsyncMock(return_value=None)
     )
 
 
@@ -68,17 +90,21 @@ def patch_chat_storage(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_inserts_ledger_row_and_returns_task_key(patch_ledger, monkeypatch):
+async def test_dispatch_inserts_ledger_row_and_returns_task_key(
+    patch_ledger, patch_contacts, monkeypatch
+):
     run_mock = AsyncMock(return_value=SimpleNamespace(output="ok"))
     monkeypatch.setattr(outbound.outbound_agent, "run", run_mock)
 
     business_id = uuid4()
     customer_id = uuid4()
+    contact = _make_contact(business_id=business_id)
+    patch_contacts.get_by_id = AsyncMock(return_value=contact)
 
     task_key = await outbound.dispatch(
         business_id=business_id,
         customer_id=customer_id,
-        party="vendor-x",
+        contact_id=contact.id,
         initiated_by="customer",
         dispatch_prompt="ask vendor for stock",
         business_name="Acme",
@@ -94,7 +120,9 @@ async def test_dispatch_inserts_ledger_row_and_returns_task_key(patch_ledger, mo
     assert call_kwargs["task_key"] == task_key
     assert call_kwargs["business_id"] == business_id
     assert call_kwargs["customer_id"] == customer_id
-    assert call_kwargs["party"] == "vendor-x"
+    assert call_kwargs["contact_id"] == contact.id
+    assert call_kwargs["contact_name"] == contact.name
+    assert call_kwargs["contact_role"] == contact.role
     assert call_kwargs["initiated_by"] == "customer"
     assert call_kwargs["dispatch_prompt"] == "ask vendor for stock"
     assert "timeout_at" in call_kwargs
@@ -124,7 +152,7 @@ async def test_dispatch_spawns_task_that_marks_running_then_runs_agent(
     await outbound.dispatch(
         business_id=uuid4(),
         customer_id=uuid4(),
-        party="vendor",
+        contact_id=uuid4(),
         initiated_by="customer",
         dispatch_prompt="hi",
     )
@@ -146,7 +174,7 @@ async def test_dispatch_marks_failed_on_agent_exception(patch_ledger, monkeypatc
     await outbound.dispatch(
         business_id=uuid4(),
         customer_id=uuid4(),
-        party="vendor",
+        contact_id=uuid4(),
         initiated_by="customer",
         dispatch_prompt="hi",
     )
@@ -169,7 +197,7 @@ async def test_dispatch_does_not_mark_failed_on_cancellation(patch_ledger, monke
     await outbound.dispatch(
         business_id=uuid4(),
         customer_id=uuid4(),
-        party="vendor",
+        contact_id=uuid4(),
         initiated_by="customer",
         dispatch_prompt="hi",
     )
@@ -185,7 +213,9 @@ def _make_ctx(task_key: str = "tk-1") -> Any:
         task_key=task_key,
         business_id=uuid4(),
         customer_id=uuid4(),
-        party="vendor",
+        contact_id=uuid4(),
+        contact_name="Vendor X",
+        contact_role="vendor",
         initiated_by="customer",
         dispatch_prompt="hi",
     )
@@ -265,7 +295,7 @@ async def test_dispatch_rejects_at_max_depth(patch_ledger, monkeypatch):
     task_key = await outbound.dispatch(
         business_id=uuid4(),
         customer_id=uuid4(),
-        party="vendor",
+        contact_id=uuid4(),
         initiated_by="customer",
         dispatch_prompt="hi",
         parent_depth=outbound.OUTBOUND_MAX_DEPTH - 1,
@@ -279,7 +309,7 @@ async def test_dispatch_rejects_at_max_depth(patch_ledger, monkeypatch):
         await outbound.dispatch(
             business_id=uuid4(),
             customer_id=uuid4(),
-            party="vendor",
+            contact_id=uuid4(),
             initiated_by="customer",
             dispatch_prompt="hi",
             parent_depth=outbound.OUTBOUND_MAX_DEPTH,
@@ -296,7 +326,9 @@ def _make_task_row(task_key: str = "tk-1", state: str = "running"):
         task_key=task_key,
         business_id=uuid4(),
         customer_id=uuid4(),
-        party="vendor-1",
+        contact_id=uuid4(),
+        contact_name="Vendor 1",
+        contact_role="vendor",
         initiated_by="customer",
         dispatch_prompt="ask vendor",
         state=state,  # type: ignore[arg-type]
@@ -413,21 +445,18 @@ async def test_deliver_party_reply_sends_ack_when_resolved(
         ),
     )
 
-    fake_channel = SimpleNamespace(send=AsyncMock())
     fake_identity = ChannelIdentity(
         business_id=str(task.business_id),
-        customer_id=str(task.customer_id),
+        customer_id=str(task.contact_id),
         channel="console",
-        channel_user_id="customer-addr",
+        channel_user_id="vendor-addr",
         last_inbound_at=datetime.now(timezone.utc),
     )
     monkeypatch.setattr(
-        outbound.registry, "get_for_customer", AsyncMock(return_value=fake_channel)
+        outbound, "_contact_identity", AsyncMock(return_value=fake_identity)
     )
     monkeypatch.setattr(
-        outbound.channel_identities,
-        "get_most_recent_identity",
-        AsyncMock(return_value=fake_identity),
+        outbound.registry, "get", lambda name: SimpleNamespace(send=AsyncMock())
     )
 
     dispatch_mock = AsyncMock()
@@ -442,6 +471,27 @@ async def test_deliver_party_reply_sends_ack_when_resolved(
     sent_text = dispatch_mock.await_args.args[2]
     assert sent_text == outbound._RESOLUTION_ACK_TEXT
     assert "model wrap-up" not in sent_text
+
+
+@pytest.mark.asyncio
+async def test_deliver_party_reply_returns_status_when_contact_deleted(
+    patch_ledger, patch_chat_storage, monkeypatch
+):
+    """If the contact_id on the task row is None (contact deleted via SET NULL),
+    deliver_party_reply must bail with a status string and never run the agent."""
+    task = _make_task_row(task_key="tk-orphan")
+    # Simulate the SET NULL after contact deletion.
+    task = task.model_copy(update={"contact_id": None})
+    patch_ledger.get_by_key = AsyncMock(return_value=task)
+    run_mock = AsyncMock()
+    monkeypatch.setattr(outbound.outbound_agent, "run", run_mock)
+
+    result = await outbound.deliver_party_reply("tk-orphan", "vendor reply")
+
+    assert result is not None
+    assert "tk-orpha" in result  # task_key prefix appears
+    assert "contact deleted" in result
+    run_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -485,7 +535,7 @@ async def test_dispatch_passes_current_depth_to_deps(patch_ledger, monkeypatch):
     await outbound.dispatch(
         business_id=uuid4(),
         customer_id=uuid4(),
-        party="vendor",
+        contact_id=uuid4(),
         initiated_by="customer",
         dispatch_prompt="hi",
         parent_depth=parent_depth,

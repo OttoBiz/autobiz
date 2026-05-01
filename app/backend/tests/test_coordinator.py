@@ -227,8 +227,9 @@ async def test_dispatch_outbound_calls_dispatch_with_system_initiated_by(monkeyp
     dispatch = AsyncMock(return_value="new-task-key")
     monkeypatch.setattr(coordinator.outbound, "dispatch", dispatch)
 
+    contact_id = uuid4()
     task_key = await coordinator.dispatch_outbound(
-        ctx, party="backup-vendor", prompt="can you fulfill?", timeout_seconds=1800
+        ctx, contact_id=contact_id, prompt="can you fulfill?", timeout_seconds=1800
     )
 
     assert task_key == "new-task-key"
@@ -236,7 +237,7 @@ async def test_dispatch_outbound_calls_dispatch_with_system_initiated_by(monkeyp
     kwargs = dispatch.await_args.kwargs
     assert kwargs["business_id"] == ctx.deps.business_id
     assert kwargs["customer_id"] == ctx.deps.customer_id
-    assert kwargs["party"] == "backup-vendor"
+    assert kwargs["contact_id"] == contact_id
     assert kwargs["initiated_by"] == "system"
     assert kwargs["dispatch_prompt"] == "can you fulfill?"
     assert kwargs["timeout_seconds"] == 1800
@@ -251,9 +252,61 @@ async def test_dispatch_outbound_forwards_current_depth_as_parent_depth(monkeypa
 
     # Depth enforcement lives in `outbound.dispatch`; the coordinator just
     # propagates its own `current_depth` as the dispatch's `parent_depth`.
-    await coordinator.dispatch_outbound(ctx, party="p", prompt="x")
+    await coordinator.dispatch_outbound(ctx, contact_id=uuid4(), prompt="x")
 
     assert dispatch.await_args.kwargs["parent_depth"] == 2
+
+
+@pytest.mark.asyncio
+async def test_list_contacts_returns_address_book_rows(monkeypatch):
+    """list_contacts forwards to contacts.list_by_business and returns
+    a stripped-down dict view (id/name/role/notes)."""
+    from datetime import datetime, timezone
+
+    from backend.db.contacts import Contact
+
+    ctx = _make_ctx()
+    biz_id = ctx.deps.business_id
+    now = datetime.now(timezone.utc)
+    fake_rows = [
+        Contact(
+            id=uuid4(),
+            business_id=biz_id,
+            name="Acme Vendor",
+            role="vendor",
+            channel="whatsapp",
+            channel_user_id="wa-1",
+            channel_business_id=None,
+            notes="primary supplier",
+            created_at=now,
+            updated_at=now,
+        ),
+        Contact(
+            id=uuid4(),
+            business_id=biz_id,
+            name="QuickShip",
+            role="logistics",
+            channel="whatsapp",
+            channel_user_id="wa-2",
+            channel_business_id=None,
+            notes=None,
+            created_at=now,
+            updated_at=now,
+        ),
+    ]
+    list_by_business = AsyncMock(return_value=fake_rows)
+    monkeypatch.setattr(coordinator.contacts, "list_by_business", list_by_business)
+
+    result = await coordinator.list_contacts(ctx, role=None)
+
+    list_by_business.assert_awaited_once_with(biz_id, role=None)
+    assert isinstance(result, list)
+    assert len(result) == 2
+    assert set(result[0].keys()) == {"id", "name", "role", "notes"}
+    assert result[0]["name"] == "Acme Vendor"
+    assert result[0]["role"] == "vendor"
+    assert result[0]["notes"] == "primary supplier"
+    assert result[1]["notes"] is None
 
 
 # ---------- surface_to_customer ----------

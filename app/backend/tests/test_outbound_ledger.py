@@ -59,29 +59,35 @@ def patch_pool(monkeypatch, conn):
 async def test_insert_task_sql_and_params(conn):
     business_id = uuid4()
     customer_id = uuid4()
+    contact_id = uuid4()
     timeout_at = datetime.now(timezone.utc) + timedelta(minutes=5)
 
     await outbound_ledger.insert_task(
         task_key="tk-1",
         business_id=business_id,
         customer_id=customer_id,
-        party="vendor-x",
         initiated_by="customer",
         dispatch_prompt="ask vendor",
         timeout_at=timeout_at,
+        contact_id=contact_id,
+        contact_name="Vendor X",
+        contact_role="vendor",
     )
 
     sql, *params = conn.execute.call_args.args
     assert "INSERT INTO outbound_tasks" in sql
     assert _normalize(sql).startswith(
-        "INSERT INTO outbound_tasks ( task_key, business_id, customer_id, party, initiated_by, dispatch_prompt, timeout_at )"
+        "INSERT INTO outbound_tasks ( task_key, business_id, customer_id, "
+        "contact_id, contact_name, contact_role, initiated_by, dispatch_prompt, timeout_at )"
     )
-    assert "VALUES ($1, $2, $3, $4, $5, $6, $7)" in _normalize(sql)
+    assert "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)" in _normalize(sql)
     assert params == [
         "tk-1",
         business_id,
         customer_id,
-        "vendor-x",
+        contact_id,
+        "Vendor X",
+        "vendor",
         "customer",
         "ask vendor",
         timeout_at,
@@ -163,12 +169,15 @@ async def test_mark_cancelled_allows_queued_or_running(conn):
 async def test_get_by_key_returns_row_model(conn):
     business_id = uuid4()
     customer_id = uuid4()
+    contact_id = uuid4()
     now = datetime.now(timezone.utc)
     conn.fetchrow.return_value = {
         "task_key": "tk-1",
         "business_id": business_id,
         "customer_id": customer_id,
-        "party": "vendor-x",
+        "contact_id": contact_id,
+        "contact_name": "Vendor X",
+        "contact_role": "vendor",
         "initiated_by": "customer",
         "dispatch_prompt": "ask vendor",
         "state": "queued",
@@ -251,6 +260,58 @@ async def test_get_state_returns_state_or_none(conn):
 
     conn.fetchrow.return_value = None
     assert await outbound_ledger.get_state("missing") is None
+
+
+@pytest.mark.asyncio
+async def test_find_open_task_by_contact_returns_none_when_missing(conn):
+    conn.fetchrow.return_value = None
+    business_id = uuid4()
+    contact_id = uuid4()
+
+    result = await outbound_ledger.find_open_task_by_contact(business_id, contact_id)
+
+    assert result is None
+    sql, *params = conn.fetchrow.call_args.args
+    norm = _normalize(sql)
+    assert "FROM outbound_tasks" in norm
+    assert "WHERE business_id = $1" in norm
+    assert "AND contact_id = $2" in norm
+    assert "AND state = 'running'" in norm
+    assert "ORDER BY dispatched_at DESC" in norm
+    assert "LIMIT 1" in norm
+    assert params == [business_id, contact_id]
+
+
+@pytest.mark.asyncio
+async def test_find_open_task_by_contact_returns_row_when_running(conn):
+    business_id = uuid4()
+    customer_id = uuid4()
+    contact_id = uuid4()
+    now = datetime.now(timezone.utc)
+    conn.fetchrow.return_value = {
+        "task_key": "tk-open",
+        "business_id": business_id,
+        "customer_id": customer_id,
+        "contact_id": contact_id,
+        "contact_name": "Vendor X",
+        "contact_role": "vendor",
+        "initiated_by": "customer",
+        "dispatch_prompt": "ask vendor",
+        "state": "running",
+        "customer_context": None,
+        "system_context": None,
+        "dispatched_at": now,
+        "resolved_at": None,
+        "timeout_at": now + timedelta(minutes=5),
+    }
+
+    row = await outbound_ledger.find_open_task_by_contact(business_id, contact_id)
+
+    assert row is not None
+    assert row.task_key == "tk-open"
+    assert row.business_id == business_id
+    assert row.contact_id == contact_id
+    assert row.state == "running"
 
 
 @pytest.mark.asyncio

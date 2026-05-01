@@ -207,6 +207,8 @@ def test_build_prompt_contains_user_and_system_items():
 
 def test_whatsapp_webhook_invokes_orchestrator(monkeypatch):
     from backend.api.routers.webhooks import whatsapp as whatsapp_webhook
+    from backend.chatbot.channels.whatsapp_resolver import InboundSender
+    from uuid import UUID as _UUID
 
     captured: dict = {}
 
@@ -216,12 +218,25 @@ def test_whatsapp_webhook_invokes_orchestrator(monkeypatch):
     fake_msg = _inbound("from webhook")
     fake_channel = SimpleNamespace(parse_inbound=MagicMock(return_value=fake_msg))
 
-    async def fake_resolve_inbound(msg: InboundMessage) -> InboundMessage:
-        return msg
+    biz_uuid = _UUID(_BIZ_ID)
+    cust_uuid = _UUID(_CUST_ID)
+
+    async def fake_resolve_sender(phone_number_id, wa_id):
+        return InboundSender(kind="customer", business_id=biz_uuid)
+
+    async def fake_resolve_customer(wa_id):
+        return cust_uuid
 
     monkeypatch.setattr(whatsapp_webhook.orchestrator, "handle_inbound", fake_handle_inbound)
     monkeypatch.setattr(whatsapp_webhook.registry, "get", lambda name: fake_channel)
-    monkeypatch.setattr(whatsapp_webhook, "resolve_inbound", fake_resolve_inbound)
+    monkeypatch.setattr(
+        whatsapp_webhook, "resolve_inbound_sender", fake_resolve_sender
+    )
+    monkeypatch.setattr(
+        whatsapp_webhook,
+        "resolve_or_create_customer_by_phone",
+        fake_resolve_customer,
+    )
     # Bypass HMAC check; APP_SECRET unset in tests so verify_signature returns True.
 
     app = FastAPI()
@@ -234,4 +249,10 @@ def test_whatsapp_webhook_invokes_orchestrator(monkeypatch):
     assert response.status_code == 200
     assert response.json() == {"ok": True}
     fake_channel.parse_inbound.assert_called_once_with(payload)
-    assert captured["msg"] is fake_msg
+    # The webhook rewrites identity with the resolved UUIDs before calling
+    # handle_inbound, so we can't compare msg-by-identity; just confirm it
+    # arrived and the body text was preserved.
+    assert "msg" in captured
+    assert captured["msg"].text == "from webhook"
+    assert captured["msg"].identity.business_id == _BIZ_ID
+    assert captured["msg"].identity.customer_id == _CUST_ID

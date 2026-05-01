@@ -114,12 +114,25 @@ def stub_postgres(monkeypatch):
     # Outbound ledger: in-memory dict keyed by task_key.
     tasks: dict[str, dict] = {}
 
-    async def _insert_task(*, task_key, business_id, customer_id, party, initiated_by, dispatch_prompt, timeout_at):
+    async def _insert_task(
+        *,
+        task_key,
+        business_id,
+        customer_id,
+        initiated_by,
+        dispatch_prompt,
+        timeout_at,
+        contact_id,
+        contact_name,
+        contact_role,
+    ):
         tasks[task_key] = dict(
             task_key=task_key,
             business_id=business_id,
             customer_id=customer_id,
-            party=party,
+            contact_id=contact_id,
+            contact_name=contact_name,
+            contact_role=contact_role,
             initiated_by=initiated_by,
             dispatch_prompt=dispatch_prompt,
             state="queued",
@@ -166,6 +179,48 @@ def stub_postgres(monkeypatch):
     monkeypatch.setattr(outbound_mod.outbound_ledger, "get_state", _get_state)
     monkeypatch.setattr(outbound_mod.outbound_ledger, "get_by_key", _get_by_key)
 
+    # Stub the contacts table + _contact_identity so dispatch can resolve a
+    # contact_id to a Console channel target. The test uses a single fixed
+    # contact (the "vendor") whose channel_user_id is _VENDOR_ADDR.
+    from backend.db.contacts import Contact as _Contact
+
+    _now = datetime.now(timezone.utc)
+    _vendor_contact_id = uuid4()
+    contacts_by_id: dict = {
+        _vendor_contact_id: _Contact(
+            id=_vendor_contact_id,
+            business_id=uuid4(),  # business binding isn't asserted in these tests
+            name="Vendor 1",
+            role="vendor",
+            channel="console",
+            channel_user_id=_VENDOR_ADDR,
+            channel_business_id=None,
+            notes=None,
+            created_at=_now,
+            updated_at=_now,
+        )
+    }
+
+    async def _get_contact(contact_id):
+        return contacts_by_id.get(contact_id)
+
+    monkeypatch.setattr(outbound_mod.contacts, "get_by_id", _get_contact)
+
+    async def _resolve_identity(contact_id):
+        c = contacts_by_id.get(contact_id)
+        if c is None:
+            return None
+        return ChannelIdentity(
+            business_id=str(c.business_id),
+            customer_id=str(c.id),
+            channel=c.channel,
+            channel_user_id=c.channel_user_id,
+            channel_business_id=c.channel_business_id,
+            last_inbound_at=None,
+        )
+
+    monkeypatch.setattr(outbound_mod, "_contact_identity", _resolve_identity)
+
     # central._handle_outbound looks up business info before dispatching;
     # stub it so the integration tests don't need a live DB pool.
     async def _get_business_info(business_id):
@@ -175,7 +230,12 @@ def stub_postgres(monkeypatch):
         "backend.db.db_utils.get_business_info", _get_business_info
     )
 
-    return SimpleNamespace(identities=identities, tasks=tasks)
+    return SimpleNamespace(
+        identities=identities,
+        tasks=tasks,
+        contacts=contacts_by_id,
+        vendor_contact_id=_vendor_contact_id,
+    )
 
 
 def _customer_inbound(text: str) -> InboundMessage:
@@ -217,7 +277,7 @@ async def test_customer_message_reaches_console_channel(
 
 @pytest.mark.asyncio
 async def test_outbound_dispatch_lands_on_console_channel(
-    clean_redis, console_channel, monkeypatch
+    clean_redis, console_channel, monkeypatch, stub_postgres
 ):
     """central → outbound.dispatch → ConsoleChannel.outbox tagged with task_key."""
     # Pre-seed the channel identity so dispatch's transport resolution works.
@@ -245,7 +305,7 @@ async def test_outbound_dispatch_lands_on_console_channel(
     task_key = await outbound_mod.dispatch(
         business_id=_customer_inbound("x").identity.business_id,  # type: ignore[arg-type]
         customer_id=_customer_inbound("x").identity.customer_id,  # type: ignore[arg-type]
-        party=_VENDOR_ADDR,
+        contact_id=stub_postgres.vendor_contact_id,
         initiated_by="customer",
         dispatch_prompt="check stock for SKU-1",
     )
@@ -287,7 +347,7 @@ async def test_vendor_reply_continues_outbound_thread(
     task_key = await outbound_mod.dispatch(
         business_id=_customer_inbound("x").identity.business_id,  # type: ignore[arg-type]
         customer_id=_customer_inbound("x").identity.customer_id,  # type: ignore[arg-type]
-        party=_VENDOR_ADDR,
+        contact_id=stub_postgres.vendor_contact_id,
         initiated_by="customer",
         dispatch_prompt="confirm stock",
     )
