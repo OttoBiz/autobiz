@@ -1,41 +1,72 @@
-"""Translate WhatsApp-native identifiers (phone_number_id, wa_id) to internal UUIDs.
+"""Classify a WhatsApp inbound by tenant + sender in a single query.
 
-The webhook sees phone numbers; everything below it (AgentDeps, chat history,
-inbox keys, channel_identities FK) is keyed by UUID. This module is the seam.
-
-- `resolve_business_by_wa_phone_id` looks up the tenant whose Meta-assigned
-  `phone_number_id` matches the inbound `metadata.phone_number_id`.
-- `resolve_or_create_customer_by_phone` looks up (or inserts) the customer by
-  their `wa_id` (their phone number, no `+` prefix per Meta's format).
-
-Both are scoped to WhatsApp; other channels keep their own resolvers if/when
-they need them.
+The webhook receives Meta-native IDs (`phone_number_id`, `wa_id`); everything
+below it is keyed by UUID. This module joins `businesses` against `contacts`
+once to answer both axes at the same time: which tenant owns the receiving
+number, and who the sender is relative to that tenant (owner / known contact /
+otherwise a customer). Customer creation stays on its own helper so it only
+fires on the customer branch.
 """
 
 from __future__ import annotations
 
+from typing import Literal
 from uuid import UUID
 
-from backend.chatbot.channels.base import ChannelIdentity, InboundMessage
+from pydantic import BaseModel
+
 from backend.db.connection import get_db
 
 
-class UnknownWhatsAppBusiness(Exception):
-    """Raised when an inbound webhook references a phone_number_id we don't own."""
+class InboundSender(BaseModel):
+    """Discriminated result of resolving (receiver phone_number_id, sender wa_id)."""
+
+    kind: Literal["unknown_tenant", "owner", "contact", "customer"]
+    business_id: UUID | None = None      # set for owner | contact | customer
+    contact_id: UUID | None = None       # set when kind == "contact"
+    contact_name: str | None = None      # set when kind == "contact"
+    contact_role: str | None = None      # set when kind == "contact"
 
 
-async def resolve_business_by_wa_phone_id(phone_number_id: str) -> UUID:
+async def resolve_inbound_sender(
+    phone_number_id: str,
+    wa_id: str,
+) -> InboundSender:
     pool = await get_db()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT id FROM businesses WHERE whatsapp_phone_number_id = $1",
+            """
+            SELECT
+              b.id           AS business_id,
+              b.owner_wa_id  AS owner_wa_id,
+              c.id           AS contact_id,
+              c.name         AS contact_name,
+              c.role         AS contact_role
+            FROM businesses b
+            LEFT JOIN contacts c
+              ON c.business_id     = b.id
+             AND c.channel         = 'whatsapp'
+             AND c.channel_user_id = $2
+            WHERE b.whatsapp_phone_number_id = $1
+            LIMIT 1
+            """,
             phone_number_id,
+            wa_id,
         )
+
     if row is None:
-        raise UnknownWhatsAppBusiness(
-            f"No business mapped to whatsapp phone_number_id={phone_number_id}"
+        return InboundSender(kind="unknown_tenant")
+    if row["owner_wa_id"] == wa_id:
+        return InboundSender(kind="owner", business_id=row["business_id"])
+    if row["contact_id"] is not None:
+        return InboundSender(
+            kind="contact",
+            business_id=row["business_id"],
+            contact_id=row["contact_id"],
+            contact_name=row["contact_name"],
+            contact_role=row["contact_role"],
         )
-    return row["id"]
+    return InboundSender(kind="customer", business_id=row["business_id"])
 
 
 async def resolve_or_create_customer_by_phone(wa_id: str) -> UUID:
@@ -56,28 +87,3 @@ async def resolve_or_create_customer_by_phone(wa_id: str) -> UUID:
             wa_id,
         )
     return row["id"]
-
-
-async def resolve_inbound(msg: InboundMessage) -> InboundMessage:
-    """Swap WA-native IDs in `msg.identity` for internal UUIDs.
-
-    `WhatsappChannel.parse_inbound` builds an identity holding the raw Meta
-    `phone_number_id` and `wa_id` in `business_id`/`customer_id`. This call
-    looks up (or creates) the matching DB rows and returns a copy of the
-    message whose identity is keyed by UUID, ready for the orchestrator.
-    """
-    raw_phone_number_id = msg.identity.channel_business_id or msg.identity.business_id
-    raw_wa_id = msg.identity.channel_user_id
-
-    business_uuid = await resolve_business_by_wa_phone_id(raw_phone_number_id)
-    customer_uuid = await resolve_or_create_customer_by_phone(raw_wa_id)
-
-    resolved_identity = ChannelIdentity(
-        business_id=str(business_uuid),
-        customer_id=str(customer_uuid),
-        channel=msg.identity.channel,
-        channel_user_id=raw_wa_id,
-        channel_business_id=raw_phone_number_id,
-        last_inbound_at=msg.identity.last_inbound_at,
-    )
-    return msg.model_copy(update={"identity": resolved_identity})
