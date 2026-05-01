@@ -64,6 +64,8 @@ async def seed_whatsapp_business(
     business_phone: str,
     products_csv: Path,
     business_id: str | None = None,
+    owner_wa_id: str | None = None,
+    contacts_csv: Path | None = None,
 ) -> dict:
     """Upsert one WhatsApp-bound business + its products. Returns a summary."""
     if not phone_number_id:
@@ -83,19 +85,21 @@ async def seed_whatsapp_business(
                 """
                 INSERT INTO businesses (
                     id, name, business_type, phone_number,
-                    whatsapp_phone_number_id
+                    whatsapp_phone_number_id, owner_wa_id
                 )
-                VALUES ($1, $2, 'vendor', $3, $4)
+                VALUES ($1, $2, 'vendor', $3, $4, $5)
                 ON CONFLICT (id) DO UPDATE SET
                     name = EXCLUDED.name,
                     phone_number = EXCLUDED.phone_number,
                     whatsapp_phone_number_id = EXCLUDED.whatsapp_phone_number_id,
+                    owner_wa_id = EXCLUDED.owner_wa_id,
                     updated_at = NOW()
                 """,
                 bid,
                 business_name,
                 business_phone,
                 phone_number_id,
+                owner_wa_id,
             )
             await conn.execute(
                 "DELETE FROM products WHERE business_id = $1", bid
@@ -117,13 +121,52 @@ async def seed_whatsapp_business(
                     category,
                 )
 
+    contacts_count = 0
+    if contacts_csv is not None and contacts_csv.exists():
+        # Lazy import to avoid import cycles at module load time and to
+        # keep the seeder usable without the contacts module if unused.
+        from backend.db import contacts as contacts_db
+        from uuid import UUID
+
+        bid_uuid = UUID(bid)
+        with open(contacts_csv, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                name = (r.get("name") or "").strip()
+                if not name:
+                    continue
+                role = (r.get("role") or "").strip()
+                channel = (r.get("channel") or "").strip() or "whatsapp"
+                channel_user_id = (r.get("channel_user_id") or "").strip()
+                if channel_user_id.startswith("+"):
+                    channel_user_id = channel_user_id[1:]
+                if not channel_user_id:
+                    logger.warning(
+                        "skipping contact %r: empty channel_user_id", name
+                    )
+                    continue
+                notes_raw = (r.get("notes") or "").strip()
+                notes = notes_raw or None
+                await contacts_db.upsert(
+                    business_id=bid_uuid,
+                    name=name,
+                    role=role,
+                    channel=channel,
+                    channel_user_id=channel_user_id,
+                    channel_business_id=None,
+                    notes=notes,
+                )
+                contacts_count += 1
+
     return {
         "business_id": bid,
         "name": business_name,
         "phone_number": business_phone,
         "whatsapp_phone_number_id": phone_number_id,
+        "owner_wa_id": owner_wa_id,
         "products": len(products),
         "products_csv": str(products_csv),
+        "contacts": contacts_count,
     }
 
 
@@ -136,6 +179,10 @@ async def seed_whatsapp_business_from_env(pool) -> dict | None:
     - SEED_BUSINESS_PHONE       (default: "+2347000000000")
     - SEED_BUSINESS_ID          (default: derived from phone_number_id)
     - SEED_PRODUCTS_CSV         (default: donrey_fashion.csv)
+    - SEED_OWNER_WA_ID          (optional) — tenant operator's own WA number;
+                                 lets the inbound resolver tag "owner" sends
+    - SEED_CONTACTS_CSV         (default: contacts.example.csv if present;
+                                 otherwise contact seeding is skipped)
 
     Returns the seed summary on success, None when skipped.
     """
@@ -143,6 +190,19 @@ async def seed_whatsapp_business_from_env(pool) -> dict | None:
     if not phone_number_id:
         logger.info("WHATSAPP_PHONE_NUMBER_ID not set; skipping WhatsApp seed")
         return None
+
+    owner_wa_id = (os.getenv("SEED_OWNER_WA_ID") or "").strip() or None
+
+    contacts_csv_env = (os.getenv("SEED_CONTACTS_CSV") or "").strip()
+    if contacts_csv_env:
+        contacts_csv: Path | None = Path(contacts_csv_env)
+    else:
+        default_contacts = (
+            Path(__file__).resolve().parent.parent
+            / "dummy_data"
+            / "contacts.example.csv"
+        )
+        contacts_csv = default_contacts if default_contacts.exists() else None
 
     summary = await seed_whatsapp_business(
         pool,
@@ -153,11 +213,15 @@ async def seed_whatsapp_business_from_env(pool) -> dict | None:
         ).strip(),
         products_csv=Path(os.getenv("SEED_PRODUCTS_CSV") or str(DEFAULT_CSV)),
         business_id=(os.getenv("SEED_BUSINESS_ID") or "").strip() or None,
+        owner_wa_id=owner_wa_id,
+        contacts_csv=contacts_csv,
     )
     logger.info(
-        "Seeded WhatsApp business id=%s name=%s products=%d",
+        "Seeded WhatsApp business id=%s name=%s products=%d owner=%s contacts=%d",
         summary["business_id"],
         summary["name"],
         summary["products"],
+        summary["owner_wa_id"],
+        summary["contacts"],
     )
     return summary

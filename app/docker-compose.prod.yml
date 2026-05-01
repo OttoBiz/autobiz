@@ -66,6 +66,8 @@ services:
       - SEED_BUSINESS_PHONE=${SEED_BUSINESS_PHONE:-}
       - SEED_BUSINESS_ID=${SEED_BUSINESS_ID:-}
       - SEED_PRODUCTS_CSV=${SEED_PRODUCTS_CSV:-}
+      - SEED_OWNER_WA_ID=${SEED_OWNER_WA_ID:-}
+      - SEED_CONTACTS_CSV=${SEED_CONTACTS_CSV:-}
     networks:
       - default
       - dokploy-network
