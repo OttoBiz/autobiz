@@ -65,6 +65,10 @@ async def seed_whatsapp_business(
     products_csv: Path,
     business_id: str | None = None,
     contacts_csv: Path | None = None,
+    seed_self_vendor: bool = False,
+    self_vendor_name: str = "Self",
+    self_vendor_role: str = "vendor",
+    self_vendor_notes: str | None = None,
 ) -> dict:
     """Upsert one WhatsApp-bound business + its products. Returns a summary.
 
@@ -166,6 +170,25 @@ async def seed_whatsapp_business(
                 )
                 contacts_count += 1
 
+    # Single-person tenants: the operator IS the vendor. Register their own
+    # phone as a contact so inbound messages from that number route through
+    # the outbound flow instead of being dropped as owner self-messages by
+    # the inbound resolver.
+    if seed_self_vendor:
+        from backend.db import contacts as contacts_db
+        from uuid import UUID
+
+        await contacts_db.upsert(
+            business_id=UUID(bid),
+            name=self_vendor_name,
+            role=self_vendor_role,
+            channel="whatsapp",
+            channel_user_id=normalized_phone,
+            channel_business_id=None,
+            notes=self_vendor_notes,
+        )
+        contacts_count += 1
+
     return {
         "business_id": bid,
         "name": business_name,
@@ -192,6 +215,12 @@ async def seed_whatsapp_business_from_env(pool) -> dict | None:
     - SEED_PRODUCTS_CSV         (default: donrey_fashion.csv)
     - SEED_CONTACTS_CSV         (default: contacts.example.csv if present;
                                  otherwise contact seeding is skipped)
+    - SEED_SELF_VENDOR          ("1"/"true"/"yes" to register the operator's
+                                 own phone as a vendor contact — single-person
+                                 tenants where the owner IS the vendor)
+    - SEED_SELF_VENDOR_NAME     (default: "Self")
+    - SEED_SELF_VENDOR_ROLE     (default: "vendor")
+    - SEED_SELF_VENDOR_NOTES    (default: empty)
 
     Returns the seed summary on success, None when skipped.
     """
@@ -211,6 +240,12 @@ async def seed_whatsapp_business_from_env(pool) -> dict | None:
         )
         contacts_csv = default_contacts if default_contacts.exists() else None
 
+    self_vendor_flag = (os.getenv("SEED_SELF_VENDOR") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
     summary = await seed_whatsapp_business(
         pool,
         phone_number_id=phone_number_id,
@@ -221,6 +256,10 @@ async def seed_whatsapp_business_from_env(pool) -> dict | None:
         products_csv=Path(os.getenv("SEED_PRODUCTS_CSV") or str(DEFAULT_CSV)),
         business_id=(os.getenv("SEED_BUSINESS_ID") or "").strip() or None,
         contacts_csv=contacts_csv,
+        seed_self_vendor=self_vendor_flag,
+        self_vendor_name=(os.getenv("SEED_SELF_VENDOR_NAME") or "Self").strip(),
+        self_vendor_role=(os.getenv("SEED_SELF_VENDOR_ROLE") or "vendor").strip(),
+        self_vendor_notes=(os.getenv("SEED_SELF_VENDOR_NOTES") or "").strip() or None,
     )
     logger.info(
         "Seeded WhatsApp business id=%s name=%s products=%d phone=%s contacts=%d",

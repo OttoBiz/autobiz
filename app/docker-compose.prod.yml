@@ -67,6 +67,14 @@ services:
       - SEED_BUSINESS_ID=${SEED_BUSINESS_ID:-}
       - SEED_PRODUCTS_CSV=${SEED_PRODUCTS_CSV:-}
       - SEED_CONTACTS_CSV=${SEED_CONTACTS_CSV:-}
+      # Single-person tenants: set SEED_SELF_VENDOR=1 to auto-register the
+      # operator's own phone (SEED_BUSINESS_PHONE) as a vendor contact, so
+      # inbound messages from that number route through the outbound flow
+      # instead of being dropped as owner self-messages.
+      - SEED_SELF_VENDOR=${SEED_SELF_VENDOR:-}
+      - SEED_SELF_VENDOR_NAME=${SEED_SELF_VENDOR_NAME:-}
+      - SEED_SELF_VENDOR_ROLE=${SEED_SELF_VENDOR_ROLE:-}
+      - SEED_SELF_VENDOR_NOTES=${SEED_SELF_VENDOR_NOTES:-}
     networks:
       - default
       - dokploy-network
