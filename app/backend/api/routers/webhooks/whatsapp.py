@@ -1,11 +1,13 @@
-"""WhatsApp webhook — verifies signature, parses inbound, hands to orchestrator.
+"""WhatsApp webhook — verifies signature, parses inbound, classifies sender.
 
 GET handles Meta's verification handshake. POST verifies the X-Hub-Signature-256
 header against the raw body, parses the payload via the registered channel,
-classifies the sender via `resolve_inbound_sender`, then forks: unknown
-tenants and owner self-messages are dropped with 200, contact replies are
-deferred (also 200), and customer messages get their IDs swapped for UUIDs
-and dispatched to the orchestrator.
+classifies the sender via `resolve_inbound_sender`, then forks:
+- unknown_tenant / owner: dropped with 200.
+- contact: enqueued onto the per-contact debounced inbox; the drain task
+  fires `outbound.deliver_contact_reply` 20s later with all messages from
+  the window coalesced.
+- customer: IDs swapped for UUIDs, dispatched to the orchestrator.
 
 Importing `chatbot.channels.whatsapp` registers the channel as a side effect.
 """
@@ -17,7 +19,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
 import backend.chatbot.channels.whatsapp  # noqa: F401  triggers channel registration
-from backend.chatbot import orchestrator
+from backend.chatbot import contact_inbox, orchestrator
+from backend.chatbot.agents import outbound
 from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity
 from backend.chatbot.channels.whatsapp import NonMessageEvent, _whatsapp_bot
@@ -29,6 +32,25 @@ from backend.chatbot.channels.whatsapp_resolver import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+
+
+async def _run_contact_reply(
+    business_id: str, contact_id: str, messages: list[str]
+) -> None:
+    """Adapter passed to contact_inbox.schedule_drain.
+
+    Keeps the inbox module decoupled from the agent — the drain task calls
+    this with whatever messages accumulated in the window; we forward them
+    to the outbound agent.
+    """
+    status = await outbound.deliver_contact_reply(business_id, contact_id, messages)
+    if status is not None:
+        logger.warning(
+            "contact reply delivery failed biz=%s contact=%s status=%s",
+            business_id,
+            contact_id,
+            status,
+        )
 
 
 @router.get("/whatsapp")
@@ -85,12 +107,22 @@ async def whatsapp_webhook(request: Request) -> dict:
             )
             return {"ok": True, "ignored": "owner_self_message"}
         case "contact":
-            logger.info(
-                "contact reply received (routing deferred) contact=%s name=%s",
-                sender.contact_id,
-                sender.contact_name,
-            )
-            return {"ok": True, "ignored": "contact_reply_deferred"}
+            text = msg.text or ""
+            if not text:
+                # Media-only or empty interactive — nothing to feed the agent.
+                # 200 so Meta stops retrying; can revisit when the agent
+                # handles non-text inbound from contacts.
+                logger.info(
+                    "contact inbound has no text contact=%s name=%s",
+                    sender.contact_id,
+                    sender.contact_name,
+                )
+                return {"ok": True, "ignored": "contact_no_text"}
+            biz = str(sender.business_id)
+            cid = str(sender.contact_id)
+            contact_inbox.enqueue(biz, cid, text)
+            await contact_inbox.schedule_drain(biz, cid, _run_contact_reply)
+            return {"ok": True}
         case "customer":
             customer_uuid = await resolve_or_create_customer_by_phone(wa_id)
             resolved_identity = ChannelIdentity(

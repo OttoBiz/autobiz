@@ -67,8 +67,10 @@ Tools available:
 - `list_contacts(role=None)`: read the business's address book. Returns
   id/name/role/notes per contact. Use to pick a `contact_id` before
   calling `dispatch_outbound`.
-- `dispatch_outbound(contact_id, prompt, timeout_seconds=3600)`: open a new
-  system-initiated outbound thread (e.g., contact a backup vendor). Depth-limited.
+- `dispatch_outbound(contact_id, prompt, summary=None, timeout_seconds=3600)`:
+  open a new system-initiated outbound thread (e.g., contact a backup
+  vendor). Optional ≤80-char `summary` shows in the contact agent's
+  manifest. Depth-limited.
 - `surface_to_customer(summary)`: enqueue a system_event for central_agent.
 - `escalate_to_operator(reason, options=None)`: hand off to a human when
   automation can't or shouldn't proceed.
@@ -185,15 +187,21 @@ async def dispatch_outbound(
     ctx: RunContext[CoordinatorDeps],
     contact_id: UUID,
     prompt: str,
+    summary: str | None = None,
     timeout_seconds: int = 3600,
 ) -> str:
-    """Open a new system-initiated outbound thread. Returns the new task_key."""
+    """Open a new system-initiated outbound thread. Returns the new task_key.
+
+    `summary` is a short ≤80-char headline shown in the contact agent's
+    manifest of open tasks. Auto-derived from the prompt when omitted.
+    """
     return await outbound.dispatch(
         business_id=ctx.deps.business_id,
         customer_id=ctx.deps.customer_id,
         contact_id=contact_id,
         initiated_by="system",
         dispatch_prompt=prompt,
+        summary=summary,
         timeout_seconds=timeout_seconds,
         parent_depth=ctx.deps.current_depth,
     )

@@ -30,6 +30,15 @@ class Task(BaseModel):
             "ignored otherwise."
         ),
     )
+    summary: str | None = Field(
+        default=None,
+        description=(
+            "For agent_name='outbound' only: one-line headline (≤80 chars) "
+            "for the manifest the contact agent reads. Examples: "
+            "'red ankara stock + price', 'reschedule pickup to Tue'. Optional — "
+            "auto-derived from the prompt if omitted."
+        ),
+    )
 
 
 class SubagentDef(NamedTuple):
@@ -78,7 +87,10 @@ async def _handle_customer_relation(deps: AgentDeps, prompt: str) -> dict[str, A
 
 
 async def _handle_outbound(
-    deps: AgentDeps, prompt: str, contact_id: UUID | None = None
+    deps: AgentDeps,
+    prompt: str,
+    contact_id: UUID | None = None,
+    summary: str | None = None,
 ) -> dict[str, Any]:
     from backend.chatbot.agents.outbound import dispatch
     from backend.db.db_utils import get_business_info
@@ -113,6 +125,7 @@ async def _handle_outbound(
         contact_id=contact.id,
         initiated_by="customer",
         dispatch_prompt=prompt,
+        summary=summary,
         business_name=business_name,
         parent_depth=deps.current_depth,
     )
@@ -217,8 +230,10 @@ OUTBOUND:
   everyone. Pick the right contact by name and notes (notes describe what
   each one specializes in).
 - Then call `query_subagent` with agent_name='outbound' and set
-  `contact_id` to the picked contact's id. The system writes the contact's
-  name/role into the ticket so the partner gets addressed correctly.
+  `contact_id` to the picked contact's id. Also set `summary` to a brief
+  ≤80-char headline of what this thread is about ("red ankara stock +
+  price", "reschedule pickup to Tue") — the contact agent will see this in
+  its manifest of open tasks. Optional but strongly preferred.
 - The "logistics" subagent and outbound-to-a-logistics-contact are NOT
   interchangeable. "logistics" only reads our DB (where's order #X,
   what's its tracking number). If the customer wants the partner to
@@ -281,7 +296,7 @@ async def list_contacts(
 async def _dispatch_task(deps: AgentDeps, task: Task) -> dict[str, Any]:
     handler = _get_subagents()[task.agent_name].handler
     if task.agent_name == "outbound":
-        return await handler(deps, task.prompt, task.contact_id)
+        return await handler(deps, task.prompt, task.contact_id, task.summary)
     return await handler(deps, task.prompt)
 
 

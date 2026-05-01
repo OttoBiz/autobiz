@@ -1,15 +1,30 @@
-"""Outbound agent — one thread to one vendor/logistics party.
+"""Outbound agent — one ongoing conversation per contact.
 
-Resolution state lives in the `outbound_tasks` ledger, not on deps. The agent
-calls `mark_completed(customer_context, system_context)` when it's done; the
-after-tool hook fans out via the resolution router. The agent's run output is
-plain text; the messaging dispatcher owns delivery and reply-tracking (see
-`messaging/dispatcher.py` for the per-channel wrapping).
+This is the contact-side counterpart of the customer-facing central agent.
+The unit of conversation is a contact (a row in the address book), not a
+task. Tasks (rows in `outbound_tasks`) are tags inside that conversation:
+the agent sees a manifest of every open task for the contact and can close
+zero, one, or many of them in a single run depending on what the partner's
+reply addresses.
+
+Two entry points:
+
+- `dispatch(...)`: opens a NEW outbound thread on behalf of a customer.
+  Inserts the ledger row, runs the agent with the opening prompt, sends
+  the outreach. Called by central / coordinator.
+- `deliver_contact_reply(business_id, contact_id, messages)`: continues
+  an existing thread when the partner replies. Loads the manifest + chat
+  history, runs the agent once with the (debounced + coalesced) inbound
+  text, sends the agent's reply.
+
+Per-contact mutex (`contact_inbox.acquire_lock`) is held across both — so
+an opening run and an inbound drain can't race on the same contact.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -21,16 +36,20 @@ from uuid import UUID, uuid4
 # points (main.py, cli/tui.py) call setup() and override this default.
 os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext, ToolDefinition
 from pydantic_ai.capabilities import Hooks
 from pydantic_ai.messages import ToolCallPart
 
+from backend.chatbot import contact_inbox
 from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity
 from backend.chatbot.messaging import dispatcher as messaging_dispatcher
 from backend.config import MODEL_NAME
-from backend.db import channel_identities, chat_storage, contacts, outbound_ledger
+from backend.db import chat_storage, contacts, outbound_ledger
+from backend.db.outbound_ledger import OutboundTaskSummary
+
+logger = logging.getLogger(__name__)
 
 try:
     import logfire
@@ -49,108 +68,158 @@ def _maybe_span(name: str, **attrs: Any) -> Iterator[None]:
         yield
 
 
-class OutboundCancelled(Exception):
-    """Raised by the per-turn cancellation guard to abort an in-flight run."""
-
-    def __init__(self, task_key: str) -> None:
-        self.task_key = task_key
-        super().__init__(f"outbound task {task_key} cancelled")
-
-
 OUTBOUND_MAX_DEPTH = 3
 
-# Sent to the party once the ticket resolves, so they aren't left wondering
-# whether their reply landed. Canned on purpose — the model's post-resolution
-# wrap-up could repeat customer-only details or go off-script.
-_RESOLUTION_ACK_TEXT = "Thanks — that's everything we needed. We'll take it from here."
+# Headline used when callers don't supply one — first 80 chars of the
+# dispatch_prompt with trailing ellipsis. Cheaply readable in the manifest.
+SUMMARY_FALLBACK_LEN = 80
+
+
+def _derive_summary(prompt: str) -> str:
+    cleaned = " ".join(prompt.split())
+    if len(cleaned) <= SUMMARY_FALLBACK_LEN:
+        return cleaned
+    return cleaned[: SUMMARY_FALLBACK_LEN - 1].rstrip() + "…"
 
 
 class OutboundDeps(BaseModel):
-    task_key: str
+    """Runtime context for one outbound_agent run.
+
+    Bound to a contact, NOT a task. The agent reads `open_tasks` to see
+    what's currently in flight with this partner and decides which (if any)
+    the inbound message resolves.
+    """
+
     business_id: UUID
-    customer_id: UUID
     contact_id: UUID
     contact_name: str
     contact_role: str
-    initiated_by: Literal["customer", "system"]
-    dispatch_prompt: str
     business_name: str | None = None
+    # Manifest visible at run start. Opening run: the freshly-inserted task
+    # plus any others already running. Reply run: every running task for
+    # this contact. Empty list = vendor-initiated message with no open
+    # work — the agent runs in journal-and-reply mode.
+    open_tasks: list[OutboundTaskSummary] = Field(default_factory=list)
+    # Persistent agent-curated notes about this contact (Hermes-style
+    # MEMORY.md). Loaded from contacts.agent_memory at run start; appended
+    # to via the record_note tool.
+    agent_memory: str | None = None
     max_depth: int = 3
     current_depth: int = 0
 
 
-instructions = """
-You are reaching out to {contact_name} on behalf of {business_name} about ONE
-specific issue. You are NOT {contact_name} — you are CONTACTING them. This
-ticket concerns customer {customer_id} (do not mention this id to {contact_name}).
+class ResolveItem(BaseModel):
+    """One task close in a batch resolve_tasks call."""
 
-CONVERSATION FLOW
-- The first run is the OPENING message. Write a single clear, polite message
-  DIRECTED AT {contact_name} that asks for EVERYTHING the customer needs in one go —
-  don't leave out fields you'll have to come back for. For product/stock
-  tickets that normally means: availability, unit price, minimum order /
-  pack size, and expected lead time or restock date. For logistics tickets:
-  pickup address, handoff window, cost, and tracking. Adapt to the task.
-- Do NOT call mark_completed on the opening run — you have not heard back.
-- Each later run is triggered by {contact_name}'s reply. Read what they said.
+    task_key: str = Field(description="The task to mark succeeded.")
+    customer_context: str | None = Field(
+        default=None,
+        description=(
+            "Customer-safe summary with concrete answers. Set whenever "
+            "there's something to tell the customer; omit when nothing "
+            "customer-facing comes out of this resolution."
+        ),
+    )
+    system_context: str | None = Field(
+        default=None,
+        description=(
+            "Internal back-office notes (DB updates, restocking, follow-ups). "
+            "Triggers the coordinator agent. Omit when no system-side action "
+            "is needed."
+        ),
+    )
 
-WHEN TO CLOSE THE TICKET — the bar is "the customer's actual question can
-be answered with what {contact_name} just told us." DEFAULT TO CLOSING.
-- If {contact_name}'s reply answers the customer's question, call mark_completed
-  even if some fields you also asked about are missing. Examples:
-    * Customer asked when X is back in stock; vendor said "Tuesday" or
-      "in stock now". CLOSE — don't push for unit price or MOQ they
-      didn't volunteer.
-    * Customer asked the price; vendor said "₦5,000". CLOSE — don't
-      insist on restock date you also asked about.
+
+_INSTRUCTIONS = """\
+You are reaching out to {contact_name} (role: {contact_role}) on behalf of
+{business_name}. You are NOT {contact_name} — you are CONTACTING them.
+
+YOUR INPUT EACH RUN
+- The first run on a NEW thread is an OPENING dispatch from the store
+  manager. Its text is internal instructions describing what we need to
+  ask {contact_name} — write a single clear, polite outreach in your own
+  voice. Don't echo internal phrasing. Don't call resolve_tasks on this
+  run; you haven't heard back yet.
+- Every later run is triggered by {contact_name}'s reply (possibly several
+  messages they sent in quick succession, joined together). Read the
+  manifest of open tasks below, then decide which (if any) their reply
+  resolves.
+
+OPEN TASKS WITH {contact_name}
+{open_tasks_block}
+
+WHEN THERE ARE OPEN TASKS
+- Match the partner's reply to one or more tasks above. A single message
+  can answer multiple tasks (e.g. "yes, ankara at ₦15k, cotton at ₦8k"
+  closes both).
+- For each task the reply genuinely resolves, include it in
+  resolve_tasks(items=[...]). DEFAULT TO CLOSING when the customer's
+  question has a concrete answer — don't push for fields the partner
+  didn't volunteer.
 - ONLY ask a follow-up when a missing field is genuinely needed to ACT
-  on the customer's question (e.g. customer wants to place an order and
-  you still don't know the MOQ). Asking just to fill out the form is
-  exactly the over-asking we want to avoid.
-- "We'll see" / "soon" / "should be fine" / "we'll get back to you" — that
-  IS a non-answer. Push for specifics on the field that matters.
-- If {contact_name} declines or cannot help on the customer's question, still
-  call mark_completed with that outcome.
+  on the customer's question (e.g. they want to place an order and we
+  still don't know the MOQ).
+- "We'll see" / "soon" / "we'll get back to you" is a non-answer — push
+  for specifics on the field that matters.
+- If {contact_name} declines or cannot help, still close the task with
+  customer_context describing the outcome.
+- If the manifest summary isn't enough to know what a task was about,
+  call get_task_details(task_key) to see the full dispatch prompt.
 
-ON CLOSE — fill at least one of:
-- customer_context: customer-safe summary with the concrete answers
+WHEN THERE ARE NO OPEN TASKS
+- {contact_name} has reached out without a pending request from us. Be
+  brief and helpful. If they shared something durable about their
+  capabilities or constraints ("we don't carry red ankara anymore",
+  "we're closed Mondays"), call record_note(text) to remember it for
+  future runs. Then write a short polite reply.
+
+ON CLOSE — for each ResolveItem, fill at least one of customer_context
+or system_context:
+- customer_context: customer-safe summary with concrete answers
   ("In stock at ₦15,000/pair, 10-unit minimum, ships in 2 days"). No
-  hedging, no "I'll let you know". Set this whenever there's something
-  to tell the customer (including a graceful "vendor cannot help" line).
-- system_context: internal notes / DB actions the customer shouldn't see
-  (e.g., "restock SKU-123 by +50 units"). Omit if nothing system-side
-  needs to happen.
+  hedging, no "I'll let you know".
+- system_context: internal notes for back-office actions (e.g.,
+  "restock SKU-123 by +50 units"). Omit if nothing system-side needs
+  to happen.
 
 VOICE
-- You are {business_name}'s representative. Be professional, concise, and
-  explicit about what you need.
-- Never include UUIDs, internal ids, or system jargon in messages to {contact_name}.
+- You are {business_name}'s representative. Professional, concise,
+  explicit about what you need. WhatsApp-style — short paragraphs, no
+  markdown, no UUIDs, no internal jargon.
+
+MEMORY ABOUT {contact_name}
+{memory_block}
 
 RESPONSE FORMAT
-- Plain prose addressed to {contact_name}. The dispatcher attaches the reference
-  tag for reply tracking — do not add one yourself.
+- Plain prose addressed to {contact_name}. The dispatcher attaches the
+  reference tag for reply tracking — do not add one yourself.
 """
+
+
+def _format_manifest(tasks: list[OutboundTaskSummary]) -> str:
+    if not tasks:
+        return "(none — they reached out unprompted, or every prior task is already closed)"
+    lines = []
+    for t in tasks:
+        lines.append(
+            f"- task_key={t.task_key} | role={t.contact_role} | "
+            f"dispatched={t.dispatched_at:%Y-%m-%d %H:%M} | "
+            f"summary: {t.summary}"
+        )
+    return "\n".join(lines)
+
+
+def _format_memory(memory: str | None) -> str:
+    if not memory:
+        return "(no notes yet)"
+    return memory.strip()
+
 
 _hooks: Hooks[OutboundDeps] = Hooks()
 
 
-@_hooks.on.before_model_request
-async def _cancellation_guard(
-    ctx: RunContext[OutboundDeps],
-    request_context: Any,
-    /,
-) -> Any:
-    # Ledger is the single source of truth for task state. Checking here (vs.
-    # per-tool-call) catches cancellations between turns without racing the
-    # model call that is about to go out.
-    state = await outbound_ledger.get_state(ctx.deps.task_key)
-    if state == "cancelled":
-        raise OutboundCancelled(ctx.deps.task_key)
-    return request_context
-
-
-@_hooks.on.after_tool_execute(tools=["mark_completed"])
-async def _on_mark_completed(
+@_hooks.on.after_tool_execute(tools=["resolve_tasks"])
+async def _on_resolve_tasks(
     ctx: RunContext[OutboundDeps],
     /,
     *,
@@ -159,9 +228,23 @@ async def _on_mark_completed(
     args: dict[str, Any],
     result: Any,
 ) -> Any:
+    """Fan out outbound_resolution.route per closed task in parallel.
+
+    The resolve_tasks tool already updated ledger state and returned the
+    list of acknowledged task_keys; here we trigger the customer-side
+    routing for each one concurrently — coordinator runs and customer
+    inbox enqueues happen on independent customer locks so parallelism is
+    safe.
+    """
     from backend.chatbot.routers.outbound_resolution import route
 
-    await route(ctx.deps.task_key)
+    acknowledged = result.get("acknowledged", []) if isinstance(result, dict) else []
+    if not acknowledged:
+        return result
+    await asyncio.gather(
+        *(route(task_key) for task_key in acknowledged),
+        return_exceptions=True,
+    )
     return result
 
 
@@ -175,50 +258,98 @@ outbound_agent: Agent[OutboundDeps, str] = Agent(
 
 @outbound_agent.instructions
 def _build_instructions(ctx: RunContext[OutboundDeps]) -> str:
-    return instructions.format(
+    return _INSTRUCTIONS.format(
         business_name=ctx.deps.business_name or "the business",
-        customer_id=ctx.deps.customer_id,
         contact_name=ctx.deps.contact_name,
+        contact_role=ctx.deps.contact_role,
+        open_tasks_block=_format_manifest(ctx.deps.open_tasks),
+        memory_block=_format_memory(ctx.deps.agent_memory),
     )
 
 
 @outbound_agent.tool
-async def mark_completed(
+async def resolve_tasks(
     ctx: RunContext[OutboundDeps],
-    customer_context: str | None = None,
-    system_context: str | None = None,
-) -> dict[str, bool]:
-    """Resolve this outbound task. At least one context must be non-empty.
+    items: list[ResolveItem],
+) -> dict[str, list[str]]:
+    """Resolve one or more tasks at once.
 
-    Do not call this until {contact_name} has given concrete, actionable answers to
-    every field the customer's question implies. If anything is still missing
-    or non-committal, ask a follow-up instead.
-
-    - customer_context: customer-safe summary with the concrete answers.
-      Omit if the outcome has no customer-facing component.
-    - system_context: internal notes for DB updates, follow-ups, back-office
-      actions. Omit if nothing system-side needs to happen.
+    Pass an item per task the partner's reply genuinely resolves. Each item
+    must have at least one of customer_context or system_context. Items
+    that target tasks no longer in `running` state (already cancelled /
+    timed out / closed elsewhere) are silently skipped — the ledger
+    UPDATE only fires on running rows.
     """
-    if not (customer_context or system_context):
-        raise ValueError(
-            "mark_completed requires at least one of customer_context or system_context"
+    if not items:
+        return {"acknowledged": [], "skipped": []}
+    acknowledged: list[str] = []
+    skipped: list[str] = []
+    for item in items:
+        if not (item.customer_context or item.system_context):
+            skipped.append(item.task_key)
+            continue
+        ok = await outbound_ledger.mark_completed(
+            item.task_key, item.customer_context, item.system_context
         )
-    await outbound_ledger.mark_completed(
-        ctx.deps.task_key, customer_context, system_context
-    )
-    return {"acknowledged": True}
+        if ok:
+            acknowledged.append(item.task_key)
+        else:
+            skipped.append(item.task_key)
+    return {"acknowledged": acknowledged, "skipped": skipped}
+
+
+@outbound_agent.tool
+async def get_task_details(
+    ctx: RunContext[OutboundDeps], task_key: str
+) -> dict[str, Any] | None:
+    """Fetch the full dispatch_prompt + state for a task in the manifest.
+
+    Use when the manifest summary isn't enough to know what the task is
+    about — e.g. the partner's reply is ambiguous and you need the
+    original brief to disambiguate.
+    """
+    task = await outbound_ledger.get_by_key(task_key)
+    if task is None:
+        return None
+    return {
+        "task_key": task.task_key,
+        "dispatch_prompt": task.dispatch_prompt,
+        "summary": task.summary,
+        "state": task.state,
+        "dispatched_at": task.dispatched_at.isoformat(),
+        "customer_context": task.customer_context,
+    }
+
+
+@outbound_agent.tool
+async def record_note(
+    ctx: RunContext[OutboundDeps], text: str
+) -> dict[str, str]:
+    """Append a durable note to your memory about this contact.
+
+    For things worth remembering across future conversations: capabilities,
+    constraints, preferences, recurring schedule. NOT for transient
+    state — the manifest already shows open tasks, the chat history shows
+    the conversation. Keep notes short and factual; older notes are
+    trimmed when the journal fills up.
+    """
+    if not text.strip():
+        return {"status": "skipped_empty"}
+    journal = await contacts.append_agent_memory(ctx.deps.contact_id, text)
+    return {"status": "recorded", "journal_chars": str(len(journal))}
+
+
+# ---------------------------------------------------------------------------
+# Transport — turn a contact_id into a real ChannelIdentity for sending.
+# ---------------------------------------------------------------------------
 
 
 async def _contact_identity(contact_id: UUID) -> ChannelIdentity | None:
-    """Build a ChannelIdentity targeting a real contact's wa_id.
+    """Resolve a contact_id to a ChannelIdentity targeting their wa_id.
 
-    Looks up the contact row to get the real channel_user_id (the partner's
-    wa_id) AND the right channel_business_id (the tenant's Meta-assigned
-    phone_number_id used as sender). Falls back to the tenant's default
-    whatsapp_phone_number_id when the contact doesn't override it.
-
-    Returns None if the contact has been deleted since dispatch — the caller
-    surfaces that as a status string so the operator sees the dropped reply.
+    `channel_user_id` is the partner's wa_id; `channel_business_id` is the
+    tenant's Meta-assigned phone_number_id used as sender (per-contact
+    override falling back to the tenant's primary WABA).
     """
     contact = await contacts.get_by_id(contact_id)
     if contact is None:
@@ -226,8 +357,6 @@ async def _contact_identity(contact_id: UUID) -> ChannelIdentity | None:
 
     sender_phone_id = contact.channel_business_id
     if sender_phone_id is None:
-        # Default: use the tenant's primary WABA as sender. The contact row
-        # is FK'd to businesses, so a single point lookup is enough.
         from backend.db.connection import get_db
 
         pool = await get_db()
@@ -248,34 +377,37 @@ async def _contact_identity(contact_id: UUID) -> ChannelIdentity | None:
 
 
 async def _send_to_party(
-    *,
-    task_key: str,
-    contact_id: UUID,
-    text: str,
+    *, contact_id: UUID, text: str, task_key: str | None = None
 ) -> str | None:
-    """Forward `text` to the contact identified by `contact_id`.
+    """Send `text` to the contact. Returns None on success, status on failure.
 
-    Returns None on success, a status string when transport is missing or
-    dispatch raised.
+    `task_key` is appended as a [Ref:] tag by the dispatcher when set —
+    used on opening runs so the partner can disambiguate which thread their
+    reply is for. On reply runs we have no single task_key (the run could
+    have closed several at once or none), so we omit the ref.
     """
     party_identity = await _contact_identity(contact_id)
     if party_identity is None:
-        return f"task {task_key[:8]}: contact deleted — reply not delivered"
+        return f"contact deleted — reply not delivered"
     try:
         channel = registry.get(party_identity.channel)
     except KeyError:
-        return f"task {task_key[:8]}: unknown channel {party_identity.channel}"
+        return f"unknown channel {party_identity.channel}"
     try:
-        await messaging_dispatcher.dispatch_to_party(
-            channel,
-            party_identity,
-            text,
-            task_key=task_key,
-        )
+        if task_key is not None:
+            await messaging_dispatcher.dispatch_to_party(
+                channel, party_identity, text, task_key=task_key
+            )
+        else:
+            await channel.send(party_identity, text)
     except Exception as exc:
-        await outbound_ledger.mark_failed(task_key, system_context=str(exc))
-        return f"dispatch failed for task {task_key[:8]}: {exc}"
+        return f"dispatch failed: {exc}"
     return None
+
+
+# ---------------------------------------------------------------------------
+# Entry points: dispatch (opening run) + deliver_contact_reply (drain runner).
+# ---------------------------------------------------------------------------
 
 
 async def dispatch(
@@ -285,24 +417,28 @@ async def dispatch(
     contact_id: UUID,
     initiated_by: Literal["customer", "system"],
     dispatch_prompt: str,
+    summary: str | None = None,
     business_name: str | None = None,
     timeout_seconds: int = 3600,
     parent_depth: int = 0,
 ) -> str:
-    # Reject *before* writing the ledger so a depth-exhausted chain leaves no row.
+    """Open a new outbound thread. Returns the new task_key.
+
+    Fire-and-forget: returns immediately after inserting the ledger row;
+    the agent run + send happens in a background task under the per-contact
+    mutex so no inbound drain can race the opening message.
+    """
     next_depth = parent_depth + 1
     if next_depth > OUTBOUND_MAX_DEPTH:
         raise ValueError(f"max_depth {OUTBOUND_MAX_DEPTH} exceeded")
 
-    # Resolve the contact up front so the ledger snapshot has real values
-    # even if the contact is deleted later. Bail early on unknown contact
-    # rather than create a ledger row that can never deliver.
     contact = await contacts.get_by_id(contact_id)
     if contact is None:
         raise ValueError(f"unknown contact_id {contact_id}")
 
     task_key = uuid4().hex
     timeout_at = datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)
+    final_summary = (summary or "").strip() or _derive_summary(dispatch_prompt)
     await outbound_ledger.insert_task(
         task_key=task_key,
         business_id=business_id,
@@ -313,129 +449,140 @@ async def dispatch(
         contact_id=contact.id,
         contact_name=contact.name,
         contact_role=contact.role,
-    )
-    deps = OutboundDeps(
-        task_key=task_key,
-        business_id=business_id,
-        customer_id=customer_id,
-        contact_id=contact.id,
-        contact_name=contact.name,
-        contact_role=contact.role,
-        initiated_by=initiated_by,
-        dispatch_prompt=dispatch_prompt,
-        business_name=business_name,
-        current_depth=next_depth,
+        summary=final_summary,
     )
 
     async def _run() -> None:
-        await outbound_ledger.mark_running(task_key)
-        with _maybe_span(
-            "outbound.dispatch._run",
-            task_key=task_key,
-            contact_id=str(contact.id),
-            contact_role=contact.role,
-            initiated_by=initiated_by,
+        owner = uuid4().hex
+        # Block until we own the per-contact lock — an inbound drain may be
+        # mid-flight and we can't run two agent calls on the same contact
+        # concurrently. The lock has a 60s TTL so we won't deadlock.
+        while not contact_inbox.acquire_lock(
+            str(business_id), str(contact.id), owner
         ):
-            try:
-                result = await outbound_agent.run(dispatch_prompt, deps=deps)
-            except OutboundCancelled:
-                return
-            except Exception as exc:
-                await outbound_ledger.mark_failed(task_key, system_context=str(exc))
-                return
-
-            await chat_storage.append_outbound_history(task_key, result.new_messages())
-
-            # Opening run shouldn't call mark_completed — but if the model
-            # ignores instructions and resolves on the first turn, the
-            # router has already routed to the customer. Don't echo the
-            # model's wrap-up text to the party.
-            if await outbound_ledger.get_state(task_key) != "running":
-                return
-
-            await _send_to_party(
-                task_key=task_key,
-                contact_id=contact.id,
-                text=result.output,
+            await asyncio.sleep(0.5)
+        try:
+            await outbound_ledger.mark_running(task_key)
+            open_tasks = await outbound_ledger.list_open_tasks_by_contact(
+                business_id, contact.id
             )
+            history = await chat_storage.load_contact_history(business_id, contact.id)
+            deps = OutboundDeps(
+                business_id=business_id,
+                contact_id=contact.id,
+                contact_name=contact.name,
+                contact_role=contact.role,
+                business_name=business_name,
+                open_tasks=open_tasks,
+                agent_memory=contact.agent_memory,
+                current_depth=next_depth,
+            )
+            opening_input = (
+                f"[NEW DISPATCH from store manager — task {task_key}]\n"
+                f"{dispatch_prompt}"
+            )
+            with _maybe_span(
+                "outbound.dispatch._run",
+                task_key=task_key,
+                contact_id=str(contact.id),
+                contact_role=contact.role,
+                initiated_by=initiated_by,
+            ):
+                try:
+                    result = await outbound_agent.run(
+                        opening_input, deps=deps, message_history=history
+                    )
+                except Exception as exc:
+                    await outbound_ledger.mark_failed(task_key, system_context=str(exc))
+                    return
+                await chat_storage.append_contact_history(
+                    business_id, contact.id, result.new_messages()
+                )
+                # Opening run shouldn't normally call resolve_tasks — but if
+                # it does, the resolution router already routed everything.
+                # Still send the agent's text to the party so they get the
+                # outreach.
+                send_status = await _send_to_party(
+                    contact_id=contact.id, text=result.output, task_key=task_key
+                )
+                if send_status is not None:
+                    logger.warning(
+                        "outbound dispatch send failed task=%s status=%s",
+                        task_key,
+                        send_status,
+                    )
+        finally:
+            contact_inbox.release_lock(str(business_id), str(contact.id), owner)
 
     asyncio.create_task(_run())
     return task_key
 
 
-async def deliver_party_reply(task_key: str, party_text: str) -> str | None:
-    """Continue an open outbound thread with a new message from the vendor.
+async def deliver_contact_reply(
+    business_id: str | UUID,
+    contact_id: str | UUID,
+    messages: list[str],
+) -> str | None:
+    """Run the outbound agent against a contact's coalesced inbound reply.
 
-    Returns:
-        None on success (the agent's reply was dispatched, OR the agent
-        resolved the ticket so nothing further goes to the party).
-        A short status string when the message can't be delivered (task
-        unknown / already resolved / no transport). Callers — both the
-        smoke TUI and the future Flow webhook — surface this string so
-        the operator isn't left staring at a silent UI.
+    Called by the contact_inbox drain runner with the per-contact mutex
+    already held. `messages` is the list of inbound texts that arrived in
+    the debounce window, joined here into a single agent input.
+
+    Returns None on success, a status string when delivery fails.
     """
-    task = await outbound_ledger.get_by_key(task_key)
-    if task is None:
-        return f"task {task_key[:8]} not found"
-    if task.state != "running":
-        return (
-            f"task {task_key[:8]} is {task.state}; the agent already closed "
-            "this ticket and won't process new replies on it"
-        )
+    biz = UUID(str(business_id))
+    cid = UUID(str(contact_id))
 
-    if task.contact_id is None:
-        return (
-            f"task {task_key[:8]}: contact deleted — cannot continue thread"
-        )
+    contact = await contacts.get_by_id(cid)
+    if contact is None:
+        return f"contact {str(cid)[:8]} not found"
+    if contact.business_id != biz:
+        return f"contact {str(cid)[:8]} doesn't belong to business {str(biz)[:8]}"
+
+    open_tasks = await outbound_ledger.list_open_tasks_by_contact(biz, cid)
+    history = await chat_storage.load_contact_history(biz, cid)
     deps = OutboundDeps(
-        task_key=task.task_key,
-        business_id=task.business_id,
-        customer_id=task.customer_id,
-        contact_id=task.contact_id,
-        contact_name=task.contact_name,
-        contact_role=task.contact_role,
-        initiated_by=task.initiated_by,
-        dispatch_prompt=task.dispatch_prompt,
+        business_id=biz,
+        contact_id=cid,
+        contact_name=contact.name,
+        contact_role=contact.role,
+        open_tasks=open_tasks,
+        agent_memory=contact.agent_memory,
     )
-    history = await chat_storage.load_outbound_history(task_key)
+
+    joined = "\n".join(m.strip() for m in messages if m.strip())
+    if not joined:
+        return "empty inbound — nothing to run agent on"
 
     with _maybe_span(
-        "deliver_party_reply",
-        task_key=task_key,
-        contact_id=str(task.contact_id),
-        contact_role=task.contact_role,
+        "outbound.deliver_contact_reply",
+        contact_id=str(cid),
+        contact_role=contact.role,
+        open_task_count=len(open_tasks),
         history_len=len(history),
     ):
         try:
             result = await outbound_agent.run(
-                party_text, deps=deps, message_history=history
+                joined, deps=deps, message_history=history
             )
-        except OutboundCancelled:
-            return f"task {task_key[:8]} was cancelled mid-run"
         except Exception as exc:
-            await outbound_ledger.mark_failed(task_key, system_context=str(exc))
-            return f"outbound agent errored on task {task_key[:8]}: {exc}"
-
-        await chat_storage.append_outbound_history(task_key, result.new_messages())
-
-        # If the agent called mark_completed, `_on_mark_completed` already
-        # routed customer_context to the customer side. The model's wrap-up
-        # text isn't sent — instead the party gets a short canned ack so the
-        # thread closes politely. Other terminal states (failed/cancelled)
-        # don't get an ack: the party didn't successfully help, sending
-        # "thanks!" would be odd.
-        post_state = await outbound_ledger.get_state(task_key)
-        if post_state == "succeeded":
-            return await _send_to_party(
-                task_key=task_key,
-                contact_id=task.contact_id,
-                text=_RESOLUTION_ACK_TEXT,
+            logger.exception(
+                "outbound agent errored on contact reply contact=%s", cid
             )
-        if post_state != "running":
-            return None
+            return f"outbound agent errored: {exc}"
 
-        return await _send_to_party(
-            task_key=task_key,
-            contact_id=task.contact_id,
-            text=result.output,
-        )
+        await chat_storage.append_contact_history(biz, cid, result.new_messages())
+
+        # The agent's plain-text output is the reply to the partner. If
+        # resolve_tasks was called during the run, _on_resolve_tasks already
+        # fanned out customer-side notifications — the partner just needs
+        # the agent's natural reply (no canned ack, no [Ref:] tag since
+        # this run might span multiple tasks or none).
+        send_status = await _send_to_party(contact_id=cid, text=result.output)
+        if send_status is not None:
+            logger.warning(
+                "contact reply send failed contact=%s status=%s", cid, send_status
+            )
+            return send_status
+    return None
