@@ -314,13 +314,29 @@ class SmokeApp(App):
     async def _run_party_reply(self, task_key: str, text: str, log_id: str) -> None:
         # Same defensive re-seed as customer turns — see _run_orchestrator.
         await self._reseed()
+        # The new outbound flow is per-contact, not per-task — translate the
+        # operator's task_key selection into the contact_id behind that task,
+        # then deliver as a coalesced contact reply (single-message list since
+        # the TUI sends one inbound at a time).
+        from backend.db import outbound_ledger as _ledger
+
+        task = await _ledger.get_by_key(task_key)
+        if task is None or task.contact_id is None:
+            self._log(
+                log_id,
+                f"[yellow]ℹ task {task_key[:8]} has no contact bound[/yellow]",
+            )
+            self._reap_tasks()
+            return
         try:
-            status = await outbound.deliver_party_reply(task_key, text)
+            status = await outbound.deliver_contact_reply(
+                task.business_id, task.contact_id, [text]
+            )
         except Exception as exc:
-            self._log(log_id, f"[red]✗ deliver_party_reply error: {exc}[/red]")
+            self._log(log_id, f"[red]✗ deliver_contact_reply error: {exc}[/red]")
         else:
             if status:
-                # Task already resolved / unknown / no transport. Surface the
+                # Unknown contact / cross-tenant / send failed. Surface the
                 # message so the operator knows why nothing came back instead
                 # of staring at a frozen "thinking…" line.
                 self._log(log_id, f"[yellow]ℹ {status}[/yellow]")
