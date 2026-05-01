@@ -240,10 +240,14 @@ async def seed_whatsapp_business_from_env(pool) -> dict | None:
         )
         contacts_csv = default_contacts if default_contacts.exists() else None
 
-    self_vendor_flag = (os.getenv("SEED_SELF_VENDOR") or "").strip().lower() in (
+    raw_self_vendor = os.getenv("SEED_SELF_VENDOR")
+    self_vendor_flag = (raw_self_vendor or "").strip().lower() in (
         "1",
         "true",
         "yes",
+    )
+    logger.info(
+        "SEED_SELF_VENDOR raw=%r resolved=%s", raw_self_vendor, self_vendor_flag
     )
 
     summary = await seed_whatsapp_business(
