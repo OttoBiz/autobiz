@@ -24,7 +24,7 @@ from pydantic_ai.capabilities import Hooks
 from backend.chatbot import inbox
 from backend.chatbot.agents import outbound
 from backend.config import MODEL_NAME
-from backend.db import db_utils
+from backend.db import contacts, db_utils
 from backend.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -64,7 +64,10 @@ Tools available:
 - `update_price(sku, new_price)`: set a product's price.
 - `update_vendor_contact(vendor_id, fields)`: update vendor name/phone/email.
 - `record_note(subject, content)`: append a back-office journal entry.
-- `dispatch_outbound(party, prompt, timeout_seconds=3600)`: open a new
+- `list_contacts(role=None)`: read the business's address book. Returns
+  id/name/role/notes per contact. Use to pick a `contact_id` before
+  calling `dispatch_outbound`.
+- `dispatch_outbound(contact_id, prompt, timeout_seconds=3600)`: open a new
   system-initiated outbound thread (e.g., contact a backup vendor). Depth-limited.
 - `surface_to_customer(summary)`: enqueue a system_event for central_agent.
 - `escalate_to_operator(reason, options=None)`: hand off to a human when
@@ -166,9 +169,21 @@ async def record_note(
 
 
 @coordinator_agent.tool
+async def list_contacts(
+    ctx: RunContext[CoordinatorDeps], role: str | None = None
+) -> list[dict[str, Any]]:
+    """List this business's address book. Optionally filter by role."""
+    rows = await contacts.list_by_business(ctx.deps.business_id, role=role)
+    return [
+        {"id": str(c.id), "name": c.name, "role": c.role, "notes": c.notes}
+        for c in rows
+    ]
+
+
+@coordinator_agent.tool
 async def dispatch_outbound(
     ctx: RunContext[CoordinatorDeps],
-    party: str,
+    contact_id: UUID,
     prompt: str,
     timeout_seconds: int = 3600,
 ) -> str:
@@ -176,7 +191,7 @@ async def dispatch_outbound(
     return await outbound.dispatch(
         business_id=ctx.deps.business_id,
         customer_id=ctx.deps.customer_id,
-        party=party,
+        contact_id=contact_id,
         initiated_by="system",
         dispatch_prompt=prompt,
         timeout_seconds=timeout_seconds,

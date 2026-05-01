@@ -1,11 +1,13 @@
 import asyncio
 from typing import Any, Awaitable, Callable, Literal, NamedTuple
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
 
 from backend.chatbot.agents.deps import AgentDeps
 from backend.config import MODEL_NAME
+from backend.db import contacts
 
 SUBAGENT_TIMEOUT_SECONDS = 30
 
@@ -20,12 +22,11 @@ class Task(BaseModel):
     prompt: str = Field(
         description="Detailed query for the subagent. Include all relevant context (product name, order id, amounts, etc)."
     )
-    party_type: Literal["vendor", "logistics"] | None = Field(
+    contact_id: UUID | None = Field(
         default=None,
         description=(
-            "For agent_name='outbound' only: which external party to contact "
-            "('vendor' for stock/restock/payment confirmation, 'logistics' for "
-            "delivery/pickup coordination). Required when calling outbound; "
+            "For agent_name='outbound' only: the UUID of the contact to reach "
+            "out to, picked from `list_contacts`. Required when calling outbound; "
             "ignored otherwise."
         ),
     )
@@ -33,7 +34,7 @@ class Task(BaseModel):
 
 class SubagentDef(NamedTuple):
     description: str
-    # outbound takes an extra `party_type` arg; product/payment/etc. don't.
+    # outbound takes an extra `contact_id` arg; product/payment/etc. don't.
     # _dispatch_task handles the per-handler call signature.
     handler: Callable[..., Awaitable[dict[str, Any]]]
 
@@ -77,17 +78,30 @@ async def _handle_customer_relation(deps: AgentDeps, prompt: str) -> dict[str, A
 
 
 async def _handle_outbound(
-    deps: AgentDeps, prompt: str, party_type: str | None = None
+    deps: AgentDeps, prompt: str, contact_id: UUID | None = None
 ) -> dict[str, Any]:
     from backend.chatbot.agents.outbound import dispatch
     from backend.db.db_utils import get_business_info
 
-    if party_type not in ("vendor", "logistics"):
+    if contact_id is None:
         return {
-            "error": "missing_party_type",
+            "error": "missing_contact_id",
             "detail": (
-                "outbound tasks require party_type='vendor' or 'logistics'. "
-                "Re-issue the task with the correct party_type."
+                "outbound tasks require a contact_id picked from list_contacts. "
+                "Call list_contacts first, then re-issue the outbound task with "
+                "the chosen contact's id."
+            ),
+        }
+
+    contact = await contacts.get_by_id(contact_id)
+    if contact is None or contact.business_id != deps.business_id:
+        # Hard-fail on cross-tenant or stale id rather than silently dispatching
+        # to nobody — the agent will get a structured error and can retry.
+        return {
+            "error": "unknown_contact_id",
+            "detail": (
+                f"contact {contact_id} not found in this business's address "
+                "book. Call list_contacts to get current ids."
             ),
         }
 
@@ -96,13 +110,19 @@ async def _handle_outbound(
     task_key = await dispatch(
         business_id=deps.business_id,
         customer_id=deps.customer_id,
-        party=party_type,
+        contact_id=contact.id,
         initiated_by="customer",
         dispatch_prompt=prompt,
         business_name=business_name,
         parent_depth=deps.current_depth,
     )
-    return {"status": "pending", "task_key": task_key, "party": party_type}
+    return {
+        "status": "pending",
+        "task_key": task_key,
+        "contact_id": str(contact.id),
+        "contact_name": contact.name,
+        "contact_role": contact.role,
+    }
 
 
 def _register_handlers() -> dict[str, SubagentDef]:
@@ -191,9 +211,16 @@ THE INBOX PROMPT:
 
 OUTBOUND:
 - Use the "outbound" subagent when you need vendor or logistics input (stock check, payment confirmation, delivery coordination).
-- ALWAYS set `party_type` on outbound tasks: "vendor" or "logistics".
-- The "logistics" subagent and outbound-with-party_type='logistics' are
-  NOT interchangeable. "logistics" only reads our DB (where's order #X,
+- BEFORE calling outbound, call `list_contacts(role=...)` to see who's in
+  the business's address book. Use the role you need ("vendor",
+  "logistics", "tailor", whatever the tenant has filed) — pass None to see
+  everyone. Pick the right contact by name and notes (notes describe what
+  each one specializes in).
+- Then call `query_subagent` with agent_name='outbound' and set
+  `contact_id` to the picked contact's id. The system writes the contact's
+  name/role into the ticket so the partner gets addressed correctly.
+- The "logistics" subagent and outbound-to-a-logistics-contact are NOT
+  interchangeable. "logistics" only reads our DB (where's order #X,
   what's its tracking number). If the customer wants the partner to
   ACT — schedule a pickup, reschedule a delivery, change a drop-off
   address, confirm dispatch — that's outbound, NOT logistics. Don't
@@ -227,10 +254,34 @@ async def query_subagent(
     return [r if isinstance(r, dict) else {"error": str(r)} for r in results]
 
 
+@agent.tool
+async def list_contacts(
+    ctx: RunContext[AgentDeps], role: str | None = None
+) -> list[dict[str, Any]]:
+    """List the business's address book. Optionally filter by role.
+
+    Returns the rows the agent needs to pick a contact for an outbound task —
+    id (pass to outbound's contact_id), name, role, and free-text notes
+    describing what each contact specializes in. Pass role=None to see
+    everyone, or a specific role string ("vendor", "logistics", or whatever
+    the tenant filed) to narrow the list.
+    """
+    rows = await contacts.list_by_business(ctx.deps.business_id, role=role)
+    return [
+        {
+            "id": str(c.id),
+            "name": c.name,
+            "role": c.role,
+            "notes": c.notes,
+        }
+        for c in rows
+    ]
+
+
 async def _dispatch_task(deps: AgentDeps, task: Task) -> dict[str, Any]:
     handler = _get_subagents()[task.agent_name].handler
     if task.agent_name == "outbound":
-        return await handler(deps, task.prompt, task.party_type)
+        return await handler(deps, task.prompt, task.contact_id)
     return await handler(deps, task.prompt)
 
 
