@@ -101,6 +101,27 @@ async def test_returns_contact_when_contact_row_joined(conn):
 
 
 @pytest.mark.asyncio
+async def test_contact_match_wins_over_owner_match(conn):
+    # Single-person business: the operator's wa_id is also registered as a
+    # vendor contact. Resolver must classify as contact so the message drives
+    # the outbound flow instead of being dropped as owner self-message.
+    business_id = uuid4()
+    contact_id = uuid4()
+    conn.fetchrow.return_value = {
+        "business_id": business_id,
+        "owner_phone_number": "wa-owner",
+        "contact_id": contact_id,
+        "contact_name": "Self Vendor",
+        "contact_role": "vendor",
+    }
+
+    result = await whatsapp_resolver.resolve_inbound_sender("phone-id-1", "wa-owner")
+
+    assert result.kind == "contact"
+    assert result.contact_id == contact_id
+
+
+@pytest.mark.asyncio
 async def test_returns_customer_when_no_contact_match_and_not_owner(conn):
     business_id = uuid4()
     conn.fetchrow.return_value = {

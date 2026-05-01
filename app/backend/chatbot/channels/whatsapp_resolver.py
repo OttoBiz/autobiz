@@ -56,11 +56,11 @@ async def resolve_inbound_sender(
 
     if row is None:
         return InboundSender(kind="unknown_tenant")
-    # `owner_phone_number` is the operator's wa_id (no `+`). When the inbound
-    # `wa_id` matches it, the tenant operator is messaging their own WABA —
-    # don't treat that as a customer message.
-    if row["owner_phone_number"] == wa_id:
-        return InboundSender(kind="owner", business_id=row["business_id"])
+    # Contact match wins over owner match: the operator can be in their own
+    # address book (they ARE the vendor for a single-person business), and we
+    # want those replies to drive the outbound flow rather than be dropped.
+    # The owner branch only fires when the inbound is from the operator AND
+    # they are not also a registered contact.
     if row["contact_id"] is not None:
         return InboundSender(
             kind="contact",
@@ -69,6 +69,8 @@ async def resolve_inbound_sender(
             contact_name=row["contact_name"],
             contact_role=row["contact_role"],
         )
+    if row["owner_phone_number"] == wa_id:
+        return InboundSender(kind="owner", business_id=row["business_id"])
     return InboundSender(kind="customer", business_id=row["business_id"])
 
 
