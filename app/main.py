@@ -4,6 +4,7 @@ Main FastAPI application for Ottobiz
 import asyncio
 import logging
 import os
+import sys
 
 import uvicorn
 from dotenv import load_dotenv
@@ -30,11 +31,14 @@ except ImportError:
     populate_db_on_startup = None
     print("Warning: Database connection module not available")
 
-LOG_FILE = os.getenv("LOG_FILE", "app.log")
+# Send logs to stdout so the container runtime (Dokploy, docker logs, etc.)
+# can surface them. A file-only handler hides app-level warnings/errors
+# from operators looking at the platform's log view.
 logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.WARNING,
-    format='%(asctime)s [%(levelname)s]: %(message)s'
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    stream=sys.stdout,
+    force=True,
 )
 
 # Create FastAPI app
