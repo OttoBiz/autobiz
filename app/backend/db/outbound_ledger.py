@@ -22,6 +22,7 @@ class OutboundTaskRow(BaseModel):
     contact_role: str             # snapshot at dispatch time
     initiated_by: Literal["customer", "system"]
     dispatch_prompt: str
+    summary: str                  # one-line headline; what the agent sees in manifests
     state: Literal[
         "queued",
         "running",
@@ -38,9 +39,23 @@ class OutboundTaskRow(BaseModel):
     timeout_at: datetime
 
 
+class OutboundTaskSummary(BaseModel):
+    """Manifest item — what the agent sees per open task without drilling in.
+
+    Full dispatch_prompt is fetched on demand via get_task_details(task_key)
+    when the vendor's reply is ambiguous and the agent needs more context.
+    """
+
+    task_key: str
+    contact_role: str
+    summary: str
+    dispatched_at: datetime
+    customer_id: UUID  # so the agent knows which customer this is on behalf of
+
+
 _COLUMNS = (
     "task_key, business_id, customer_id, contact_id, contact_name, contact_role, "
-    "initiated_by, dispatch_prompt, state, customer_context, system_context, "
+    "initiated_by, dispatch_prompt, summary, state, customer_context, system_context, "
     "dispatched_at, resolved_at, timeout_at"
 )
 
@@ -56,14 +71,15 @@ async def insert_task(
     contact_id: UUID | None,
     contact_name: str,
     contact_role: str,
+    summary: str,
 ) -> None:
     pool = await get_db()
     query = """
         INSERT INTO outbound_tasks (
             task_key, business_id, customer_id, contact_id, contact_name, contact_role,
-            initiated_by, dispatch_prompt, timeout_at
+            initiated_by, dispatch_prompt, summary, timeout_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     """
     async with pool.acquire() as conn:
         await conn.execute(
@@ -76,6 +92,7 @@ async def insert_task(
             contact_role,
             initiated_by,
             dispatch_prompt,
+            summary,
             timeout_at,
         )
 
@@ -153,29 +170,30 @@ async def get_by_key(task_key: str) -> OutboundTaskRow | None:
     return OutboundTaskRow(**dict(row)) if row else None
 
 
-async def find_open_task_by_contact(
+async def list_open_tasks_by_contact(
     business_id: UUID,
     contact_id: UUID,
-) -> OutboundTaskRow | None:
-    """Most recently dispatched `running` task for this contact, or None.
+) -> list[OutboundTaskSummary]:
+    """All currently-running tasks for this contact, newest first.
 
-    Tenant-scoped (business_id) for defense-in-depth — contact_id is
-    globally unique so the join is 1:1, but scoping prevents a stale or
-    forged contact_id leaking another tenant's task.
+    Returns the lightweight summary projection — what the agent reads on
+    every reply run to decide which (if any) tasks the vendor is answering.
+    Full dispatch_prompt is fetched on demand via get_by_key.
+
+    Tenant-scoped (business_id) for defense-in-depth.
     """
     pool = await get_db()
-    query = f"""
-        SELECT {_COLUMNS}
+    query = """
+        SELECT task_key, contact_role, summary, dispatched_at, customer_id
         FROM outbound_tasks
         WHERE business_id = $1
           AND contact_id  = $2
           AND state       = 'running'
         ORDER BY dispatched_at DESC
-        LIMIT 1
     """
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(query, business_id, contact_id)
-    return OutboundTaskRow(**dict(row)) if row else None
+        rows = await conn.fetch(query, business_id, contact_id)
+    return [OutboundTaskSummary(**dict(row)) for row in rows]
 
 
 async def get_pending_for_customer(
