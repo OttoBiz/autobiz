@@ -30,7 +30,7 @@ from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity
 from backend.chatbot.messaging import dispatcher as messaging_dispatcher
 from backend.config import MODEL_NAME
-from backend.db import channel_identities, chat_storage, outbound_ledger
+from backend.db import channel_identities, chat_storage, contacts, outbound_ledger
 
 try:
     import logfire
@@ -69,7 +69,9 @@ class OutboundDeps(BaseModel):
     task_key: str
     business_id: UUID
     customer_id: UUID
-    party: str
+    contact_id: UUID
+    contact_name: str
+    contact_role: str
     initiated_by: Literal["customer", "system"]
     dispatch_prompt: str
     business_name: str | None = None
@@ -78,23 +80,23 @@ class OutboundDeps(BaseModel):
 
 
 instructions = """
-You are reaching out to {party} on behalf of {business_name} about ONE
-specific issue. You are NOT {party} — you are CONTACTING them. This
-ticket concerns customer {customer_id} (do not mention this id to {party}).
+You are reaching out to {contact_name} on behalf of {business_name} about ONE
+specific issue. You are NOT {contact_name} — you are CONTACTING them. This
+ticket concerns customer {customer_id} (do not mention this id to {contact_name}).
 
 CONVERSATION FLOW
 - The first run is the OPENING message. Write a single clear, polite message
-  DIRECTED AT {party} that asks for EVERYTHING the customer needs in one go —
+  DIRECTED AT {contact_name} that asks for EVERYTHING the customer needs in one go —
   don't leave out fields you'll have to come back for. For product/stock
   tickets that normally means: availability, unit price, minimum order /
   pack size, and expected lead time or restock date. For logistics tickets:
   pickup address, handoff window, cost, and tracking. Adapt to the task.
 - Do NOT call mark_completed on the opening run — you have not heard back.
-- Each later run is triggered by {party}'s reply. Read what they said.
+- Each later run is triggered by {contact_name}'s reply. Read what they said.
 
 WHEN TO CLOSE THE TICKET — the bar is "the customer's actual question can
-be answered with what {party} just told us." DEFAULT TO CLOSING.
-- If {party}'s reply answers the customer's question, call mark_completed
+be answered with what {contact_name} just told us." DEFAULT TO CLOSING.
+- If {contact_name}'s reply answers the customer's question, call mark_completed
   even if some fields you also asked about are missing. Examples:
     * Customer asked when X is back in stock; vendor said "Tuesday" or
       "in stock now". CLOSE — don't push for unit price or MOQ they
@@ -107,7 +109,7 @@ be answered with what {party} just told us." DEFAULT TO CLOSING.
   exactly the over-asking we want to avoid.
 - "We'll see" / "soon" / "should be fine" / "we'll get back to you" — that
   IS a non-answer. Push for specifics on the field that matters.
-- If {party} declines or cannot help on the customer's question, still
+- If {contact_name} declines or cannot help on the customer's question, still
   call mark_completed with that outcome.
 
 ON CLOSE — fill at least one of:
@@ -122,10 +124,10 @@ ON CLOSE — fill at least one of:
 VOICE
 - You are {business_name}'s representative. Be professional, concise, and
   explicit about what you need.
-- Never include UUIDs, internal ids, or system jargon in messages to {party}.
+- Never include UUIDs, internal ids, or system jargon in messages to {contact_name}.
 
 RESPONSE FORMAT
-- Plain prose addressed to {party}. The dispatcher attaches the reference
+- Plain prose addressed to {contact_name}. The dispatcher attaches the reference
   tag for reply tracking — do not add one yourself.
 """
 
@@ -176,7 +178,7 @@ def _build_instructions(ctx: RunContext[OutboundDeps]) -> str:
     return instructions.format(
         business_name=ctx.deps.business_name or "the business",
         customer_id=ctx.deps.customer_id,
-        party=ctx.deps.party,
+        contact_name=ctx.deps.contact_name,
     )
 
 
@@ -188,7 +190,7 @@ async def mark_completed(
 ) -> dict[str, bool]:
     """Resolve this outbound task. At least one context must be non-empty.
 
-    Do not call this until {party} has given concrete, actionable answers to
+    Do not call this until {contact_name} has given concrete, actionable answers to
     every field the customer's question implies. If anything is still missing
     or non-committal, ask a follow-up instead.
 
@@ -207,40 +209,66 @@ async def mark_completed(
     return {"acknowledged": True}
 
 
-def _vendor_identity(customer_identity: ChannelIdentity, party: str) -> ChannelIdentity:
-    """Re-target a customer identity at the vendor `party` address."""
+async def _contact_identity(contact_id: UUID) -> ChannelIdentity | None:
+    """Build a ChannelIdentity targeting a real contact's wa_id.
+
+    Looks up the contact row to get the real channel_user_id (the partner's
+    wa_id) AND the right channel_business_id (the tenant's Meta-assigned
+    phone_number_id used as sender). Falls back to the tenant's default
+    whatsapp_phone_number_id when the contact doesn't override it.
+
+    Returns None if the contact has been deleted since dispatch — the caller
+    surfaces that as a status string so the operator sees the dropped reply.
+    """
+    contact = await contacts.get_by_id(contact_id)
+    if contact is None:
+        return None
+
+    sender_phone_id = contact.channel_business_id
+    if sender_phone_id is None:
+        # Default: use the tenant's primary WABA as sender. The contact row
+        # is FK'd to businesses, so a single point lookup is enough.
+        from backend.db.connection import get_db
+
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT whatsapp_phone_number_id FROM businesses WHERE id = $1",
+                contact.business_id,
+            )
+        sender_phone_id = row["whatsapp_phone_number_id"] if row else None
+
     return ChannelIdentity(
-        business_id=customer_identity.business_id,
-        customer_id=customer_identity.customer_id,
-        channel=customer_identity.channel,
-        channel_user_id=party,
-        last_inbound_at=customer_identity.last_inbound_at,
+        business_id=str(contact.business_id),
+        customer_id=str(contact.id),  # placeholder — outbound dispatch doesn't read this
+        channel=contact.channel,
+        channel_user_id=contact.channel_user_id,
+        channel_business_id=sender_phone_id,
     )
 
 
 async def _send_to_party(
     *,
     task_key: str,
-    business_id: UUID,
-    customer_id: UUID,
-    party: str,
+    contact_id: UUID,
     text: str,
 ) -> str | None:
-    """Resolve transport for this customer and forward `text` to `party`.
+    """Forward `text` to the contact identified by `contact_id`.
 
     Returns None on success, a status string when transport is missing or
     dispatch raised.
     """
-    channel = await registry.get_for_customer(str(business_id), str(customer_id))
-    customer_identity = await channel_identities.get_most_recent_identity(
-        business_id, customer_id
-    )
-    if channel is None or customer_identity is None:
-        return f"task {task_key[:8]}: no transport for party — reply not delivered"
+    party_identity = await _contact_identity(contact_id)
+    if party_identity is None:
+        return f"task {task_key[:8]}: contact deleted — reply not delivered"
+    try:
+        channel = registry.get(party_identity.channel)
+    except KeyError:
+        return f"task {task_key[:8]}: unknown channel {party_identity.channel}"
     try:
         await messaging_dispatcher.dispatch_to_party(
             channel,
-            _vendor_identity(customer_identity, party),
+            party_identity,
             text,
             task_key=task_key,
         )
@@ -254,7 +282,7 @@ async def dispatch(
     *,
     business_id: UUID,
     customer_id: UUID,
-    party: str,
+    contact_id: UUID,
     initiated_by: Literal["customer", "system"],
     dispatch_prompt: str,
     business_name: str | None = None,
@@ -266,22 +294,33 @@ async def dispatch(
     if next_depth > OUTBOUND_MAX_DEPTH:
         raise ValueError(f"max_depth {OUTBOUND_MAX_DEPTH} exceeded")
 
+    # Resolve the contact up front so the ledger snapshot has real values
+    # even if the contact is deleted later. Bail early on unknown contact
+    # rather than create a ledger row that can never deliver.
+    contact = await contacts.get_by_id(contact_id)
+    if contact is None:
+        raise ValueError(f"unknown contact_id {contact_id}")
+
     task_key = uuid4().hex
     timeout_at = datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)
     await outbound_ledger.insert_task(
         task_key=task_key,
         business_id=business_id,
         customer_id=customer_id,
-        party=party,
         initiated_by=initiated_by,
         dispatch_prompt=dispatch_prompt,
         timeout_at=timeout_at,
+        contact_id=contact.id,
+        contact_name=contact.name,
+        contact_role=contact.role,
     )
     deps = OutboundDeps(
         task_key=task_key,
         business_id=business_id,
         customer_id=customer_id,
-        party=party,
+        contact_id=contact.id,
+        contact_name=contact.name,
+        contact_role=contact.role,
         initiated_by=initiated_by,
         dispatch_prompt=dispatch_prompt,
         business_name=business_name,
@@ -293,7 +332,8 @@ async def dispatch(
         with _maybe_span(
             "outbound.dispatch._run",
             task_key=task_key,
-            party=party,
+            contact_id=str(contact.id),
+            contact_role=contact.role,
             initiated_by=initiated_by,
         ):
             try:
@@ -315,9 +355,7 @@ async def dispatch(
 
             await _send_to_party(
                 task_key=task_key,
-                business_id=business_id,
-                customer_id=customer_id,
-                party=party,
+                contact_id=contact.id,
                 text=result.output,
             )
 
@@ -345,11 +383,17 @@ async def deliver_party_reply(task_key: str, party_text: str) -> str | None:
             "this ticket and won't process new replies on it"
         )
 
+    if task.contact_id is None:
+        return (
+            f"task {task_key[:8]}: contact deleted — cannot continue thread"
+        )
     deps = OutboundDeps(
         task_key=task.task_key,
         business_id=task.business_id,
         customer_id=task.customer_id,
-        party=task.party,
+        contact_id=task.contact_id,
+        contact_name=task.contact_name,
+        contact_role=task.contact_role,
         initiated_by=task.initiated_by,
         dispatch_prompt=task.dispatch_prompt,
     )
@@ -358,7 +402,8 @@ async def deliver_party_reply(task_key: str, party_text: str) -> str | None:
     with _maybe_span(
         "deliver_party_reply",
         task_key=task_key,
-        party=task.party,
+        contact_id=str(task.contact_id),
+        contact_role=task.contact_role,
         history_len=len(history),
     ):
         try:
@@ -383,9 +428,7 @@ async def deliver_party_reply(task_key: str, party_text: str) -> str | None:
         if post_state == "succeeded":
             return await _send_to_party(
                 task_key=task_key,
-                business_id=task.business_id,
-                customer_id=task.customer_id,
-                party=task.party,
+                contact_id=task.contact_id,
                 text=_RESOLUTION_ACK_TEXT,
             )
         if post_state != "running":
@@ -393,8 +436,6 @@ async def deliver_party_reply(task_key: str, party_text: str) -> str | None:
 
         return await _send_to_party(
             task_key=task_key,
-            business_id=task.business_id,
-            customer_id=task.customer_id,
-            party=task.party,
+            contact_id=task.contact_id,
             text=result.output,
         )
