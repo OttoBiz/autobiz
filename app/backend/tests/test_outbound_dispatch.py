@@ -243,7 +243,6 @@ async def test_dispatch_derives_summary_when_omitted(patch_ledger, monkeypatch):
         "Please reach out to the vendor and find out whether they have the "
         "newest ankara collection in stock and what the wholesale price is."
     )
-    assert len(long_prompt) > outbound.SUMMARY_FALLBACK_LEN
 
     await outbound.dispatch(
         business_id=uuid4(),
@@ -253,9 +252,11 @@ async def test_dispatch_derives_summary_when_omitted(patch_ledger, monkeypatch):
         dispatch_prompt=long_prompt,
     )
 
+    # No summary was passed — the harness uses the dispatch_prompt verbatim.
+    # No synthetic truncation; the agent is responsible for shorter summaries
+    # via the explicit `summary` kwarg when readability matters.
     summary = patch_ledger.insert_task.await_args.kwargs["summary"]
-    assert len(summary) <= outbound.SUMMARY_FALLBACK_LEN
-    assert summary.endswith("…")
+    assert summary == long_prompt
 
     for _ in range(5):
         await asyncio.sleep(0)

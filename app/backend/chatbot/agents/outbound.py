@@ -70,17 +70,6 @@ def _maybe_span(name: str, **attrs: Any) -> Iterator[None]:
 
 OUTBOUND_MAX_DEPTH = 3
 
-# Headline used when callers don't supply one — first 80 chars of the
-# dispatch_prompt with trailing ellipsis. Cheaply readable in the manifest.
-SUMMARY_FALLBACK_LEN = 80
-
-
-def _derive_summary(prompt: str) -> str:
-    cleaned = " ".join(prompt.split())
-    if len(cleaned) <= SUMMARY_FALLBACK_LEN:
-        return cleaned
-    return cleaned[: SUMMARY_FALLBACK_LEN - 1].rstrip() + "…"
-
 
 class OutboundDeps(BaseModel):
     """Runtime context for one outbound_agent run.
@@ -438,7 +427,10 @@ async def dispatch(
 
     task_key = uuid4().hex
     timeout_at = datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)
-    final_summary = (summary or "").strip() or _derive_summary(dispatch_prompt)
+    # When the caller doesn't pass a summary, use the dispatch_prompt verbatim.
+    # Manifest readability is the agent's job to optimize via the summary kwarg
+    # — the harness shouldn't synthetically truncate.
+    final_summary = (summary or "").strip() or dispatch_prompt
     await outbound_ledger.insert_task(
         task_key=task_key,
         business_id=business_id,
