@@ -17,7 +17,7 @@ from fastapi.responses import PlainTextResponse
 import backend.chatbot.channels.whatsapp  # noqa: F401  triggers channel registration
 from backend.chatbot import orchestrator
 from backend.chatbot.channels import registry
-from backend.chatbot.channels.whatsapp import _whatsapp_bot
+from backend.chatbot.channels.whatsapp import NonMessageEvent, _whatsapp_bot
 from backend.chatbot.channels.whatsapp_resolver import (
     UnknownWhatsAppBusiness,
     resolve_inbound,
@@ -53,7 +53,13 @@ async def whatsapp_webhook(request: Request) -> dict:
         raise HTTPException(status_code=400, detail="invalid json")
 
     channel = registry.get("whatsapp")
-    msg = channel.parse_inbound(payload)
+    try:
+        msg = channel.parse_inbound(payload)
+    except NonMessageEvent as exc:
+        logger.info("ignoring non-message webhook: %s", exc)
+        # 200 so Meta stops retrying — status callbacks (sent/delivered/read)
+        # and template status events legitimately have no user message.
+        return {"ok": True, "ignored": "non_message_event"}
     # `parse_inbound` returns an identity carrying WA-native IDs; resolve
     # them to internal UUIDs before the orchestrator touches the DB.
     try:

@@ -38,6 +38,15 @@ PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN", "") or config.WHATSAPP_API_KE
 _MEDIA_KINDS: tuple[str, ...] = ("image", "audio", "video", "document")
 
 
+class NonMessageEvent(Exception):
+    """Inbound webhook payload doesn't carry a user message.
+
+    Raised for delivery/read status callbacks and other non-message events
+    (e.g. `message_template_status_update`). The webhook route catches this
+    and 200s the request so Meta stops retrying — there's nothing to dispatch.
+    """
+
+
 def _extract_value(raw: dict) -> dict:
     entry = raw.get("entry", [{}])[0]
     for change in entry.get("changes", []):
@@ -235,6 +244,10 @@ class WhatsappChannel(Channel):
         internal UUIDs before handing off to the orchestrator.
         """
         value = _extract_value(raw)
+        if not value or not value.get("messages"):
+            raise NonMessageEvent(
+                "no user message in payload (status callback or non-message event)"
+            )
         metadata = value["metadata"]
         message = value["messages"][0]
 
