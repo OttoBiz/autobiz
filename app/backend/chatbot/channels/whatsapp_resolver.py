@@ -37,11 +37,11 @@ async def resolve_inbound_sender(
         row = await conn.fetchrow(
             """
             SELECT
-              b.id           AS business_id,
-              b.owner_wa_id  AS owner_wa_id,
-              c.id           AS contact_id,
-              c.name         AS contact_name,
-              c.role         AS contact_role
+              b.id            AS business_id,
+              b.phone_number  AS owner_phone_number,
+              c.id            AS contact_id,
+              c.name          AS contact_name,
+              c.role          AS contact_role
             FROM businesses b
             LEFT JOIN contacts c
               ON c.business_id     = b.id
@@ -56,7 +56,10 @@ async def resolve_inbound_sender(
 
     if row is None:
         return InboundSender(kind="unknown_tenant")
-    if row["owner_wa_id"] == wa_id:
+    # `owner_phone_number` is the operator's wa_id (no `+`). When the inbound
+    # `wa_id` matches it, the tenant operator is messaging their own WABA —
+    # don't treat that as a customer message.
+    if row["owner_phone_number"] == wa_id:
         return InboundSender(kind="owner", business_id=row["business_id"])
     if row["contact_id"] is not None:
         return InboundSender(

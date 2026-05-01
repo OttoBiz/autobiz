@@ -62,11 +62,11 @@ async def test_returns_unknown_tenant_when_no_business_matches(conn):
 
 
 @pytest.mark.asyncio
-async def test_returns_owner_when_owner_wa_id_matches(conn):
+async def test_returns_owner_when_phone_number_matches(conn):
     business_id = uuid4()
     conn.fetchrow.return_value = {
         "business_id": business_id,
-        "owner_wa_id": "wa-owner",
+        "owner_phone_number": "wa-owner",
         "contact_id": None,
         "contact_name": None,
         "contact_role": None,
@@ -85,7 +85,7 @@ async def test_returns_contact_when_contact_row_joined(conn):
     contact_id = uuid4()
     conn.fetchrow.return_value = {
         "business_id": business_id,
-        "owner_wa_id": "wa-owner",  # not the sender
+        "owner_phone_number": "wa-owner",  # not the sender
         "contact_id": contact_id,
         "contact_name": "Acme Vendor",
         "contact_role": "vendor",
@@ -105,7 +105,7 @@ async def test_returns_customer_when_no_contact_match_and_not_owner(conn):
     business_id = uuid4()
     conn.fetchrow.return_value = {
         "business_id": business_id,
-        "owner_wa_id": "wa-owner",  # not the sender
+        "owner_phone_number": "wa-owner",  # not the sender
         "contact_id": None,
         "contact_name": None,
         "contact_role": None,

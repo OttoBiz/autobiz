@@ -64,10 +64,15 @@ async def seed_whatsapp_business(
     business_phone: str,
     products_csv: Path,
     business_id: str | None = None,
-    owner_wa_id: str | None = None,
     contacts_csv: Path | None = None,
 ) -> dict:
-    """Upsert one WhatsApp-bound business + its products. Returns a summary."""
+    """Upsert one WhatsApp-bound business + its products. Returns a summary.
+
+    `business_phone` is stored in `businesses.phone_number` and is the
+    operator's wa_id (no leading `+`). The inbound resolver matches the
+    sender's wa_id against this column to detect operator self-messages,
+    so the format must be plain digits — a leading `+` is stripped here.
+    """
     if not phone_number_id:
         raise ValueError("phone_number_id is required")
     if not products_csv.exists():
@@ -79,27 +84,30 @@ async def seed_whatsapp_business(
 
     bid = business_id or derive_business_id(phone_number_id)
 
+    # Normalize to wa_id format (digits only). The resolver does an exact
+    # equality match against inbound `wa_id`, which Meta delivers without
+    # a `+`, so anything stored here must follow the same convention.
+    normalized_phone = business_phone.lstrip("+").strip()
+
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute(
                 """
                 INSERT INTO businesses (
                     id, name, business_type, phone_number,
-                    whatsapp_phone_number_id, owner_wa_id
+                    whatsapp_phone_number_id
                 )
-                VALUES ($1, $2, 'vendor', $3, $4, $5)
+                VALUES ($1, $2, 'vendor', $3, $4)
                 ON CONFLICT (id) DO UPDATE SET
                     name = EXCLUDED.name,
                     phone_number = EXCLUDED.phone_number,
                     whatsapp_phone_number_id = EXCLUDED.whatsapp_phone_number_id,
-                    owner_wa_id = EXCLUDED.owner_wa_id,
                     updated_at = NOW()
                 """,
                 bid,
                 business_name,
-                business_phone,
+                normalized_phone,
                 phone_number_id,
-                owner_wa_id,
             )
             await conn.execute(
                 "DELETE FROM products WHERE business_id = $1", bid
@@ -161,9 +169,8 @@ async def seed_whatsapp_business(
     return {
         "business_id": bid,
         "name": business_name,
-        "phone_number": business_phone,
+        "phone_number": normalized_phone,
         "whatsapp_phone_number_id": phone_number_id,
-        "owner_wa_id": owner_wa_id,
         "products": len(products),
         "products_csv": str(products_csv),
         "contacts": contacts_count,
@@ -176,11 +183,13 @@ async def seed_whatsapp_business_from_env(pool) -> dict | None:
     Reads:
     - WHATSAPP_PHONE_NUMBER_ID  (required to seed)
     - SEED_BUSINESS_NAME        (default: "Test Shop")
-    - SEED_BUSINESS_PHONE       (default: "+2347000000000")
+    - SEED_BUSINESS_PHONE       (default: "2347000000000") — operator's wa_id;
+                                 stored on `businesses.phone_number` and used
+                                 by the inbound resolver to detect owner
+                                 self-messages. Strip a leading `+` if your
+                                 value has one — it's normalized either way.
     - SEED_BUSINESS_ID          (default: derived from phone_number_id)
     - SEED_PRODUCTS_CSV         (default: donrey_fashion.csv)
-    - SEED_OWNER_WA_ID          (optional) — tenant operator's own WA number;
-                                 lets the inbound resolver tag "owner" sends
     - SEED_CONTACTS_CSV         (default: contacts.example.csv if present;
                                  otherwise contact seeding is skipped)
 
@@ -190,8 +199,6 @@ async def seed_whatsapp_business_from_env(pool) -> dict | None:
     if not phone_number_id:
         logger.info("WHATSAPP_PHONE_NUMBER_ID not set; skipping WhatsApp seed")
         return None
-
-    owner_wa_id = (os.getenv("SEED_OWNER_WA_ID") or "").strip() or None
 
     contacts_csv_env = (os.getenv("SEED_CONTACTS_CSV") or "").strip()
     if contacts_csv_env:
@@ -209,19 +216,18 @@ async def seed_whatsapp_business_from_env(pool) -> dict | None:
         phone_number_id=phone_number_id,
         business_name=(os.getenv("SEED_BUSINESS_NAME") or "Test Shop").strip(),
         business_phone=(
-            os.getenv("SEED_BUSINESS_PHONE") or "+2347000000000"
+            os.getenv("SEED_BUSINESS_PHONE") or "2347000000000"
         ).strip(),
         products_csv=Path(os.getenv("SEED_PRODUCTS_CSV") or str(DEFAULT_CSV)),
         business_id=(os.getenv("SEED_BUSINESS_ID") or "").strip() or None,
-        owner_wa_id=owner_wa_id,
         contacts_csv=contacts_csv,
     )
     logger.info(
-        "Seeded WhatsApp business id=%s name=%s products=%d owner=%s contacts=%d",
+        "Seeded WhatsApp business id=%s name=%s products=%d phone=%s contacts=%d",
         summary["business_id"],
         summary["name"],
         summary["products"],
-        summary["owner_wa_id"],
+        summary["phone_number"],
         summary["contacts"],
     )
     return summary
