@@ -350,6 +350,7 @@ async def _contact_identity(contact_id: UUID) -> ChannelIdentity | None:
         customer_id=str(contact.id),  # placeholder — outbound dispatch doesn't read this
         channel=contact.channel,
         channel_user_id=contact.channel_user_id,
+        last_inbound_at=None,
         channel_business_id=sender_phone_id,
     )
 
