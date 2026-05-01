@@ -21,16 +21,19 @@ means two backend replicas could each schedule a drain for the same
 contact-window. The Redis mutex would still serialize them, so the worst
 case is one no-op drain (peek returns empty because the first drain
 already cleared). Acceptable for current single-container deployment.
+
+Queue + lock primitives delegate to `_redis_queue` (shared with the
+per-customer inbox in chatbot/inbox.py).
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Awaitable, Callable
+from uuid import uuid4
 
-from backend.db.cache_utils import redis_conn
+from backend.chatbot import _redis_queue
 
 logger = logging.getLogger(__name__)
 
@@ -48,64 +51,36 @@ def _lock_key(business_id: str, contact_id: str) -> str:
 
 
 # In-process set of contact IDs that already have a pending drain task.
-# Cleared by the drain task after it acquires the lock — at that point
-# any newly-enqueued message must schedule a fresh drain to be picked up.
+# Cleared by the drain task on wake — at that point any newly-enqueued
+# message must schedule a fresh drain to be picked up.
 SCHEDULED_DRAINS: set[tuple[str, str]] = set()
 
 
 def enqueue(business_id: str, contact_id: str, text: str) -> None:
-    key = _inbox_key(business_id, contact_id)
-    client = redis_conn._client
-    pipe = client.pipeline(transaction=True)
-    pipe.rpush(key, json.dumps({"text": text}))
-    pipe.expire(key, INBOX_TTL_SECONDS)
-    pipe.execute()
+    _redis_queue.push(
+        _inbox_key(business_id, contact_id),
+        {"text": text},
+        ttl_seconds=INBOX_TTL_SECONDS,
+    )
 
 
 def peek(business_id: str, contact_id: str) -> list[str]:
-    key = _inbox_key(business_id, contact_id)
-    items = redis_conn._client.lrange(key, 0, -1)
-    out: list[str] = []
-    for raw in items:
-        try:
-            payload = json.loads(raw)
-        except (ValueError, TypeError):
-            continue
-        text = payload.get("text") or ""
-        if text:
-            out.append(text)
-    return out
+    items = _redis_queue.peek(_inbox_key(business_id, contact_id))
+    return [item.get("text", "") for item in items if item.get("text")]
 
 
 def drain(business_id: str, contact_id: str) -> None:
-    key = _inbox_key(business_id, contact_id)
-    redis_conn._client.delete(key)
+    _redis_queue.clear(_inbox_key(business_id, contact_id))
 
 
 def acquire_lock(business_id: str, contact_id: str, owner: str) -> bool:
-    key = _lock_key(business_id, contact_id)
-    return bool(redis_conn._client.set(key, owner, nx=True, ex=LOCK_TTL_SECONDS))
+    return _redis_queue.acquire_lock(
+        _lock_key(business_id, contact_id), owner, ttl_seconds=LOCK_TTL_SECONDS
+    )
 
 
 def release_lock(business_id: str, contact_id: str, owner: str) -> bool:
-    key = _lock_key(business_id, contact_id)
-    client = redis_conn._client
-    with client.pipeline(transaction=True) as pipe:
-        while True:
-            try:
-                pipe.watch(key)
-                current = pipe.get(key)
-                if isinstance(current, bytes):
-                    current = current.decode()
-                if current != owner:
-                    pipe.unwatch()
-                    return False
-                pipe.multi()
-                pipe.delete(key)
-                pipe.execute()
-                return True
-            except Exception:
-                continue
+    return _redis_queue.release_lock(_lock_key(business_id, contact_id), owner)
 
 
 async def schedule_drain(
@@ -137,9 +112,6 @@ async def _drain_after_window(
         # Clear the scheduled flag the moment we wake — any message that
         # arrives from this point on must schedule a fresh drain.
         SCHEDULED_DRAINS.discard((business_id, contact_id))
-
-    # uuid for the lock owner — this drain task instance.
-    from uuid import uuid4
 
     owner = uuid4().hex
     if not acquire_lock(business_id, contact_id, owner):
