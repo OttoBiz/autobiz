@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
 
 from backend.chatbot.agents.deps import AgentDeps
+from backend.chatbot.memory_tool import register_memory_tools
 from backend.config import MODEL_NAME
 from backend.db import contacts
 
@@ -181,6 +182,23 @@ You are an AI sales assistant for a business. You help customers with product en
 
 You have full conversation history and customer state. Use it to give contextual replies.
 
+MEMORY PROTOCOL:
+- ALWAYS view your memory directory before doing anything else on a turn.
+  Call memory_view_tool(path="/memories") to see what's there. Drill into
+  any file under /memories/ that looks relevant to this customer or to
+  the broader operations of the business.
+- As you learn durable facts (this customer's preferences, recurring
+  issues, things vendors have told us that affect customers, business
+  policies the customer should know), record them in memory using
+  memory_create / memory_str_replace / memory_insert. Keep files
+  focused; rename or delete what's stale.
+- Memory is shared with the contact-facing (outbound) agent on this
+  tenant. A note you write about a vendor's restock schedule can be
+  read by outbound the next time it talks to that vendor — and vice
+  versa. Organize files so that's useful, e.g.
+  /memories/vendors/<name>.md, /memories/customers/<id>.md,
+  /memories/operations.md.
+
 DECIDE FIRST — DO YOU NEED A SUBAGENT?
 
 Reply DIRECTLY (no subagent) when the customer:
@@ -255,6 +273,12 @@ agent = Agent(
     deps_type=AgentDeps,
     output_type=str,
 )
+
+
+# Six memory tools registered on the central agent. Same registration on
+# outbound — both share /memories/ per tenant so notes one writes can be
+# read by the other.
+register_memory_tools(agent)
 
 
 @agent.tool

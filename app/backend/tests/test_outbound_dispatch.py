@@ -40,7 +40,6 @@ def _make_contact(business_id: UUID | None = None) -> Contact:
         channel_user_id="vendor-wa-1",
         channel_business_id=None,
         notes=None,
-        agent_memory=None,
         created_at=now,
         updated_at=now,
     )
@@ -91,7 +90,6 @@ def _make_summary(task_key: str = "tk-1", summary: str = "ask vendor") -> Outbou
 def patch_contacts(monkeypatch):
     fake = SimpleNamespace(
         get_by_id=AsyncMock(side_effect=lambda cid: _make_contact()),
-        append_agent_memory=AsyncMock(return_value="- some note\n"),
     )
     monkeypatch.setattr(outbound, "contacts", fake)
     return fake
@@ -482,44 +480,6 @@ async def test_get_task_details_returns_dispatch_prompt(patch_ledger):
 async def test_get_task_details_returns_none_when_missing(patch_ledger):
     patch_ledger.get_by_key = AsyncMock(return_value=None)
     assert await outbound.get_task_details(_ctx(), "missing") is None
-
-
-# ---------------------------------------------------------------------------
-# record_note tool.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_record_note_appends_to_journal(patch_contacts):
-    cid = uuid4()
-    deps = outbound.OutboundDeps(
-        business_id=uuid4(),
-        contact_id=cid,
-        contact_name="V",
-        contact_role="vendor",
-    )
-
-    patch_contacts.append_agent_memory = AsyncMock(
-        return_value="- they are closed Mondays\n"
-    )
-
-    result = await outbound.record_note(_ctx(deps), "they are closed Mondays")
-
-    patch_contacts.append_agent_memory.assert_awaited_once_with(
-        cid, "they are closed Mondays"
-    )
-    assert result["status"] == "recorded"
-    assert "journal_chars" in result
-
-
-@pytest.mark.asyncio
-async def test_record_note_skips_empty_text(patch_contacts):
-    patch_contacts.append_agent_memory = AsyncMock()
-
-    result = await outbound.record_note(_ctx(), "   ")
-
-    assert result == {"status": "skipped_empty"}
-    patch_contacts.append_agent_memory.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

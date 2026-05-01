@@ -32,7 +32,6 @@ def _row(business_id, name="Acme", role="vendor", channel_user_id="wa-1"):
         "channel_user_id": channel_user_id,
         "channel_business_id": None,
         "notes": None,
-        "agent_memory": None,
         "created_at": now,
         "updated_at": now,
     }
@@ -133,92 +132,6 @@ async def test_list_by_business_with_role_filters(conn):
     norm = _normalize(sql)
     assert "business_id = $1 AND role = $2" in norm
     assert params == [business_id, "vendor"]
-
-
-# ---------- append_agent_memory ----------
-
-
-class _MemoryConn:
-    """Stateful conn that simulates the SELECT/UPDATE round-trip used by
-    `append_agent_memory`. Tracks the current `agent_memory` value across calls.
-    """
-
-    def __init__(self, exists: bool = True, initial: str | None = None) -> None:
-        self.agent_memory = initial
-        self._exists = exists
-        self.execute = AsyncMock(side_effect=self._execute)
-        self.fetchrow = AsyncMock(side_effect=self._fetchrow)
-
-    def transaction(self):
-        cm = MagicMock()
-        cm.__aenter__ = AsyncMock(return_value=None)
-        cm.__aexit__ = AsyncMock(return_value=None)
-        return cm
-
-    async def _fetchrow(self, sql: str, *params):
-        if not self._exists:
-            return None
-        return {"agent_memory": self.agent_memory}
-
-    async def _execute(self, sql: str, *params):
-        # UPDATE contacts SET agent_memory = $1 ...
-        if "UPDATE contacts" in sql and "agent_memory" in sql:
-            self.agent_memory = params[0]
-        return "UPDATE 1"
-
-
-def _install_memory_pool(monkeypatch, mem_conn: _MemoryConn) -> None:
-    pool = _FakePool(mem_conn)
-
-    async def fake_get_db() -> _FakePool:
-        return pool
-
-    monkeypatch.setattr(contacts, "get_db", fake_get_db)
-
-
-@pytest.mark.asyncio
-async def test_append_agent_memory_appends_bullets(monkeypatch):
-    mem = _MemoryConn(initial=None)
-    _install_memory_pool(monkeypatch, mem)
-
-    journal = await contacts.append_agent_memory(uuid4(), "first note")
-    assert "- first note\n" in journal
-
-    journal2 = await contacts.append_agent_memory(uuid4(), "second note")
-    assert "- first note" in journal2
-    assert "- second note" in journal2
-
-
-@pytest.mark.asyncio
-async def test_append_agent_memory_trims_when_over_cap(monkeypatch):
-    mem = _MemoryConn(initial=None)
-    _install_memory_pool(monkeypatch, mem)
-
-    monkeypatch.setattr(contacts, "AGENT_MEMORY_MAX_CHARS", 30)
-
-    cid = uuid4()
-    # Each appended bullet is "- note N\n" = 10 chars. Cap is 30 — so by the
-    # 4th append the journal would be 40 chars and the front gets trimmed.
-    await contacts.append_agent_memory(cid, "note 0")
-    await contacts.append_agent_memory(cid, "note 1")
-    await contacts.append_agent_memory(cid, "note 2")
-    await contacts.append_agent_memory(cid, "note 3")
-    final = await contacts.append_agent_memory(cid, "note 4")
-
-    assert len(final) <= 30
-    # Most recent is preserved.
-    assert "note 4" in final
-    # Oldest was trimmed.
-    assert "note 0" not in final
-
-
-@pytest.mark.asyncio
-async def test_append_agent_memory_raises_when_contact_missing(monkeypatch):
-    mem = _MemoryConn(exists=False)
-    _install_memory_pool(monkeypatch, mem)
-
-    with pytest.raises(ValueError):
-        await contacts.append_agent_memory(uuid4(), "x")
 
 
 @pytest.mark.asyncio

@@ -36,20 +36,13 @@ class Contact(BaseModel):
     channel_user_id: str
     channel_business_id: str | None = None
     notes: str | None = None
-    agent_memory: str | None = None
     created_at: datetime
     updated_at: datetime
 
 
-# Bound the agent's appended memory so it stays inside a sane prompt
-# budget — Hermes-style. The agent must prioritize what's worth remembering;
-# older notes get trimmed when the cap is reached.
-AGENT_MEMORY_MAX_CHARS = 2500
-
-
 _COLUMNS = (
     "id, business_id, name, role, channel, channel_user_id, "
-    "channel_business_id, notes, agent_memory, created_at, updated_at"
+    "channel_business_id, notes, created_at, updated_at"
 )
 
 
@@ -63,7 +56,6 @@ def _row_to_contact(row) -> Contact:
         channel_user_id=row["channel_user_id"],
         channel_business_id=row["channel_business_id"],
         notes=row["notes"],
-        agent_memory=row["agent_memory"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -119,38 +111,6 @@ async def list_by_business(
                 role,
             )
     return [_row_to_contact(r) for r in rows]
-
-
-async def append_agent_memory(contact_id: UUID, note: str) -> str:
-    """Append a markdown bullet to the contact's agent_memory journal.
-
-    Bounded at AGENT_MEMORY_MAX_CHARS — when the new content would exceed
-    that, oldest entries are trimmed from the front. Returns the post-write
-    journal so callers can confirm what's now persisted.
-    """
-    bullet = f"- {note.strip()}\n"
-    pool = await get_db()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            row = await conn.fetchrow(
-                "SELECT agent_memory FROM contacts WHERE id = $1 FOR UPDATE",
-                contact_id,
-            )
-            if row is None:
-                raise ValueError(f"unknown contact_id {contact_id}")
-            existing = row["agent_memory"] or ""
-            combined = existing + bullet
-            if len(combined) > AGENT_MEMORY_MAX_CHARS:
-                # Trim by full bullets from the front, not mid-line, so the
-                # journal stays a valid markdown list.
-                while len(combined) > AGENT_MEMORY_MAX_CHARS and "\n" in combined:
-                    combined = combined.split("\n", 1)[1]
-            await conn.execute(
-                "UPDATE contacts SET agent_memory = $1, updated_at = NOW() WHERE id = $2",
-                combined,
-                contact_id,
-            )
-    return combined
 
 
 async def upsert(

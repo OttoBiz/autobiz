@@ -44,6 +44,7 @@ from pydantic_ai.messages import ToolCallPart
 from backend.chatbot import contact_inbox
 from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity
+from backend.chatbot.memory_tool import register_memory_tools
 from backend.chatbot.messaging import dispatcher as messaging_dispatcher
 from backend.config import MODEL_NAME
 from backend.db import chat_storage, contacts, outbound_ledger
@@ -89,10 +90,6 @@ class OutboundDeps(BaseModel):
     # this contact. Empty list = vendor-initiated message with no open
     # work — the agent runs in journal-and-reply mode.
     open_tasks: list[OutboundTaskSummary] = Field(default_factory=list)
-    # Persistent agent-curated notes about this contact (Hermes-style
-    # MEMORY.md). Loaded from contacts.agent_memory at run start; appended
-    # to via the record_note tool.
-    agent_memory: str | None = None
     max_depth: int = 3
     current_depth: int = 0
 
@@ -122,6 +119,20 @@ class ResolveItem(BaseModel):
 _INSTRUCTIONS = """\
 You are reaching out to {contact_name} (role: {contact_role}) on behalf of
 {business_name}. You are NOT {contact_name} — you are CONTACTING them.
+
+MEMORY PROTOCOL
+- ALWAYS view your memory directory before doing anything else on a turn.
+  Call memory_view_tool(path="/memories") to see what's there. Drill into
+  any file under /memories/ that looks relevant to this contact, this
+  role, or to {business_name}'s operations broadly.
+- As you learn durable facts (capabilities of {contact_name},
+  constraints, preferences, recurring schedules; tenant-wide things
+  about {business_name}'s products, hours, customers), record them in
+  memory using memory_create / memory_str_replace / memory_insert. Keep
+  files focused; rename or delete what's stale.
+- Memory is shared with the customer-facing agent on this tenant. A
+  note you write about {contact_name} can be read by central next time
+  it talks to a customer about that vendor's products, and vice versa.
 
 YOUR INPUT EACH RUN
 - The first run on a NEW thread is an OPENING dispatch from the store
@@ -158,9 +169,9 @@ WHEN THERE ARE OPEN TASKS
 WHEN THERE ARE NO OPEN TASKS
 - {contact_name} has reached out without a pending request from us. Be
   brief and helpful. If they shared something durable about their
-  capabilities or constraints ("we don't carry red ankara anymore",
-  "we're closed Mondays"), call record_note(text) to remember it for
-  future runs. Then write a short polite reply.
+  capabilities, prices, schedule, or constraints, write it to memory
+  (memory_create or memory_str_replace) so future runs benefit. Then
+  reply naturally.
 
 ON CLOSE — for each ResolveItem, fill at least one of customer_context
 or system_context:
@@ -175,9 +186,6 @@ VOICE
 - You are {business_name}'s representative. Professional, concise,
   explicit about what you need. WhatsApp-style — short paragraphs, no
   markdown, no UUIDs, no internal jargon.
-
-MEMORY ABOUT {contact_name}
-{memory_block}
 
 RESPONSE FORMAT
 - Plain prose addressed to {contact_name}. The dispatcher attaches the
@@ -196,12 +204,6 @@ def _format_manifest(tasks: list[OutboundTaskSummary]) -> str:
             f"summary: {t.summary}"
         )
     return "\n".join(lines)
-
-
-def _format_memory(memory: str | None) -> str:
-    if not memory:
-        return "(no notes yet)"
-    return memory.strip()
 
 
 _hooks: Hooks[OutboundDeps] = Hooks()
@@ -252,8 +254,13 @@ def _build_instructions(ctx: RunContext[OutboundDeps]) -> str:
         contact_name=ctx.deps.contact_name,
         contact_role=ctx.deps.contact_role,
         open_tasks_block=_format_manifest(ctx.deps.open_tasks),
-        memory_block=_format_memory(ctx.deps.agent_memory),
     )
+
+
+# Six memory tools registered on the outbound agent. Same registration on
+# central — both share /memories/ per tenant so notes one writes can be
+# read by the other.
+register_memory_tools(outbound_agent)
 
 
 @outbound_agent.tool
@@ -308,24 +315,6 @@ async def get_task_details(
         "dispatched_at": task.dispatched_at.isoformat(),
         "customer_context": task.customer_context,
     }
-
-
-@outbound_agent.tool
-async def record_note(
-    ctx: RunContext[OutboundDeps], text: str
-) -> dict[str, str]:
-    """Append a durable note to your memory about this contact.
-
-    For things worth remembering across future conversations: capabilities,
-    constraints, preferences, recurring schedule. NOT for transient
-    state — the manifest already shows open tasks, the chat history shows
-    the conversation. Keep notes short and factual; older notes are
-    trimmed when the journal fills up.
-    """
-    if not text.strip():
-        return {"status": "skipped_empty"}
-    journal = await contacts.append_agent_memory(ctx.deps.contact_id, text)
-    return {"status": "recorded", "journal_chars": str(len(journal))}
 
 
 # ---------------------------------------------------------------------------
@@ -466,7 +455,6 @@ async def dispatch(
                 contact_role=contact.role,
                 business_name=business_name,
                 open_tasks=open_tasks,
-                agent_memory=contact.agent_memory,
                 current_depth=next_depth,
             )
             opening_input = (
@@ -540,7 +528,6 @@ async def deliver_contact_reply(
         contact_name=contact.name,
         contact_role=contact.role,
         open_tasks=open_tasks,
-        agent_memory=contact.agent_memory,
     )
 
     joined = "\n".join(m.strip() for m in messages if m.strip())
