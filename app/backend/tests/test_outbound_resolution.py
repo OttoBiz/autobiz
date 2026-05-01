@@ -44,6 +44,7 @@ def _make_task(
         contact_role="vendor",
         initiated_by="customer",
         dispatch_prompt="ask vendor",
+        summary="ask vendor",
         state=state,  # type: ignore[arg-type]
         customer_context=customer_context,
         system_context=system_context,

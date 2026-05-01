@@ -156,3 +156,65 @@ async def test_outbound_history_isolates_tasks(fake_redis):
 
     assert len(await chat_storage.load_outbound_history("tk-1")) == 2
     assert len(await chat_storage.load_outbound_history("tk-2")) == 4
+
+
+# ---------- per-contact history ----------
+
+
+@pytest.mark.asyncio
+async def test_contact_history_round_trips(fake_redis):
+    biz, contact = uuid4(), uuid4()
+
+    await chat_storage.append_contact_history(biz, contact, _msgs())
+    loaded = await chat_storage.load_contact_history(biz, contact)
+
+    assert len(loaded) == 2
+    assert loaded[1].parts[0].content == "hello"
+    assert chat_storage._contact_key(biz, contact) in fake_redis.store
+    # TTL refreshed on write.
+    assert (
+        fake_redis.ttls[chat_storage._contact_key(biz, contact)]
+        == chat_storage.HISTORY_TTL_SECONDS
+    )
+
+
+@pytest.mark.asyncio
+async def test_contact_history_isolates_per_business_and_contact(fake_redis):
+    biz_a, biz_b = uuid4(), uuid4()
+    contact_a, contact_b = uuid4(), uuid4()
+
+    await chat_storage.append_contact_history(biz_a, contact_a, _msgs())
+    await chat_storage.append_contact_history(biz_a, contact_b, _msgs() + _msgs())
+    await chat_storage.append_contact_history(biz_b, contact_a, _msgs() + _msgs() + _msgs())
+
+    assert len(await chat_storage.load_contact_history(biz_a, contact_a)) == 2
+    assert len(await chat_storage.load_contact_history(biz_a, contact_b)) == 4
+    assert len(await chat_storage.load_contact_history(biz_b, contact_a)) == 6
+
+
+@pytest.mark.asyncio
+async def test_contact_history_trims_to_max_messages(fake_redis, monkeypatch):
+    monkeypatch.setattr(chat_storage, "MAX_MESSAGES", 3)
+    biz, contact = uuid4(), uuid4()
+
+    pairs = _msgs() + _msgs() + [ModelResponse(parts=[TextPart(content="latest")])]
+    await chat_storage.append_contact_history(biz, contact, pairs)
+
+    loaded = await chat_storage.load_contact_history(biz, contact)
+    assert len(loaded) == 3
+    assert loaded[-1].parts[0].content == "latest"
+
+
+@pytest.mark.asyncio
+async def test_contact_history_append_empty_is_noop(fake_redis):
+    biz, contact = uuid4(), uuid4()
+    await chat_storage.append_contact_history(biz, contact, [])
+    assert fake_redis.store == {}
+
+
+@pytest.mark.asyncio
+async def test_clear_contact_history_removes_entry(fake_redis):
+    biz, contact = uuid4(), uuid4()
+    await chat_storage.append_contact_history(biz, contact, _msgs())
+    await chat_storage.clear_contact_history(biz, contact)
+    assert await chat_storage.load_contact_history(biz, contact) == []

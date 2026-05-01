@@ -1,7 +1,7 @@
 """End-to-end wiring tests for the smoke harness.
 
 These exercise the full path the TUI exercises — ConsoleChannel, orchestrator,
-chat_storage, dispatcher, ledger, deliver_party_reply — with the LLM and DB
+chat_storage, dispatcher, ledger, deliver_contact_reply — with the LLM and DB
 calls stubbed. No real model API key needed; no live Postgres needed.
 Redis IS hit (the inbox/lock/cursor primitives use it directly), so these
 tests rely on the same `DEBUG=true` non-cluster client the rest of the
@@ -23,7 +23,7 @@ import asyncio  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 from unittest.mock import AsyncMock, MagicMock  # noqa: E402
-from uuid import uuid4  # noqa: E402
+from uuid import UUID, uuid4  # noqa: E402
 
 import pytest  # noqa: E402
 
@@ -105,11 +105,6 @@ def stub_postgres(monkeypatch):
     monkeypatch.setattr(
         orchestrator.channel_identities, "upsert_identity", _upsert_identity
     )
-    monkeypatch.setattr(
-        outbound_mod.channel_identities,
-        "get_most_recent_identity",
-        _get_most_recent_identity,
-    )
 
     # Outbound ledger: in-memory dict keyed by task_key.
     tasks: dict[str, dict] = {}
@@ -125,6 +120,7 @@ def stub_postgres(monkeypatch):
         contact_id,
         contact_name,
         contact_role,
+        summary,
     ):
         tasks[task_key] = dict(
             task_key=task_key,
@@ -135,6 +131,7 @@ def stub_postgres(monkeypatch):
             contact_role=contact_role,
             initiated_by=initiated_by,
             dispatch_prompt=dispatch_prompt,
+            summary=summary,
             state="queued",
             customer_context=None,
             system_context=None,
@@ -172,12 +169,34 @@ def stub_postgres(monkeypatch):
         row = tasks.get(task_key)
         return OutboundTaskRow(**row) if row else None
 
+    async def _list_open_tasks_by_contact(business_id, contact_id):
+        from backend.db.outbound_ledger import OutboundTaskSummary
+
+        return [
+            OutboundTaskSummary(
+                task_key=row["task_key"],
+                contact_role=row["contact_role"],
+                summary=row.get("summary", ""),
+                dispatched_at=row["dispatched_at"],
+                customer_id=row["customer_id"],
+            )
+            for row in tasks.values()
+            if row.get("contact_id") == contact_id
+            and row.get("business_id") == business_id
+            and row.get("state") == "running"
+        ]
+
     monkeypatch.setattr(outbound_mod.outbound_ledger, "insert_task", _insert_task)
     monkeypatch.setattr(outbound_mod.outbound_ledger, "mark_running", _mark_running)
     monkeypatch.setattr(outbound_mod.outbound_ledger, "mark_completed", _mark_completed)
     monkeypatch.setattr(outbound_mod.outbound_ledger, "mark_failed", _mark_failed)
     monkeypatch.setattr(outbound_mod.outbound_ledger, "get_state", _get_state)
     monkeypatch.setattr(outbound_mod.outbound_ledger, "get_by_key", _get_by_key)
+    monkeypatch.setattr(
+        outbound_mod.outbound_ledger,
+        "list_open_tasks_by_contact",
+        _list_open_tasks_by_contact,
+    )
 
     # Stub the contacts table + _contact_identity so dispatch can resolve a
     # contact_id to a Console channel target. The test uses a single fixed
@@ -189,7 +208,7 @@ def stub_postgres(monkeypatch):
     contacts_by_id: dict = {
         _vendor_contact_id: _Contact(
             id=_vendor_contact_id,
-            business_id=uuid4(),  # business binding isn't asserted in these tests
+            business_id=UUID(_BIZ),  # match the test's _BIZ so cross-tenant guards pass
             name="Vendor 1",
             role="vendor",
             channel="console",
@@ -321,7 +340,7 @@ async def test_outbound_dispatch_lands_on_console_channel(
 async def test_vendor_reply_continues_outbound_thread(
     clean_redis, console_channel, monkeypatch, stub_postgres
 ):
-    """vendor types → deliver_party_reply → outbound_agent.run → ConsoleChannel.outbox."""
+    """vendor types → deliver_contact_reply → outbound_agent.run → ConsoleChannel.outbox."""
     await orchestrator.channel_identities.upsert_identity(
         ChannelIdentity(
             business_id=_BIZ,
@@ -363,7 +382,11 @@ async def test_vendor_reply_continues_outbound_thread(
     )
     monkeypatch.setattr(outbound_mod.outbound_agent, "run", continuation_run)
 
-    await outbound_mod.deliver_party_reply(task_key, "yes, 5 in stock")
+    await outbound_mod.deliver_contact_reply(
+        _customer_inbound("x").identity.business_id,  # type: ignore[arg-type]
+        stub_postgres.vendor_contact_id,
+        ["yes, 5 in stock"],
+    )
 
     identity, text = await asyncio.wait_for(console_channel.outbox.get(), timeout=2)
     assert identity.channel_user_id == _VENDOR_ADDR
@@ -488,7 +511,9 @@ async def test_full_roundtrip_customer_to_vendor_to_customer(
         fake_handle_resolution,
     )
 
-    await outbound_mod.deliver_party_reply(task_key, "yes, 5 in stock")
+    await outbound_mod.deliver_contact_reply(
+        _BIZ, stub_postgres.vendor_contact_id, ["yes, 5 in stock"]
+    )
 
     # Drain everything that follows: vendor "thanks" + customer-facing
     # resolution push.

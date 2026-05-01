@@ -72,15 +72,17 @@ async def test_insert_task_sql_and_params(conn):
         contact_id=contact_id,
         contact_name="Vendor X",
         contact_role="vendor",
+        summary="ask vendor about stock",
     )
 
     sql, *params = conn.execute.call_args.args
     assert "INSERT INTO outbound_tasks" in sql
     assert _normalize(sql).startswith(
         "INSERT INTO outbound_tasks ( task_key, business_id, customer_id, "
-        "contact_id, contact_name, contact_role, initiated_by, dispatch_prompt, timeout_at )"
+        "contact_id, contact_name, contact_role, initiated_by, dispatch_prompt, "
+        "summary, timeout_at )"
     )
-    assert "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)" in _normalize(sql)
+    assert "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)" in _normalize(sql)
     assert params == [
         "tk-1",
         business_id,
@@ -90,6 +92,7 @@ async def test_insert_task_sql_and_params(conn):
         "vendor",
         "customer",
         "ask vendor",
+        "ask vendor about stock",
         timeout_at,
     ]
 
@@ -180,6 +183,7 @@ async def test_get_by_key_returns_row_model(conn):
         "contact_role": "vendor",
         "initiated_by": "customer",
         "dispatch_prompt": "ask vendor",
+        "summary": "ask vendor",
         "state": "queued",
         "customer_context": None,
         "system_context": None,
@@ -263,55 +267,59 @@ async def test_get_state_returns_state_or_none(conn):
 
 
 @pytest.mark.asyncio
-async def test_find_open_task_by_contact_returns_none_when_missing(conn):
-    conn.fetchrow.return_value = None
+async def test_list_open_tasks_by_contact_returns_empty_when_none(conn):
+    conn.fetch.return_value = []
     business_id = uuid4()
     contact_id = uuid4()
 
-    result = await outbound_ledger.find_open_task_by_contact(business_id, contact_id)
+    result = await outbound_ledger.list_open_tasks_by_contact(business_id, contact_id)
 
-    assert result is None
-    sql, *params = conn.fetchrow.call_args.args
+    assert result == []
+    sql, *params = conn.fetch.call_args.args
     norm = _normalize(sql)
+    # Projection columns only — not the full _COLUMNS tuple.
+    assert "SELECT task_key, contact_role, summary, dispatched_at, customer_id" in norm
     assert "FROM outbound_tasks" in norm
     assert "WHERE business_id = $1" in norm
     assert "AND contact_id = $2" in norm
     assert "AND state = 'running'" in norm
     assert "ORDER BY dispatched_at DESC" in norm
-    assert "LIMIT 1" in norm
+    # NOT a get_by_key — should not be limited to 1.
+    assert "LIMIT" not in norm
     assert params == [business_id, contact_id]
 
 
 @pytest.mark.asyncio
-async def test_find_open_task_by_contact_returns_row_when_running(conn):
+async def test_list_open_tasks_by_contact_returns_summaries_in_order(conn):
     business_id = uuid4()
-    customer_id = uuid4()
-    contact_id = uuid4()
+    customer_id_a = uuid4()
+    customer_id_b = uuid4()
     now = datetime.now(timezone.utc)
-    conn.fetchrow.return_value = {
-        "task_key": "tk-open",
-        "business_id": business_id,
-        "customer_id": customer_id,
-        "contact_id": contact_id,
-        "contact_name": "Vendor X",
-        "contact_role": "vendor",
-        "initiated_by": "customer",
-        "dispatch_prompt": "ask vendor",
-        "state": "running",
-        "customer_context": None,
-        "system_context": None,
-        "dispatched_at": now,
-        "resolved_at": None,
-        "timeout_at": now + timedelta(minutes=5),
-    }
+    earlier = now - timedelta(minutes=10)
+    conn.fetch.return_value = [
+        {
+            "task_key": "tk-newer",
+            "contact_role": "vendor",
+            "summary": "ask about ankara stock",
+            "dispatched_at": now,
+            "customer_id": customer_id_a,
+        },
+        {
+            "task_key": "tk-older",
+            "contact_role": "vendor",
+            "summary": "confirm shipping window",
+            "dispatched_at": earlier,
+            "customer_id": customer_id_b,
+        },
+    ]
 
-    row = await outbound_ledger.find_open_task_by_contact(business_id, contact_id)
+    rows = await outbound_ledger.list_open_tasks_by_contact(business_id, uuid4())
 
-    assert row is not None
-    assert row.task_key == "tk-open"
-    assert row.business_id == business_id
-    assert row.contact_id == contact_id
-    assert row.state == "running"
+    assert len(rows) == 2
+    assert all(isinstance(r, outbound_ledger.OutboundTaskSummary) for r in rows)
+    assert rows[0].task_key == "tk-newer"
+    assert rows[0].summary == "ask about ankara stock"
+    assert rows[1].task_key == "tk-older"
 
 
 @pytest.mark.asyncio
