@@ -39,7 +39,9 @@ def _make_task(
         task_key="tk-1",
         business_id=uuid4(),
         customer_id=uuid4(),
-        party="vendor-x",
+        contact_id=uuid4(),
+        contact_name="Vendor X",
+        contact_role="vendor",
         initiated_by="customer",
         dispatch_prompt="ask vendor",
         state=state,  # type: ignore[arg-type]
@@ -144,7 +146,8 @@ async def test_customer_context_is_enqueued_then_central_is_woken(
     assert item["type"] == "system_event"
     assert item["payload"]["summary"] == "order shipped"
     assert item["payload"]["source"] == "outbound_reply"
-    assert item["payload"]["party"] == task.party
+    assert item["payload"]["contact_name"] == task.contact_name
+    assert item["payload"]["contact_role"] == task.contact_role
     assert item["payload"]["task_key"] == task.task_key
 
     patch_wake.assert_awaited_once_with(str(task.business_id), str(task.customer_id))
@@ -176,7 +179,7 @@ async def test_system_context_only_runs_coordinator_and_still_wakes_central(
     assert deps.customer_id == task.customer_id
     assert deps.triggering_task_key == task.task_key
     prompt = call.args[0]
-    assert "vendor-x" in prompt
+    assert "Vendor X" in prompt
     assert "restock SKU-1" in prompt
     # customer_context absent → prompt should not include the
     # "already queued" preamble (the guidance line about avoiding

@@ -56,7 +56,8 @@ def _outbound_reply_item(task: OutboundTaskRow) -> dict:
         "payload": {
             "summary": task.customer_context or "",
             "source": "outbound_reply",
-            "party": task.party,
+            "contact_name": task.contact_name,
+            "contact_role": task.contact_role,
             "task_key": task.task_key,
         },
         "enqueued_at": datetime.now(timezone.utc).isoformat(),
@@ -103,7 +104,7 @@ def _build_coordinator_prompt(task: OutboundTaskRow) -> str:
     # already about to hear — it must NOT call surface_to_customer with a
     # near-duplicate of customer_context. Only surface when there is something
     # the customer_context does not already cover.
-    parts = [f"An outbound task to {task.party} just completed."]
+    parts = [f"An outbound task to {task.contact_name} ({task.contact_role}) just completed."]
     if task.customer_context:
         parts.append(
             f"customer_context (already queued for the customer): {task.customer_context}"
