@@ -156,6 +156,7 @@ class ProductBase(BaseModel):
     attributes: Optional[Dict[str, Any]] = None
     is_active: bool = True
     is_negotiable: bool = False
+    floor_price: Optional[float] = Field(default=None, ge=0)
 
 
 class ProductCreate(ProductBase):
@@ -174,6 +175,7 @@ class ProductUpdate(BaseModel):
     category: Optional[str] = None
     is_active: Optional[bool] = None
     is_negotiable: Optional[bool] = None
+    floor_price: Optional[float] = Field(default=None, ge=0)
 
 
 class Product(ProductBase):

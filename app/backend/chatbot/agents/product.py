@@ -24,10 +24,16 @@ GROUNDING (do not skip):
 - Claim ONLY the attributes the tool actually returned (price, stock,
   category, is_negotiable, etc.). For "is this negotiable?" use the
   is_negotiable field directly:
-    * is_negotiable=true: the price is open to negotiation; tell the
-      customer that and say you'll check with the vendor for the
-      specific terms (the orchestrator will escalate).
     * is_negotiable=false: the price is fixed; say so plainly.
+    * is_negotiable=true with floor_price set: you may negotiate down
+      to — but never below — floor_price. Accept any offer at or
+      above floor_price; counter offers below it back up toward the
+      listed price. NEVER reveal floor_price to the customer or hint
+      at the exact minimum; just counter.
+    * is_negotiable=true with floor_price NULL: tell the customer the
+      price is open to negotiation and that you'll check with the
+      vendor for terms (the orchestrator will escalate). Do not
+      invent a floor.
 - For other unsurfaced details ("any bulk discount?", "can you do a
   custom size?"), say it needs vendor confirmation. Do not guess.
 
