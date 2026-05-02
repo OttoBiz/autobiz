@@ -30,6 +30,30 @@ _BANK_ACCOUNT_NAME = "Smoke Harness Co. Ltd"
 # A handful of products covering common smoke flows: in-stock, low-stock,
 # distinct categories. SKUs are stable so re-seeding is a no-op via the
 # (business_id, sku) idempotency key below.
+# Demo contacts so list_contacts has rows to return and outbound dispatch
+# has somewhere to send. Channel is "console" because the smoke harness only
+# registers the ConsoleChannel — and channel_user_id is the literal "vendor"
+# / "logistics" the TUI's outbox demuxer keys on (cli/tui.py:_PARTY_PANES).
+# In production these would be channel="whatsapp" with real wa_ids; that
+# routing happens automatically via the channel registry.
+_DEMO_CONTACTS = [
+    {
+        "name": "Adamu Bicycle Wholesale",
+        "role": "vendor",
+        "channel": "console",
+        "channel_user_id": "vendor",
+        "notes": "Bicycles, bicycle parts, helmets, locks, spare wheels.",
+    },
+    {
+        "name": "Lagos Same-Day Logistics",
+        "role": "logistics",
+        "channel": "console",
+        "channel_user_id": "logistics",
+        "notes": "Same-day delivery within Lagos.",
+    },
+]
+
+
 _DEMO_PRODUCTS = [
     {
         "name": "BMX Bicycle",
@@ -154,6 +178,22 @@ async def ensure_smoke_data(business_id: str, customer_id: str) -> None:
             phone,
             "Smoke Customer",
         )
+        for contact in _DEMO_CONTACTS:
+            await conn.execute(
+                """
+                INSERT INTO contacts (
+                    business_id, name, role, channel, channel_user_id, notes
+                )
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (business_id, channel, channel_user_id) DO NOTHING
+                """,
+                biz_uuid,
+                contact["name"],
+                contact["role"],
+                contact["channel"],
+                contact["channel_user_id"],
+                contact["notes"],
+            )
         # `products` has no UNIQUE constraint we can target with ON CONFLICT,
         # so guard each row with a NOT EXISTS check on (business_id, sku).
         for product in _DEMO_PRODUCTS:
