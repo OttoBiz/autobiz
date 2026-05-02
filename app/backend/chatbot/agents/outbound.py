@@ -37,9 +37,7 @@ from uuid import UUID, uuid4
 os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
 
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent, RunContext, ToolDefinition
-from pydantic_ai.capabilities import Hooks
-from pydantic_ai.messages import ToolCallPart
+from pydantic_ai import Agent, RunContext
 
 from backend.chatbot import contact_inbox
 from backend.chatbot.channels import registry
@@ -185,44 +183,10 @@ def _format_manifest(tasks: list[OutboundTaskSummary]) -> str:
     return "\n".join(lines)
 
 
-_hooks: Hooks[OutboundDeps] = Hooks()
-
-
-@_hooks.on.after_tool_execute(tools=["resolve_tasks"])
-async def _on_resolve_tasks(
-    ctx: RunContext[OutboundDeps],
-    /,
-    *,
-    call: ToolCallPart,
-    tool_def: ToolDefinition,
-    args: dict[str, Any],
-    result: Any,
-) -> Any:
-    """Fan out outbound_resolution.route per closed task in parallel.
-
-    The resolve_tasks tool already updated ledger state and returned the
-    list of acknowledged task_keys; here we trigger the customer-side
-    routing for each one concurrently — coordinator runs and customer
-    inbox enqueues happen on independent customer locks so parallelism is
-    safe.
-    """
-    from backend.chatbot.routers.outbound_resolution import route
-
-    acknowledged = result.get("acknowledged", []) if isinstance(result, dict) else []
-    if not acknowledged:
-        return result
-    await asyncio.gather(
-        *(route(task_key) for task_key in acknowledged),
-        return_exceptions=True,
-    )
-    return result
-
-
 outbound_agent: Agent[OutboundDeps, str] = Agent(
     model=MODEL_NAME,
     deps_type=OutboundDeps,
     output_type=str,
-    capabilities=[_hooks],
 )
 
 
@@ -264,6 +228,20 @@ async def resolve_tasks(
             acknowledged.append(item.task_key)
         else:
             skipped.append(item.task_key)
+
+    # Fan out customer-side routing inline rather than via an after-tool hook.
+    # The hook path was silently no-opping for some runs, leaving the ledger
+    # marked succeeded but the customer never woken. Doing it here guarantees
+    # the route runs on every successful close before the tool returns to the
+    # model — coordinator runs and customer inbox enqueues happen on
+    # independent per-customer locks so parallelism is safe.
+    if acknowledged:
+        from backend.chatbot.routers.outbound_resolution import route
+
+        await asyncio.gather(
+            *(route(task_key) for task_key in acknowledged),
+            return_exceptions=True,
+        )
     return {"acknowledged": acknowledged, "skipped": skipped}
 
 
