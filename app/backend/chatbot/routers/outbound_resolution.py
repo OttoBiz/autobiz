@@ -14,7 +14,10 @@ message that covers both the vendor's direct answer and any coordinator
 follow-ups. No direct `channel.send` push, no ledger poll from central.
 """
 
+import os
 from datetime import datetime, timezone
+from typing import Any, Iterator
+from contextlib import contextmanager
 from uuid import uuid4
 
 from backend.chatbot import inbox, orchestrator
@@ -22,41 +25,92 @@ from backend.db import outbound_ledger
 from backend.db.outbound_ledger import OutboundTaskRow
 from backend.logging_config import get_logger
 
+os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
+
+try:
+    import logfire
+
+    _LOGFIRE_AVAILABLE = True
+except ImportError:
+    _LOGFIRE_AVAILABLE = False
+
 logger = get_logger(__name__)
+
+
+@contextmanager
+def _maybe_span(name: str, **attrs: Any) -> Iterator[None]:
+    if _LOGFIRE_AVAILABLE:
+        with logfire.span(name, **attrs):
+            yield
+    else:
+        yield
 
 
 async def route(task_key: str) -> None:
     task = await outbound_ledger.get_by_key(task_key)
     if task is None or task.state not in ("succeeded", "failed"):
+        logger.info(
+            "route skipped task=%s (state=%s)",
+            task_key,
+            task.state if task else "missing",
+        )
         return
 
     biz = str(task.business_id)
     cust = str(task.customer_id)
+    has_customer = bool(task.customer_context)
+    has_system = bool(task.system_context)
 
-    # Coordinator runs first under its own lock. It may enqueue customer-facing
-    # items via `surface_to_customer` — those land in the same inbox as the
-    # outbound reply below, so central sees the full picture on one turn.
-    # Isolate its failures: a coordinator crash (e.g. provider 400) must not
-    # block the customer-side enqueue + wake — the ledger is already updated
-    # and the customer is owed their reply regardless of back-office state.
-    if task.system_context:
-        try:
-            await _run_coordinator(task)
-        except Exception:
-            logger.exception(
-                "coordinator failed for task=%s; continuing to customer wake",
-                task_key,
-            )
+    with _maybe_span(
+        "outbound_resolution.route",
+        task_key=task_key,
+        business_id=biz,
+        customer_id=cust,
+        has_customer_context=has_customer,
+        has_system_context=has_system,
+        state=task.state,
+    ):
+        # Coordinator runs first under its own lock. Its failures (provider
+        # errors, lock contention, bugs) must NOT block the customer-side
+        # path — the ledger is already saved and the customer is owed their
+        # reply regardless of back-office state.
+        if has_system:
+            try:
+                await _run_coordinator(task)
+            except Exception:
+                logger.exception(
+                    "coordinator failed for task=%s; continuing to customer wake",
+                    task_key,
+                )
 
-    if task.customer_context:
-        inbox.enqueue(biz, cust, _outbound_reply_item(task))
+        # Customer-side enqueue + wake. Wrapped independently so a wake_central
+        # failure can't be confused with an enqueue failure. enqueue is
+        # synchronous and writes to redis/local store; wake_central runs
+        # central_agent under the per-customer lock.
+        if has_customer:
+            try:
+                inbox.enqueue(biz, cust, _outbound_reply_item(task))
+                logger.info(
+                    "enqueued outbound_reply for customer task=%s biz=%s cust=%s",
+                    task_key,
+                    biz,
+                    cust,
+                )
+            except Exception:
+                logger.exception(
+                    "inbox.enqueue failed for task=%s; central will not see this reply",
+                    task_key,
+                )
+                return
 
-    # Drain the queue whenever this route could have enqueued anything —
-    # either the outbound reply itself, or a coordinator-surfaced summary.
-    # `wake_central` no-ops on an empty queue, so it's safe to call even if
-    # the coordinator decided not to surface anything.
-    if task.customer_context or task.system_context:
-        await orchestrator.wake_central(biz, cust)
+        if has_customer or has_system:
+            try:
+                await orchestrator.wake_central(biz, cust)
+            except Exception:
+                logger.exception(
+                    "wake_central failed for task=%s; queued items remain for next inbound",
+                    task_key,
+                )
 
 
 def _outbound_reply_item(task: OutboundTaskRow) -> dict:
