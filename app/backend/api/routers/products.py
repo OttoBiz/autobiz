@@ -34,6 +34,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from backend.api import events
 from backend.api.auth import SessionContext, require_session
 from backend.api.schemas.products import (
     BulkImportJobRead,
@@ -162,6 +163,15 @@ async def create_product_endpoint(
                 fields={"sku": [f"SKU '{e.sku}' already in use"]},
             ),
         )
+    qty = int(row.get("stock_quantity") or 0)
+    if qty > 0:
+        events.emit_stock_changed(
+            ctx.business_id,
+            product_id=row["id"],
+            new_qty=qty,
+            delta=qty,
+            actor_type="operator",
+        )
     return _to_product_read(row)
 
 
@@ -227,9 +237,14 @@ async def patch_product_endpoint(
             detail=_error("empty_patch", "At least one field is required"),
         )
 
-    # If discontinuing, fetch existing to compare and warn on open orders.
+    # If discontinuing or changing stock, fetch existing to compare (and warn
+    # on open orders for the discontinue path).
     warnings: list[str] = []
-    if payload.get("is_active") is False:
+    existing: Optional[dict] = None
+    needs_existing = (
+        payload.get("is_active") is False or "stock_quantity" in payload
+    )
+    if needs_existing:
         existing = await db_utils.get_product_for_api(
             str(ctx.business_id), str(product_id)
         )
@@ -238,7 +253,7 @@ async def patch_product_endpoint(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=_error("not_found", "Product not found"),
             )
-        if existing.get("is_active"):
+        if payload.get("is_active") is False and existing.get("is_active"):
             open_orders = await db_utils.get_open_order_count(
                 str(ctx.business_id), str(product_id)
             )
@@ -271,6 +286,25 @@ async def patch_product_endpoint(
                 fields={"sku": [f"SKU '{e.sku}' already in use"]},
             ),
         )
+
+    # Pub/sub side effects (fire-and-forget).
+    if "stock_quantity" in payload and existing is not None:
+        old_qty = int(existing.get("stock_quantity") or 0)
+        new_qty = int(row.get("stock_quantity") or 0)
+        if new_qty != old_qty:
+            events.emit_stock_changed(
+                ctx.business_id,
+                product_id=row["id"],
+                new_qty=new_qty,
+                delta=new_qty - old_qty,
+                actor_type="operator",
+            )
+    if (
+        payload.get("is_active") is False
+        and existing is not None
+        and existing.get("is_active")
+    ):
+        events.emit_discontinued(ctx.business_id, product_id=row["id"])
 
     product = _to_product_read(row)
     if warnings:
@@ -338,6 +372,13 @@ async def adjust_stock_endpoint(
             status_code=status.HTTP_409_CONFLICT,
             detail=_error("insufficient_stock", "Cannot reduce stock below zero"),
         )
+    events.emit_stock_changed(
+        ctx.business_id,
+        product_id=product_row["id"],
+        new_qty=int(product_row.get("stock_quantity") or 0),
+        delta=body.delta,
+        actor_type="operator",
+    )
     return StockAdjustResponse(
         product=_to_product_read(product_row),
         movement=StockMovementRead.model_validate(movement_row),
@@ -411,6 +452,10 @@ async def bulk_import(
 
     business_id = str(ctx.business_id)
     actor_id = str(ctx.user_id)
+    # TODO: emit inventory.stock_changed events per affected product after
+    # bulk-import finishes. v1 skips this -- per-row publishes during a 10k
+    # row import would be expensive and the agent runtime cache TTL is an
+    # acceptable fallback for now.
     job_id = await db_utils.create_bulk_import_job(business_id)
 
     total_rows = len(rows)
@@ -616,6 +661,10 @@ async def bulk_update(
     result = await db_utils.bulk_update_products(
         business_id, filter_dict, patch_dict, dry_run=False
     )
+    # TODO: emit per-row inventory.discontinued / stock_changed events when
+    # bulk-update flips is_active=false or changes stock_quantity. v1 skips
+    # this to avoid an extra round trip to fetch affected ids; the agent
+    # runtime cache will fall back to its TTL for invalidation.
     return {
         "matched_rows": result["matched_rows"],
         "updated_rows": result["updated_rows"],
