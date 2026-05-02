@@ -36,8 +36,17 @@ async def route(task_key: str) -> None:
     # Coordinator runs first under its own lock. It may enqueue customer-facing
     # items via `surface_to_customer` — those land in the same inbox as the
     # outbound reply below, so central sees the full picture on one turn.
+    # Isolate its failures: a coordinator crash (e.g. provider 400) must not
+    # block the customer-side enqueue + wake — the ledger is already updated
+    # and the customer is owed their reply regardless of back-office state.
     if task.system_context:
-        await _run_coordinator(task)
+        try:
+            await _run_coordinator(task)
+        except Exception:
+            logger.exception(
+                "coordinator failed for task=%s; continuing to customer wake",
+                task_key,
+            )
 
     if task.customer_context:
         inbox.enqueue(biz, cust, _outbound_reply_item(task))
