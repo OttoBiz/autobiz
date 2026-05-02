@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from backend.api.routers import analytics, inventory, supply_chain
+from backend.api.routers import analytics, inventory, products, supply_chain
 from backend.api.routers.webhooks import http as http_webhook
 from backend.api.routers.webhooks import whatsapp as whatsapp_webhook
 from backend.chatbot.sweeper import sweep_loop
@@ -118,6 +118,7 @@ async def shutdown_event():
 # Include routers
 app.include_router(analytics.router, prefix="/api/v1")
 app.include_router(inventory.router, prefix="/api/v1")
+app.include_router(products.router, prefix="/api/v1")
 app.include_router(supply_chain.router, prefix="/api/v1")
 app.include_router(whatsapp_webhook.router)
 app.include_router(http_webhook.router)
@@ -147,6 +148,7 @@ async def health_check():
         "endpoints": {
             "analytics": "/api/v1/analytics",
             "inventory": "/api/v1/inventory",
+            "products": "/api/v1/products",
             "supply_chain": "/api/v1/supply-chain",
             "whatsapp_webhook": "/webhooks/whatsapp",
             "http_inbound": "/webhooks/http",
