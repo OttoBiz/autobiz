@@ -562,15 +562,24 @@ async def _send_to_party(
         channel = registry.get(party_identity.channel)
     except KeyError:
         return f"unknown channel {party_identity.channel}"
-    try:
-        if task_key is not None:
-            await messaging_dispatcher.dispatch_to_party(
-                channel, party_identity, text, task_key=task_key
-            )
-        else:
-            await channel.send(party_identity, text)
-    except Exception as exc:
-        return f"dispatch failed: {exc}"
+    with _maybe_span(
+        "outbound._send_to_party",
+        contact_id=str(contact_id),
+        channel=party_identity.channel,
+        sender=party_identity.channel_business_id or party_identity.business_id,
+        recipient=party_identity.channel_user_id,
+        task_key=task_key,
+    ):
+        try:
+            if task_key is not None:
+                await messaging_dispatcher.dispatch_to_party(
+                    channel, party_identity, text, task_key=task_key
+                )
+            else:
+                await channel.send(party_identity, text)
+        except Exception as exc:
+            logger.exception("send_to_party failed contact=%s", contact_id)
+            return f"dispatch failed: {exc}"
     return None
 
 

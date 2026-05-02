@@ -277,22 +277,22 @@ class WhatsappChannel(Channel):
         )
 
     async def send(self, identity: ChannelIdentity, text: str) -> None:
-        # TODO: out-of-window fallback. The queue-based resolution path
-        # (orchestrator.deliver_system_event → central → dispatch_to_customer)
-        # calls this `send` unconditionally. WhatsApp rejects free-form text
-        # when the customer is outside the 24h service window; in that case
-        # we need to fall back to `send_template` with the generated text as
-        # a template variable (window_policy().out_of_window_behavior ==
-        # "template"). Check `identity.last_inbound_at` against
-        # window_policy().window_hours and route to the template path when
-        # expired. Today this only bites live WhatsApp traffic — ConsoleChannel
-        # has has_window=False so the smoke TUI is unaffected.
-        await asyncio.to_thread(
-            _whatsapp_bot.send_message,
-            identity.channel_business_id or identity.business_id,
-            identity.channel_user_id,
-            text,
+        # TODO: out-of-window fallback. WhatsApp rejects free-form text
+        # when the customer is outside the 24h service window; check
+        # `identity.last_inbound_at` against window_policy().window_hours
+        # and route to send_template when expired.
+        sender = identity.channel_business_id or identity.business_id
+        ok = await asyncio.to_thread(
+            _whatsapp_bot.send_message, sender, identity.channel_user_id, text
         )
+        if not ok:
+            # send_message logged the Graph response at ERROR; raise so the
+            # caller's try/except surfaces failure (and outbound's warning
+            # fires) instead of silently treating self-sends or rejected
+            # recipients as success.
+            raise RuntimeError(
+                f"whatsapp send failed sender={sender} to={identity.channel_user_id}"
+            )
 
     async def send_template(
         self,

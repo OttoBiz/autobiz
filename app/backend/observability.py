@@ -44,5 +44,11 @@ def setup() -> None:
         scrubbing=False,
     )
     logfire.instrument_pydantic_ai()
+    # WhatsappBot uses sync `requests` to hit Graph; without this every
+    # outbound send is invisible to traces.
+    try:
+        logfire.instrument_requests()
+    except Exception:
+        pass
 
     _INSTRUMENTED = True
