@@ -26,10 +26,12 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Footer, Header, Input, RichLog, Static, TabbedContent, TabPane
 
-from backend.chatbot import orchestrator
-from backend.chatbot.agents import outbound
 from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity, InboundMessage
+from backend.chatbot.conversations import inbox as conv_inbox
+from backend.chatbot.conversations.inbox import PartyKey
+from backend.chatbot.conversations.registry import customer_conversation
+from backend.db import channel_identities
 
 from backend.chatbot.channels.console import ConsoleChannel
 from cli import system_log
@@ -173,8 +175,8 @@ class SmokeApp(App):
         if self._log_handler is not None:
             for name in (
                 "backend.chatbot",
-                "backend.chatbot.orchestrator",
-                "backend.chatbot.routers.outbound_resolution",
+                "backend.chatbot.conversations.inbox",
+                "backend.chatbot.conversations.conversation",
                 "backend.chatbot.sweeper",
             ):
                 logging.getLogger(name).removeHandler(self._log_handler)
@@ -249,10 +251,10 @@ class SmokeApp(App):
         )
         # Fire-and-forget: an LLM round-trip can take 30s+. Awaiting it inside
         # the input handler pins the coroutine, makes the TUI feel frozen, and
-        # eats subsequent keystrokes. The orchestrator's per-customer lock
-        # already serializes concurrent turns, so it is safe to dispatch.
+        # eats subsequent keystrokes. The inbox's per-customer lock already
+        # serializes concurrent drains, so it is safe to dispatch.
         self._tasks.append(
-            asyncio.create_task(self._run_orchestrator(msg), name="orchestrator-turn")
+            asyncio.create_task(self._run_orchestrator(msg), name="customer-ingest")
         )
 
     async def _run_orchestrator(self, msg: InboundMessage) -> None:
@@ -263,9 +265,18 @@ class SmokeApp(App):
         # NOTHING / NOT EXISTS) so this is cheap and bulletproof.
         await self._reseed()
         try:
-            await orchestrator.handle_inbound(msg)
+            await channel_identities.upsert_identity(msg.identity)
+            biz = msg.identity.business_id
+            cust = msg.identity.customer_id
+            convo = customer_conversation(biz, cust)
+            conv_inbox.ingest(
+                PartyKey.customer(biz, cust),
+                conv_inbox.make_user_message_item(text=msg.text or "", raw=msg.raw),
+                dedup_id=None,
+                runner=convo.drain,
+            )
         except Exception as exc:
-            self._log("customer-log", f"[red]✗ orchestrator error: {exc}[/red]")
+            self._log("customer-log", f"[red]✗ ingest error: {exc}[/red]")
         finally:
             self._reap_tasks()
 
@@ -280,68 +291,77 @@ class SmokeApp(App):
     async def _send_as_party(self, party: str, text: str) -> None:
         log_id = _PARTY_PANES[party][1]
 
-        if text.startswith("/select "):
-            self._select_task(party, text.removeprefix("/select ").strip())
-            return
         if text == "/list":
             self._show_known_tasks(party)
             return
+        if text.startswith("/select "):
+            # Per-contact outbound makes task selection unnecessary — the
+            # agent reads the manifest of open tasks for this contact and
+            # decides which (if any) the reply resolves. Kept as a no-op
+            # informational command so old muscle memory doesn't error.
+            self._select_task(party, text.removeprefix("/select ").strip())
+            return
 
-        selected = self.selected_task_key[party]
-        if not selected:
+        contact_id = await self._contact_id_for_party(party)
+        if contact_id is None:
             self._log(
                 log_id,
-                f"[red]No outbound {party} task selected. Use /select <task_key prefix> "
-                "or wait for the agent to dispatch one.[/red]",
+                f"[red]No {party} contact in the address book. Re-run the seed.[/red]",
             )
             return
 
-        self._log(
-            log_id,
-            f"[bold yellow]you ({party}) →[/bold yellow] {text}  "
-            f"[dim](task {selected[:8]})[/dim]",
-        )
+        self._log(log_id, f"[bold yellow]you ({party}) →[/bold yellow] {text}")
         self._log(log_id, "[dim italic]outbound agent thinking…[/dim italic]")
-        # Fire-and-forget for the same reason as customer turns — the outbound
-        # agent does its own LLM round-trip per party reply.
+        # Fire-and-forget — the inbox debounce + drain handles the rest.
         self._tasks.append(
             asyncio.create_task(
-                self._run_party_reply(selected, text, log_id),
+                self._run_party_reply(contact_id, text),
                 name="party-reply",
             )
         )
 
-    async def _run_party_reply(self, task_key: str, text: str, log_id: str) -> None:
+    async def _contact_id_for_party(self, party: str) -> UUID | None:
+        """Resolve the party label to the seeded contact_id.
+
+        The smoke seed inserts one console-channel contact per party with
+        `channel_user_id = party`. Cached after first lookup.
+        """
+        if not hasattr(self, "_party_contact_cache"):
+            self._party_contact_cache: dict[str, UUID] = {}
+        if party in self._party_contact_cache:
+            return self._party_contact_cache[party]
+        from backend.db.connection import get_db
+
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id FROM contacts
+                WHERE business_id = $1 AND channel = 'console' AND channel_user_id = $2
+                """,
+                UUID(self.business_id),
+                party,
+            )
+        if row is None:
+            return None
+        self._party_contact_cache[party] = row["id"]
+        return row["id"]
+
+    async def _run_party_reply(self, contact_id: UUID, text: str) -> None:
         # Same defensive re-seed as customer turns — see _run_orchestrator.
         await self._reseed()
-        # The new outbound flow is per-contact, not per-task — translate the
-        # operator's task_key selection into the contact_id behind that task,
-        # then deliver as a coalesced contact reply (single-message list since
-        # the TUI sends one inbound at a time).
-        from backend.db import outbound_ledger as _ledger
+        biz = self.business_id
+        cid = str(contact_id)
+        from backend.chatbot.conversations.registry import vendor_conversation
 
-        task = await _ledger.get_by_key(task_key)
-        if task is None or task.contact_id is None:
-            self._log(
-                log_id,
-                f"[yellow]ℹ task {task_key[:8]} has no contact bound[/yellow]",
-            )
-            self._reap_tasks()
-            return
-        try:
-            status = await outbound.deliver_contact_reply(
-                task.business_id, task.contact_id, [text]
-            )
-        except Exception as exc:
-            self._log(log_id, f"[red]✗ deliver_contact_reply error: {exc}[/red]")
-        else:
-            if status:
-                # Unknown contact / cross-tenant / send failed. Surface the
-                # message so the operator knows why nothing came back instead
-                # of staring at a frozen "thinking…" line.
-                self._log(log_id, f"[yellow]ℹ {status}[/yellow]")
-        finally:
-            self._reap_tasks()
+        convo = vendor_conversation(biz, cid)
+        conv_inbox.ingest(
+            PartyKey.vendor(biz, cid),
+            conv_inbox.make_user_message_item(text=text, raw={"source": "smoke_tui"}),
+            dedup_id=None,
+            runner=convo.drain,
+        )
+        self._reap_tasks()
 
     def _reap_tasks(self) -> None:
         # Drop completed turns so the list doesn't grow forever; on_unmount

@@ -17,8 +17,10 @@ from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
 import backend.chatbot.channels.http  # noqa: F401  triggers channel registration
-from backend.chatbot import orchestrator
 from backend.chatbot.channels import registry
+from backend.chatbot.conversations import inbox
+from backend.chatbot.conversations.inbox import PartyKey
+from backend.chatbot.conversations.registry import customer_conversation
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
@@ -33,7 +35,15 @@ async def http_inbound(request: Request) -> dict:
     payload = await request.json()
     channel = registry.get("http")
     msg = channel.parse_inbound(payload)
-    await orchestrator.handle_inbound(msg)
+    biz = str(msg.identity.business_id)
+    cust = str(msg.identity.customer_id)
+    convo = customer_conversation(biz, cust)
+    inbox.ingest(
+        PartyKey.customer(biz, cust),
+        inbox.make_user_message_item(text=msg.text or "", raw=msg.raw),
+        dedup_id=None,  # http channel has no native dedup id
+        runner=convo.drain,
+    )
     return {"ok": True}
 
 

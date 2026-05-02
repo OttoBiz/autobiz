@@ -67,7 +67,7 @@ async def test_get_identity_sql_and_params(conn):
     assert result is None
     sql, *params = conn.fetchrow.call_args.args
     norm = _normalize(sql)
-    assert "SELECT business_id, customer_id, channel, channel_user_id, last_inbound_at" in norm
+    assert "SELECT business_id, customer_id, channel, channel_user_id, channel_business_id, last_inbound_at" in norm
     assert "FROM channel_identities" in norm
     assert "WHERE business_id = $1 AND customer_id = $2 AND channel = $3" in norm
     assert params == [business_id, customer_id, "whatsapp"]
@@ -83,6 +83,7 @@ async def test_get_identity_maps_row(conn):
         "customer_id": customer_id,
         "channel": "whatsapp",
         "channel_user_id": "2348000",
+        "channel_business_id": None,
         "last_inbound_at": last,
     }
 
@@ -108,6 +109,7 @@ async def test_upsert_identity_sql_and_params(conn):
         customer_id=str(customer_id),
         channel="whatsapp",
         channel_user_id="2348000",
+        channel_business_id="phone-id-1",
         last_inbound_at=last,
     )
 
@@ -124,6 +126,7 @@ async def test_upsert_identity_sql_and_params(conn):
         str(customer_id),
         "whatsapp",
         "2348000",
+        "phone-id-1",
         last,
     ]
 
@@ -158,6 +161,7 @@ async def test_get_most_recent_identity_returns_model(conn):
         "customer_id": customer_id,
         "channel": "whatsapp",
         "channel_user_id": "2348000",
+        "channel_business_id": None,
         "last_inbound_at": last,
     }
 
@@ -213,6 +217,7 @@ async def test_resolver_wired_at_module_import(_reset_registry, conn):
         "customer_id": customer_id,
         "channel": "whatsapp",
         "channel_user_id": "2348000",
+        "channel_business_id": None,
         "last_inbound_at": datetime.now(timezone.utc),
     }
 
@@ -239,6 +244,7 @@ async def test_resolver_returns_none_when_channel_unregistered(_reset_registry, 
         "customer_id": customer_id,
         "channel": "slack",
         "channel_user_id": "U123",
+        "channel_business_id": None,
         "last_inbound_at": datetime.now(timezone.utc),
     }
 

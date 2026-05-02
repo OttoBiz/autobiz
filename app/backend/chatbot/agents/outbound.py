@@ -17,8 +17,9 @@ Two entry points:
   history, runs the agent once with the (debounced + coalesced) inbound
   text, sends the agent's reply.
 
-Per-contact mutex (`contact_inbox.acquire_lock`) is held across both — so
-an opening run and an inbound drain can't race on the same contact.
+Per-contact mutex is held across both — so an opening run and an inbound
+drain can't race on the same contact. The lock key matches the unified
+vendor-inbox lock so dispatch and the conversation drain share it.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ import logging
 import os
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any, Iterator, Literal
 from uuid import UUID, uuid4
 
@@ -41,12 +43,12 @@ from pydantic_ai import Agent, RunContext, ToolDefinition
 from pydantic_ai.capabilities import Hooks
 from pydantic_ai.messages import ToolCallPart
 
-from backend.chatbot import contact_inbox
+from backend.chatbot import _redis_queue
 from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity
 from backend.chatbot.messaging import dispatcher as messaging_dispatcher
 from backend.config import MODEL_NAME
-from backend.db import chat_storage, contacts, outbound_ledger
+from backend.db import chat_storage, contacts, db_utils, outbound_ledger
 from backend.db.outbound_ledger import OutboundTaskSummary
 
 logger = logging.getLogger(__name__)
@@ -84,6 +86,12 @@ class OutboundDeps(BaseModel):
     contact_name: str
     contact_role: str
     business_name: str | None = None
+    # Customer this outbound thread is on behalf of. Populated by the vendor
+    # conversation factory from the latest open task; passed in by dispatch
+    # at opening time. None when the contact reaches out unprompted with no
+    # open tasks — back-office tools that need a customer return a
+    # `no_customer_context` error in that case.
+    customer_id: UUID | None = None
     # Manifest visible at run start. Opening run: the freshly-inserted task
     # plus any others already running. Reply run: every running task for
     # this contact. Empty list = vendor-initiated message with no open
@@ -161,6 +169,28 @@ or system_context:
 - system_context: internal notes for back-office actions. Omit if
   nothing system-side needs to happen.
 
+BACK-OFFICE TOOLS
+You also play the back-office store manager. After resolving a task — or
+during a vendor conversation that warrants it — keep the business state
+consistent:
+- update_inventory(sku, delta): adjust stock by delta (positive or negative).
+- update_price(sku, new_price): set a product's price.
+- update_vendor_contact(vendor_id, fields): fix a vendor's name/phone/email.
+- record_note(subject, content): journal a back-office event.
+- list_contacts(role=None): read the address book; pick a contact_id before
+  dispatch_outbound.
+- dispatch_outbound(contact_id, prompt, summary=None, timeout_seconds=3600):
+  cascade outreach — e.g. switch to a backup vendor mid-conversation. Depth-
+  limited.
+- escalate_to_operator(reason, options=None): hand off to a human when
+  automation can't proceed.
+- surface_to_customer(summary): tell the customer something that is NOT
+  already covered by a resolved task's customer_context (avoid duplicates).
+  Returns no_customer_context when no customer is bound to this thread.
+
+Be decisive. Use these tools as part of the same run that resolves tasks;
+don't wait for a separate trigger. Stop when the back-office is consistent.
+
 VOICE
 - You are {business_name}'s representative. Professional, concise,
   explicit about what you need. WhatsApp-style — short paragraphs, no
@@ -198,22 +228,43 @@ async def _on_resolve_tasks(
     args: dict[str, Any],
     result: Any,
 ) -> Any:
-    """Fan out outbound_resolution.route per closed task in parallel.
+    """Push a system_event into the customer inbox per resolved task.
 
-    Logfire confirmed this hook fires correctly; previous failures were
-    inside `route()` itself (coordinator crash propagating). Each route
-    call is independently isolated downstream, so a per-task crash here
-    will only affect that task's customer wake.
+    Lazy imports break the outbound.py <-> conversations.registry cycle.
+    Each ingest is independent — a per-task error is logged and skipped so
+    other tasks still wake their customer.
     """
-    from backend.chatbot.routers.outbound_resolution import route
+    # Lazy imports — conversations.registry imports from this module.
+    from backend.chatbot.conversations import inbox as conv_inbox
+    from backend.chatbot.conversations.inbox import PartyKey
+    from backend.chatbot.conversations.registry import customer_conversation
 
     acknowledged = result.get("acknowledged", []) if isinstance(result, dict) else []
     if not acknowledged:
         return result
-    await asyncio.gather(
-        *(route(task_key) for task_key in acknowledged),
-        return_exceptions=True,
-    )
+    for task_key in acknowledged:
+        try:
+            task = await outbound_ledger.get_by_key(task_key)
+            if task is None or not task.customer_context:
+                continue
+            biz = str(task.business_id)
+            cust = str(task.customer_id)
+            convo = customer_conversation(biz, cust)
+            conv_inbox.ingest(
+                PartyKey.customer(biz, cust),
+                conv_inbox.make_system_event_item(
+                    summary=task.customer_context,
+                    source="outbound_reply",
+                    contact_name=task.contact_name,
+                    contact_role=task.contact_role,
+                    task_key=task.task_key,
+                    dedup_id=f"resolve:{task_key}",
+                ),
+                dedup_id=f"resolve:{task_key}",
+                runner=convo.drain,
+            )
+        except Exception:
+            logger.exception("resolve hook ingest failed task=%s", task_key)
     return result
 
 
@@ -287,6 +338,173 @@ async def get_task_details(
         "dispatched_at": task.dispatched_at.isoformat(),
         "customer_context": task.customer_context,
     }
+
+
+# ---------------------------------------------------------------------------
+# Back-office tools — merged from the former coordinator agent.
+# ---------------------------------------------------------------------------
+
+
+@outbound_agent.tool
+async def update_inventory(
+    ctx: RunContext[OutboundDeps], sku: str, delta: int
+) -> dict[str, Any]:
+    """Adjust stock for `sku` by `delta`. Returns the new quantity on success."""
+    products = await db_utils.get_products(
+        business_id=str(ctx.deps.business_id), name=sku, limit=50
+    )
+    match = next((p for p in products if (p.get("sku") or "") == sku), None)
+    if match is None:
+        return {"ok": False, "reason": f"sku '{sku}' not found"}
+
+    new_qty = int(match.get("stock_quantity") or 0) + int(delta)
+    updated = await db_utils.update_product_stock(str(match["id"]), new_qty)
+    if updated is None:
+        return {"ok": False, "reason": "update_failed"}
+    return {"ok": True, "sku": sku, "new_qty": int(updated["stock_quantity"])}
+
+
+@outbound_agent.tool
+async def update_price(
+    ctx: RunContext[OutboundDeps], sku: str, new_price: Decimal
+) -> dict[str, Any]:
+    """Set the unit price for `sku`."""
+    products = await db_utils.get_products(
+        business_id=str(ctx.deps.business_id), name=sku, limit=50
+    )
+    match = next((p for p in products if (p.get("sku") or "") == sku), None)
+    if match is None:
+        return {"ok": False, "reason": f"sku '{sku}' not found"}
+
+    updated = await db_utils.update_product_price(str(match["id"]), new_price)
+    if updated is None:
+        return {"ok": False, "reason": "update_failed"}
+    return {"ok": True, "sku": sku, "new_price": str(updated["price"])}
+
+
+@outbound_agent.tool
+async def update_vendor_contact(
+    ctx: RunContext[OutboundDeps], vendor_id: str, fields: dict[str, str]
+) -> dict[str, Any]:
+    """Update a vendor's contact record. Accepted keys: name, phone, email."""
+    allowed = {"name", "phone", "email"}
+    payload = {k: v for k, v in fields.items() if k in allowed and v is not None}
+    if not payload:
+        return {"ok": False, "reason": "no updatable fields"}
+    updated = await db_utils.update_vendor(UUID(vendor_id), **payload)
+    if not updated:
+        return {"ok": False, "reason": "vendor not found"}
+    return {"ok": True, "vendor_id": vendor_id, "updated_fields": list(payload)}
+
+
+@outbound_agent.tool
+async def record_note(
+    ctx: RunContext[OutboundDeps], subject: str, content: str
+) -> dict[str, Any]:
+    """Append a back-office journal entry."""
+    # TODO: replace with a `coordinator_notes` table when persistence is needed.
+    logger.info(
+        "outbound_note | business_id=%s customer_id=%s subject=%s content=%s",
+        ctx.deps.business_id,
+        ctx.deps.customer_id,
+        subject,
+        content,
+    )
+    return {"ok": True, "logged": True}
+
+
+@outbound_agent.tool
+async def list_contacts(
+    ctx: RunContext[OutboundDeps], role: str | None = None
+) -> list[dict[str, Any]]:
+    """List this business's address book. Optionally filter by role."""
+    rows = await contacts.list_by_business(ctx.deps.business_id, role=role)
+    return [
+        {"id": str(c.id), "name": c.name, "role": c.role, "notes": c.notes}
+        for c in rows
+    ]
+
+
+@outbound_agent.tool
+async def dispatch_outbound(
+    ctx: RunContext[OutboundDeps],
+    contact_id: UUID,
+    prompt: str,
+    summary: str | None = None,
+    timeout_seconds: int = 3600,
+) -> dict[str, Any] | str:
+    """Open a new system-initiated outbound thread. Returns the new task_key.
+
+    `summary` is a short ≤80-char headline shown in the contact agent's
+    manifest. Returns `no_customer_context` when the current run has no
+    customer bound — the agent should resolve a task first or escalate.
+    """
+    if ctx.deps.customer_id is None:
+        return {
+            "error": "no_customer_context",
+            "detail": "this thread has no customer bound; cannot cascade outbound",
+        }
+    return await dispatch(
+        business_id=ctx.deps.business_id,
+        customer_id=ctx.deps.customer_id,
+        contact_id=contact_id,
+        initiated_by="system",
+        dispatch_prompt=prompt,
+        summary=summary,
+        timeout_seconds=timeout_seconds,
+        parent_depth=ctx.deps.current_depth,
+    )
+
+
+@outbound_agent.tool
+async def escalate_to_operator(
+    ctx: RunContext[OutboundDeps],
+    reason: str,
+    options: list[str] | None = None,
+) -> dict[str, Any]:
+    """Hand off to a human operator when automation cannot proceed."""
+    # TODO: wire to operator dashboard / Slack / email alerting once it exists.
+    logger.warning(
+        "outbound_escalation | business_id=%s customer_id=%s reason=%s options=%s",
+        ctx.deps.business_id,
+        ctx.deps.customer_id,
+        reason,
+        options or [],
+    )
+    return {"escalated": True}
+
+
+@outbound_agent.tool
+async def surface_to_customer(
+    ctx: RunContext[OutboundDeps], summary: str
+) -> dict[str, Any]:
+    """Push a system_event into the customer inbox for central_agent to phrase.
+
+    Use only when the customer needs to know something NOT already covered
+    by a resolved task's customer_context — duplication would surface twice.
+    """
+    if ctx.deps.customer_id is None:
+        return {"ok": False, "reason": "no_customer_context"}
+    # Lazy import — conversations.registry imports from this module.
+    from backend.chatbot.conversations import inbox as conv_inbox
+    from backend.chatbot.conversations.inbox import PartyKey
+    from backend.chatbot.conversations.registry import customer_conversation
+
+    biz = str(ctx.deps.business_id)
+    cust = str(ctx.deps.customer_id)
+    convo = customer_conversation(biz, cust)
+    dedup = f"surface:{uuid4().hex}"
+    conv_inbox.ingest(
+        PartyKey.customer(biz, cust),
+        conv_inbox.make_system_event_item(
+            summary=summary,
+            source="outbound_surface",
+            dedup_id=dedup,
+        ),
+        dedup_id=dedup,
+        runner=convo.drain,
+    )
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
@@ -411,9 +629,8 @@ async def dispatch(
         # Block until we own the per-contact lock — an inbound drain may be
         # mid-flight and we can't run two agent calls on the same contact
         # concurrently. The lock has a 60s TTL so we won't deadlock.
-        while not contact_inbox.acquire_lock(
-            str(business_id), str(contact.id), owner
-        ):
+        lock_key = f"lock:inbox:vendor:{business_id}:{contact.id}"
+        while not _redis_queue.acquire_lock(lock_key, owner, ttl_seconds=60):
             await asyncio.sleep(0.5)
         try:
             await outbound_ledger.mark_running(task_key)
@@ -429,6 +646,7 @@ async def dispatch(
                 business_name=business_name,
                 open_tasks=open_tasks,
                 current_depth=next_depth,
+                customer_id=customer_id,
             )
             opening_input = (
                 f"[NEW DISPATCH from store manager — task {task_key}]\n"
@@ -465,7 +683,7 @@ async def dispatch(
                         send_status,
                     )
         finally:
-            contact_inbox.release_lock(str(business_id), str(contact.id), owner)
+            _redis_queue.release_lock(lock_key, owner)
 
     asyncio.create_task(_run())
     return task_key
@@ -478,9 +696,9 @@ async def deliver_contact_reply(
 ) -> str | None:
     """Run the outbound agent against a contact's coalesced inbound reply.
 
-    Called by the contact_inbox drain runner with the per-contact mutex
-    already held. `messages` is the list of inbound texts that arrived in
-    the debounce window, joined here into a single agent input.
+    Called by the unified vendor inbox drain runner with the per-contact
+    mutex already held. `messages` is the list of inbound texts that arrived
+    in the debounce window, joined here into a single agent input.
 
     Returns None on success, a status string when delivery fails.
     """

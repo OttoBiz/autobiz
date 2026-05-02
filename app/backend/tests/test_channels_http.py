@@ -148,13 +148,8 @@ def test_module_import_registers_channel():
     assert registry.get("http").name == "http"
 
 
-def test_http_webhook_invokes_orchestrator(monkeypatch):
+def test_http_webhook_ingests_via_unified_inbox(monkeypatch):
     from backend.api.routers.webhooks import http as http_webhook
-
-    captured: dict = {}
-
-    async def fake_handle_inbound(msg: InboundMessage) -> None:
-        captured["msg"] = msg
 
     fake_msg = InboundMessage(
         identity=ChannelIdentity(
@@ -170,9 +165,8 @@ def test_http_webhook_invokes_orchestrator(monkeypatch):
         received_at=datetime.now(timezone.utc),
     )
     fake_channel = SimpleNamespace(parse_inbound=MagicMock(return_value=fake_msg))
-    monkeypatch.setattr(
-        http_webhook.orchestrator, "handle_inbound", fake_handle_inbound
-    )
+    ingest_mock = MagicMock(return_value=True)
+    monkeypatch.setattr(http_webhook.inbox, "ingest", ingest_mock)
     monkeypatch.setattr(http_webhook.registry, "get", lambda name: fake_channel)
 
     app = FastAPI()
@@ -190,7 +184,13 @@ def test_http_webhook_invokes_orchestrator(monkeypatch):
     assert response.status_code == 200
     assert response.json() == {"ok": True}
     fake_channel.parse_inbound.assert_called_once_with(payload)
-    assert captured["msg"] is fake_msg
+    ingest_mock.assert_called_once()
+    party = ingest_mock.call_args.args[0]
+    item = ingest_mock.call_args.args[1]
+    assert party.kind == "customer"
+    assert party.business_id == _BIZ_ID
+    assert party.party_id == _CUST_ID
+    assert item["payload"]["text"] == "hi"
 
 
 @pytest.mark.asyncio

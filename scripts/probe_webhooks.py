@@ -1,7 +1,7 @@
 """Probe the /webhooks/whatsapp and /webhooks/http endpoints in-process.
 
 Runs the real FastAPI app from app/main.py, but stubs out the database
-lifecycle and the orchestrator so we can verify endpoint wiring (parsing,
+lifecycle and the unified inbox so we can verify endpoint wiring (parsing,
 routing, registry lookup, response shape) without touching Postgres or
 spending LLM tokens.
 """
@@ -32,23 +32,31 @@ def main() -> int:
 
     sweeper.sweep_loop = _noop_sweep_loop
 
-    # 2. Stub the orchestrator so we can confirm it was called with the
-    #    parsed message but don't actually invoke any agents.
-    from backend.chatbot import orchestrator
+    # 2. Stub the unified inbox + identity write so we can confirm the routers
+    #    invoked them but don't actually run any agents or hit Postgres.
+    from backend.chatbot.conversations import inbox as conv_inbox
+    from backend.db import channel_identities
+
     handled: list = []
 
-    async def _record(msg):
-        handled.append(msg)
+    def _record_ingest(party, item, *, dedup_id, runner):
+        handled.append({"party": party, "item": item, "dedup_id": dedup_id})
+        return True
 
-    orchestrator.handle_inbound = _record
+    async def _noop_upsert(_identity):
+        return None
+
+    conv_inbox.ingest = _record_ingest
+    channel_identities.upsert_identity = _noop_upsert
 
     # 3. Re-import the routers AFTER patching, since they captured the
-    #    original handle_inbound at import time.
+    #    originals at import time.
     from backend.api.routers.webhooks import http as http_router
     from backend.api.routers.webhooks import whatsapp as whatsapp_router
 
-    http_router.orchestrator = orchestrator
-    whatsapp_router.orchestrator = orchestrator
+    http_router.inbox = conv_inbox
+    whatsapp_router.inbox = conv_inbox
+    whatsapp_router.channel_identities = channel_identities
 
     # 4. Import the app and use TestClient to exercise the routes.
     from fastapi.testclient import TestClient
@@ -119,8 +127,8 @@ def main() -> int:
             "status": r.status_code,
             "body": r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text,
             "handled_count": len(handled),
-            "last_handled_text": getattr(handled[-1], "text", None) if handled else None,
-            "last_handled_channel": getattr(handled[-1], "channel", None) if handled else None,
+            "last_handled_text": (handled[-1]["item"]["payload"].get("text") if handled else None),
+            "last_handled_party": (str(handled[-1]["party"]) if handled else None),
         }
 
         # --- HTTP webhook inbound (POST) ---
@@ -136,8 +144,8 @@ def main() -> int:
             "status": r.status_code,
             "body": r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text,
             "handled_count": len(handled) - before,
-            "last_handled_text": getattr(handled[-1], "text", None) if handled else None,
-            "last_handled_channel": getattr(handled[-1], "channel", None) if handled else None,
+            "last_handled_text": (handled[-1]["item"]["payload"].get("text") if handled else None),
+            "last_handled_party": (str(handled[-1]["party"]) if handled else None),
         }
 
     print(json.dumps(results, indent=2, default=str))

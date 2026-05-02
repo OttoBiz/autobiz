@@ -4,23 +4,23 @@ GET handles Meta's verification handshake. POST verifies the X-Hub-Signature-256
 header against the raw body, parses the payload via the registered channel,
 classifies the sender via `resolve_inbound_sender`, then forks:
 - unknown_tenant / owner: dropped with 200.
-- contact: enqueued onto the per-contact debounced inbox; the drain task
-  fires `outbound.deliver_contact_reply` 20s later with all messages from
-  the window coalesced.
-- customer: IDs swapped for UUIDs, dispatched to the orchestrator.
+- contact: ingested onto the per-vendor unified inbox; the drain task fires
+  the vendor Conversation 10s later with all messages from the window
+  coalesced.
+- customer: IDs swapped for UUIDs, identity persisted, then ingested onto
+  the per-customer unified inbox.
 
 Importing `chatbot.channels.whatsapp` registers the channel as a side effect.
 """
 
 import json
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
 import backend.chatbot.channels.whatsapp  # noqa: F401  triggers channel registration
-from backend.chatbot import contact_inbox, orchestrator
-from backend.chatbot.agents import outbound
 from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity
 from backend.chatbot.channels.whatsapp import NonMessageEvent, _whatsapp_bot
@@ -28,29 +28,25 @@ from backend.chatbot.channels.whatsapp_resolver import (
     resolve_inbound_sender,
     resolve_or_create_customer_by_phone,
 )
+from backend.chatbot.conversations import inbox
+from backend.chatbot.conversations.inbox import PartyKey
+from backend.chatbot.conversations.registry import (
+    customer_conversation,
+    vendor_conversation,
+)
+from backend.db import channel_identities
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 
-async def _run_contact_reply(
-    business_id: str, contact_id: str, messages: list[str]
-) -> None:
-    """Adapter passed to contact_inbox.schedule_drain.
-
-    Keeps the inbox module decoupled from the agent — the drain task calls
-    this with whatever messages accumulated in the window; we forward them
-    to the outbound agent.
-    """
-    status = await outbound.deliver_contact_reply(business_id, contact_id, messages)
-    if status is not None:
-        logger.warning(
-            "contact reply delivery failed biz=%s contact=%s status=%s",
-            business_id,
-            contact_id,
-            status,
-        )
+def _wamid(msg) -> str | None:
+    """Extract Meta's per-message id from the parsed inbound. None if missing."""
+    try:
+        return msg.raw.get("messages", [{}])[0].get("id")
+    except (AttributeError, IndexError):
+        return None
 
 
 @router.get("/whatsapp")
@@ -120,19 +116,42 @@ async def whatsapp_webhook(request: Request) -> dict:
                 return {"ok": True, "ignored": "contact_no_text"}
             biz = str(sender.business_id)
             cid = str(sender.contact_id)
-            contact_inbox.enqueue(biz, cid, text)
-            await contact_inbox.schedule_drain(biz, cid, _run_contact_reply)
+            wamid = _wamid(msg)
+            convo = vendor_conversation(biz, cid)
+            inbox.ingest(
+                PartyKey.vendor(biz, cid),
+                inbox.make_user_message_item(text=text, raw=msg.raw, dedup_id=wamid),
+                dedup_id=wamid,
+                runner=convo.drain,
+            )
             return {"ok": True}
         case "customer":
             customer_uuid = await resolve_or_create_customer_by_phone(wa_id)
+            biz = str(sender.business_id)
+            cust = str(customer_uuid)
+            # Persist identity here (used to live in orchestrator.handle_inbound)
+            # so the customer's drain runner can resolve it on the way out.
             resolved_identity = ChannelIdentity(
-                business_id=str(sender.business_id),
-                customer_id=str(customer_uuid),
+                business_id=biz,
+                customer_id=cust,
                 channel="whatsapp",
                 channel_user_id=wa_id,
                 channel_business_id=phone_number_id,
                 last_inbound_at=msg.identity.last_inbound_at,
             )
-            msg = msg.model_copy(update={"identity": resolved_identity})
-            await orchestrator.handle_inbound(msg)
+            await channel_identities.upsert_identity(
+                resolved_identity.model_copy(
+                    update={"last_inbound_at": datetime.now(timezone.utc)}
+                )
+            )
+            wamid = _wamid(msg)
+            convo = customer_conversation(biz, cust)
+            inbox.ingest(
+                PartyKey.customer(biz, cust),
+                inbox.make_user_message_item(
+                    text=msg.text or "", raw=msg.raw, dedup_id=wamid
+                ),
+                dedup_id=wamid,
+                runner=convo.drain,
+            )
             return {"ok": True}

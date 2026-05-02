@@ -21,9 +21,12 @@ from datetime import datetime, timezone
 from typing import Awaitable, Callable
 from uuid import UUID, uuid4
 
-from backend.chatbot import orchestrator
 from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity, InboundMessage
+from backend.chatbot.conversations import inbox
+from backend.chatbot.conversations.inbox import PartyKey
+from backend.chatbot.conversations.registry import customer_conversation
+from backend.db import channel_identities
 
 from backend.chatbot.channels.console import ConsoleChannel
 from cli.seed import ensure_smoke_data
@@ -123,7 +126,16 @@ async def healthcheck() -> int:
 
     msg = _customer_inbound(business_id, customer_id, "Hi, are you there?")
     print(f"  → sending: {msg.text!r}")
-    await orchestrator.handle_inbound(msg)
+    await channel_identities.upsert_identity(msg.identity)
+    biz = str(business_id)
+    cust = str(customer_id)
+    convo = customer_conversation(biz, cust)
+    inbox.ingest(
+        PartyKey.customer(biz, cust),
+        inbox.make_user_message_item(text=msg.text or "", raw=msg.raw),
+        dedup_id=None,
+        runner=convo.drain,
+    )
 
     reply = await _wait_for_customer_reply(channel, customer_addr, timeout=60)
     if reply is None:

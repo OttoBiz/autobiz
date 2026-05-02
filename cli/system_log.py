@@ -47,8 +47,8 @@ def install(
     level: int = logging.INFO,
     loggers: tuple[str, ...] = (
         "backend.chatbot",
-        "backend.chatbot.orchestrator",
-        "backend.chatbot.routers.outbound_resolution",
+        "backend.chatbot.conversations.inbox",
+        "backend.chatbot.conversations.conversation",
         "backend.chatbot.sweeper",
     ),
 ) -> QueueLogHandler:

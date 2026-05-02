@@ -19,7 +19,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -121,14 +121,18 @@ def patch_chat_storage(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def patch_contact_inbox(monkeypatch):
-    """Stub the per-contact mutex so dispatch's _run() proceeds immediately."""
-    fake = SimpleNamespace(
-        acquire_lock=lambda biz, cid, owner: True,
-        release_lock=lambda biz, cid, owner: True,
+def patch_redis_queue(monkeypatch):
+    """Stub the per-contact mutex so dispatch's _run() proceeds immediately.
+
+    The vendor-side lock now lives in `_redis_queue.acquire_lock` /
+    `release_lock`; the unified inbox uses the same primitives.
+    """
+    monkeypatch.setattr(
+        outbound._redis_queue, "acquire_lock", lambda key, owner, ttl_seconds: True
     )
-    monkeypatch.setattr(outbound, "contact_inbox", fake)
-    return fake
+    monkeypatch.setattr(
+        outbound._redis_queue, "release_lock", lambda key, owner: True
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -415,13 +419,22 @@ async def test_resolve_tasks_empty_input_returns_empty(patch_ledger):
 
 
 @pytest.mark.asyncio
-async def test_on_resolve_tasks_hook_fans_out_route_per_acknowledged(monkeypatch):
-    route_mock = AsyncMock(return_value=None)
-    # The hook does `from backend.chatbot.routers.outbound_resolution import route`
-    # — patch the symbol in the module.
-    import backend.chatbot.routers.outbound_resolution as outbound_resolution
+async def test_on_resolve_tasks_hook_ingests_per_acknowledged(monkeypatch, patch_ledger):
+    """The hook now ingests a system_event onto each resolved task's
+    customer inbox via `conversations.inbox.ingest`."""
+    from backend.chatbot.conversations import inbox as conv_inbox
 
-    monkeypatch.setattr(outbound_resolution, "route", route_mock)
+    # Two acknowledged tasks — each one must lookup ledger + ingest once.
+    task_a = _make_task_row(task_key="tk-a")
+    task_a = task_a.model_copy(update={"customer_context": "answer-a"})
+    task_b = _make_task_row(task_key="tk-b")
+    task_b = task_b.model_copy(update={"customer_context": "answer-b"})
+
+    by_key = {"tk-a": task_a, "tk-b": task_b}
+    patch_ledger.get_by_key = AsyncMock(side_effect=lambda k: by_key.get(k))
+
+    ingest_mock = MagicMock(return_value=True)
+    monkeypatch.setattr(conv_inbox, "ingest", ingest_mock)
 
     result = await outbound._on_resolve_tasks(
         _ctx(),
@@ -432,17 +445,45 @@ async def test_on_resolve_tasks_hook_fans_out_route_per_acknowledged(monkeypatch
     )
 
     assert result == {"acknowledged": ["tk-a", "tk-b"], "skipped": []}
-    assert route_mock.await_count == 2
-    awaited_keys = sorted(call.args[0] for call in route_mock.await_args_list)
-    assert awaited_keys == ["tk-a", "tk-b"]
+    assert ingest_mock.call_count == 2
+    summaries = sorted(
+        call.args[1]["payload"]["summary"] for call in ingest_mock.call_args_list
+    )
+    assert summaries == ["answer-a", "answer-b"]
+
+
+@pytest.mark.asyncio
+async def test_on_resolve_tasks_hook_skips_tasks_with_no_customer_context(
+    monkeypatch, patch_ledger
+):
+    """Acknowledged tasks without `customer_context` must NOT enqueue."""
+    from backend.chatbot.conversations import inbox as conv_inbox
+
+    task = _make_task_row(task_key="tk-sysonly")
+    # customer_context stays None (system_context only).
+    patch_ledger.get_by_key = AsyncMock(return_value=task)
+
+    ingest_mock = MagicMock(return_value=True)
+    monkeypatch.setattr(conv_inbox, "ingest", ingest_mock)
+
+    result = await outbound._on_resolve_tasks(
+        _ctx(),
+        call=None,
+        tool_def=None,
+        args={"items": []},
+        result={"acknowledged": ["tk-sysonly"], "skipped": []},
+    )
+
+    assert result == {"acknowledged": ["tk-sysonly"], "skipped": []}
+    ingest_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_on_resolve_tasks_hook_noop_when_nothing_acknowledged(monkeypatch):
-    import backend.chatbot.routers.outbound_resolution as outbound_resolution
+    from backend.chatbot.conversations import inbox as conv_inbox
 
-    route_mock = AsyncMock(return_value=None)
-    monkeypatch.setattr(outbound_resolution, "route", route_mock)
+    ingest_mock = MagicMock()
+    monkeypatch.setattr(conv_inbox, "ingest", ingest_mock)
 
     result = await outbound._on_resolve_tasks(
         _ctx(),
@@ -453,7 +494,7 @@ async def test_on_resolve_tasks_hook_noop_when_nothing_acknowledged(monkeypatch)
     )
 
     assert result == {"acknowledged": [], "skipped": ["tk-x"]}
-    route_mock.assert_not_awaited()
+    ingest_mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

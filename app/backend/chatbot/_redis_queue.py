@@ -74,6 +74,60 @@ def clear(key: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Dedup + token-aware drain: SET NX dedup keys, peek with raw tokens,
+# remove specific entries by exact-match LREM.
+# ---------------------------------------------------------------------------
+
+
+def set_if_absent(key: str, value: str, ttl_seconds: int) -> bool:
+    """SET NX with TTL. Returns True if the key was set, False if it already existed.
+
+    Used as the dedup primitive: ingest() calls set_if_absent(dedup_key, "1", ttl)
+    and drops the message if it returns False (Meta retry of a message we already
+    enqueued).
+    """
+    return bool(redis_conn._client.set(key, value, nx=True, ex=ttl_seconds))
+
+
+def peek_with_tokens(key: str) -> list[tuple[str, Any]]:
+    """Return [(raw_json, parsed_dict), ...] without modifying the list.
+
+    The raw_json string is the exact bytes stored in Redis — pass it back to
+    drain_specific to LREM that exact entry. Parsed dict is the JSON-decoded
+    form for application use. Corrupt entries are skipped silently (parity with
+    peek()).
+    """
+    raw = redis_conn._client.lrange(key, 0, -1)
+    out: list[tuple[str, Any]] = []
+    for item in raw:
+        # The redis client may be configured with decode_responses=True
+        # (returns str) or False (returns bytes). Normalize before parsing.
+        token = item.decode() if isinstance(item, bytes) else item
+        try:
+            parsed = json.loads(token)
+        except (ValueError, TypeError):
+            continue
+        out.append((token, parsed))
+    return out
+
+
+def drain_specific(key: str, raw_tokens: list[str]) -> int:
+    """Remove specified entries from the list by exact-string match.
+
+    Calls LREM count=1 for each token. Returns total entries removed. Items
+    pushed during the agent run survive (they weren't in raw_tokens).
+    """
+    if not raw_tokens:
+        return 0
+    client = redis_conn._client
+    pipe = client.pipeline(transaction=False)
+    for token in raw_tokens:
+        pipe.lrem(key, 1, token)
+    results = pipe.execute()
+    return sum(int(r or 0) for r in results)
+
+
+# ---------------------------------------------------------------------------
 # Mutex: SET NX with owner check on release.
 # ---------------------------------------------------------------------------
 
