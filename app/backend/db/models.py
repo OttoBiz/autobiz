@@ -6,15 +6,17 @@ They correspond to the database tables created in migrations but don't
 use SQLAlchemy ORM - we use asyncpg with raw SQL instead.
 """
 
-from pydantic import BaseModel, Field, UUID4
-from typing import Optional, Dict, Any, List
 from datetime import datetime
 from enum import Enum
+from typing import Any, Dict, Optional
+
+from pydantic import UUID4, BaseModel, Field
 
 
 # Enums
 class BusinessTier(str, Enum):
     """Business subscription tier"""
+
     FREE = "free"
     GOLD = "gold"
     PLATINUM = "platinum"
@@ -22,12 +24,14 @@ class BusinessTier(str, Enum):
 
 class BusinessType(str, Enum):
     """Type of business"""
+
     VENDOR = "vendor"
     LOGISTICS = "logistics"
 
 
 class PaymentStatus(str, Enum):
     """Payment status"""
+
     PENDING = "pending"
     VERIFIED = "verified"
     FAILED = "failed"
@@ -35,6 +39,7 @@ class PaymentStatus(str, Enum):
 
 class OrderStatus(str, Enum):
     """Order status"""
+
     PENDING = "pending"
     PAYMENT_VERIFIED = "payment_verified"
     SHIPPED = "shipped"
@@ -45,6 +50,7 @@ class OrderStatus(str, Enum):
 # Core Schemas
 class UserBase(BaseModel):
     """Base user schema"""
+
     phone_number: str = Field(..., max_length=20)
     full_name: Optional[str] = Field(None, max_length=100)
     delivery_address: Optional[str] = None
@@ -54,11 +60,13 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     """Schema for creating a user"""
+
     pass
 
 
 class UserUpdate(BaseModel):
     """Schema for updating a user"""
+
     full_name: Optional[str] = None
     delivery_address: Optional[str] = None
     city: Optional[str] = None
@@ -67,6 +75,7 @@ class UserUpdate(BaseModel):
 
 class User(UserBase):
     """Complete user schema with database fields"""
+
     id: UUID4
     created_at: datetime
     updated_at: datetime
@@ -77,6 +86,7 @@ class User(UserBase):
 
 class BusinessBase(BaseModel):
     """Base business schema"""
+
     name: str = Field(..., max_length=100)
     business_type: BusinessType = BusinessType.VENDOR
     tier: BusinessTier = BusinessTier.FREE
@@ -106,11 +116,13 @@ class BusinessBase(BaseModel):
 
 class BusinessCreate(BusinessBase):
     """Schema for creating a business"""
+
     pass
 
 
 class BusinessUpdate(BaseModel):
     """Schema for updating a business"""
+
     name: Optional[str] = None
     tier: Optional[BusinessTier] = None
     phone_number: Optional[str] = None
@@ -123,6 +135,7 @@ class BusinessUpdate(BaseModel):
 
 class Business(BusinessBase):
     """Complete business schema with database fields"""
+
     id: UUID4
     created_at: datetime
     updated_at: datetime
@@ -133,6 +146,7 @@ class Business(BusinessBase):
 
 class ProductBase(BaseModel):
     """Base product schema"""
+
     name: str = Field(..., max_length=200)
     description: Optional[str] = None
     price: float = Field(..., ge=0)
@@ -141,25 +155,30 @@ class ProductBase(BaseModel):
     category: Optional[str] = Field(None, max_length=100)
     attributes: Optional[Dict[str, Any]] = None
     is_active: bool = True
+    is_negotiable: bool = False
 
 
 class ProductCreate(ProductBase):
     """Schema for creating a product"""
+
     business_id: UUID4
 
 
 class ProductUpdate(BaseModel):
     """Schema for updating a product"""
+
     name: Optional[str] = None
     description: Optional[str] = None
     price: Optional[float] = None
     stock_quantity: Optional[int] = None
     category: Optional[str] = None
     is_active: Optional[bool] = None
+    is_negotiable: Optional[bool] = None
 
 
 class Product(ProductBase):
     """Complete product schema with database fields"""
+
     id: UUID4
     business_id: UUID4
     created_at: datetime
@@ -171,6 +190,7 @@ class Product(ProductBase):
 
 class OrderBase(BaseModel):
     """Base order schema"""
+
     total_amount: float = Field(..., ge=0)
     delivery_address: Optional[str] = None
     delivery_city: Optional[str] = None
@@ -180,12 +200,14 @@ class OrderBase(BaseModel):
 
 class OrderCreate(OrderBase):
     """Schema for creating an order"""
+
     user_id: UUID4
     business_id: UUID4
 
 
 class OrderUpdate(BaseModel):
     """Schema for updating an order"""
+
     status: Optional[OrderStatus] = None
     tracking_number: Optional[str] = None
     logistic_id: Optional[UUID4] = None
@@ -193,6 +215,7 @@ class OrderUpdate(BaseModel):
 
 class Order(OrderBase):
     """Complete order schema with database fields"""
+
     id: UUID4
     order_number: str
     user_id: UUID4
@@ -209,6 +232,7 @@ class Order(OrderBase):
 
 class TransactionBase(BaseModel):
     """Base transaction schema"""
+
     amount: float = Field(..., ge=0)
     payment_method: Optional[str] = None
     receipt_image_url: Optional[str] = None
@@ -220,6 +244,7 @@ class TransactionBase(BaseModel):
 
 class TransactionCreate(TransactionBase):
     """Schema for creating a transaction"""
+
     user_id: UUID4
     business_id: UUID4
     order_id: Optional[UUID4] = None
@@ -227,11 +252,13 @@ class TransactionCreate(TransactionBase):
 
 class TransactionUpdate(BaseModel):
     """Schema for updating a transaction"""
+
     status: Optional[PaymentStatus] = None
 
 
 class Transaction(TransactionBase):
     """Complete transaction schema with database fields"""
+
     id: UUID4
     order_id: Optional[UUID4] = None
     user_id: UUID4
@@ -247,6 +274,7 @@ class Transaction(TransactionBase):
 # Response models for API endpoints
 class OrderWithDetails(Order):
     """Order with related user and business information"""
+
     user: Optional[User] = None
     business: Optional[Business] = None
     logistics: Optional[Business] = None
@@ -254,6 +282,7 @@ class OrderWithDetails(Order):
 
 class TransactionWithDetails(Transaction):
     """Transaction with related user and business information"""
+
     user: Optional[User] = None
     business: Optional[Business] = None
     order: Optional[Order] = None
@@ -262,6 +291,7 @@ class TransactionWithDetails(Transaction):
 # Legacy compatibility - keep these for backward compatibility with existing code
 class ChatMessage(BaseModel):
     """Legacy chat message schema (now using file storage)"""
+
     role: str
     name: str
     content: str
