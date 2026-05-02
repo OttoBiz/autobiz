@@ -196,6 +196,14 @@ class WhatsappBot:
                     response.text,
                 )
                 return False
+            # Log the Graph response on success too so the message_id and any
+            # delivery hint is visible without needing an HTTP span.
+            logger.info(
+                "WhatsApp send 200 to=%s sender=%s response=%s",
+                recipient_id,
+                phone_number_id,
+                response.text[:300],
+            )
             return True
         except Exception as exc:
             logger.error("Error sending WhatsApp message: %s", exc)

@@ -45,10 +45,18 @@ def setup() -> None:
     )
     logfire.instrument_pydantic_ai()
     # WhatsappBot uses sync `requests` to hit Graph; without this every
-    # outbound send is invisible to traces.
+    # outbound send is invisible to traces. Surface the failure rather than
+    # swallow — a missing instrumentation dep should be a visible warning,
+    # not a silent observability hole.
     try:
         logfire.instrument_requests()
-    except Exception:
-        pass
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "logfire.instrument_requests() failed: %s — graph.facebook.com calls "
+            "will not produce HTTP spans. Install opentelemetry-instrumentation-requests.",
+            exc,
+        )
 
     _INSTRUMENTED = True
