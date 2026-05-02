@@ -52,3 +52,6 @@ aiofiles~=25.1
 
 # Logging
 logfire~=4.31
+
+# Auth
+pyjwt[crypto]~=2.9
