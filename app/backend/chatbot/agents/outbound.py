@@ -44,7 +44,6 @@ from pydantic_ai.messages import ToolCallPart
 from backend.chatbot import contact_inbox
 from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity
-from backend.chatbot.memory_tool import register_memory_tools
 from backend.chatbot.messaging import dispatcher as messaging_dispatcher
 from backend.config import MODEL_NAME
 from backend.db import chat_storage, contacts, outbound_ledger
@@ -120,20 +119,6 @@ _INSTRUCTIONS = """\
 You are reaching out to {contact_name} (role: {contact_role}) on behalf of
 {business_name}. You are NOT {contact_name} — you are CONTACTING them.
 
-MEMORY PROTOCOL
-- ALWAYS view your memory directory before doing anything else on a turn.
-  Call memory_view_tool(path="/memories") to see what's there. Drill into
-  any file under /memories/ that looks relevant to this contact, this
-  role, or to {business_name}'s operations broadly.
-- As you learn durable facts (capabilities of {contact_name},
-  constraints, preferences, recurring schedules; tenant-wide things
-  about {business_name}'s products, hours, customers), record them in
-  memory using memory_create / memory_str_replace / memory_insert. Keep
-  files focused; rename or delete what's stale.
-- Memory is shared with the customer-facing agent on this tenant. A
-  note you write about {contact_name} can be read by central next time
-  it talks to a customer about that vendor's products, and vice versa.
-
 YOUR INPUT EACH RUN
 - The first run on a NEW thread is an OPENING dispatch from the store
   manager. Its text is internal instructions describing what we need to
@@ -150,17 +135,16 @@ OPEN TASKS WITH {contact_name}
 
 WHEN THERE ARE OPEN TASKS
 - Match the partner's reply to one or more tasks above. A single message
-  can answer multiple tasks (e.g. "yes, ankara at ₦15k, cotton at ₦8k"
-  closes both).
-- For each task the reply genuinely resolves, include it in
-  resolve_tasks(items=[...]). DEFAULT TO CLOSING when the customer's
-  question has a concrete answer — don't push for fields the partner
-  didn't volunteer.
-- ONLY ask a follow-up when a missing field is genuinely needed to ACT
-  on the customer's question (e.g. they want to place an order and we
-  still don't know the MOQ).
-- "We'll see" / "soon" / "we'll get back to you" is a non-answer — push
-  for specifics on the field that matters.
+  can answer multiple tasks at once.
+- Default to closing. If the partner's reply gives a usable answer to
+  the question we asked, call resolve_tasks immediately — don't demand a
+  more precise wording, don't ask follow-up clarification questions to
+  cosmetically tighten the answer.
+- Only ask a follow-up when a missing field is genuinely needed to ACT
+  on the customer's question.
+- A vague non-answer (no commitment, no concrete information) is the one
+  case where pushing for specifics is warranted — and only on the field
+  that matters.
 - If {contact_name} declines or cannot help, still close the task with
   customer_context describing the outcome.
 - If the manifest summary isn't enough to know what a task was about,
@@ -168,19 +152,14 @@ WHEN THERE ARE OPEN TASKS
 
 WHEN THERE ARE NO OPEN TASKS
 - {contact_name} has reached out without a pending request from us. Be
-  brief and helpful. If they shared something durable about their
-  capabilities, prices, schedule, or constraints, write it to memory
-  (memory_create or memory_str_replace) so future runs benefit. Then
-  reply naturally.
+  brief and helpful and reply naturally.
 
 ON CLOSE — for each ResolveItem, fill at least one of customer_context
 or system_context:
-- customer_context: customer-safe summary with concrete answers
-  ("In stock at ₦15,000/pair, 10-unit minimum, ships in 2 days"). No
-  hedging, no "I'll let you know".
-- system_context: internal notes for back-office actions (e.g.,
-  "restock SKU-123 by +50 units"). Omit if nothing system-side needs
-  to happen.
+- customer_context: customer-safe summary with concrete answers. No
+  hedging, no deferring.
+- system_context: internal notes for back-office actions. Omit if
+  nothing system-side needs to happen.
 
 VOICE
 - You are {business_name}'s representative. Professional, concise,
@@ -255,12 +234,6 @@ def _build_instructions(ctx: RunContext[OutboundDeps]) -> str:
         contact_role=ctx.deps.contact_role,
         open_tasks_block=_format_manifest(ctx.deps.open_tasks),
     )
-
-
-# Six memory tools registered on the outbound agent. Same registration on
-# central — both share /memories/ per tenant so notes one writes can be
-# read by the other.
-register_memory_tools(outbound_agent)
 
 
 @outbound_agent.tool
