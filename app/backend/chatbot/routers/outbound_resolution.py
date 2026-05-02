@@ -14,36 +14,17 @@ message that covers both the vendor's direct answer and any coordinator
 follow-ups. No direct `channel.send` push, no ledger poll from central.
 """
 
-import os
 from datetime import datetime, timezone
-from typing import Any, Iterator
-from contextlib import contextmanager
 from uuid import uuid4
+
+import logfire
 
 from backend.chatbot import inbox, orchestrator
 from backend.db import outbound_ledger
 from backend.db.outbound_ledger import OutboundTaskRow
 from backend.logging_config import get_logger
 
-os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
-
-try:
-    import logfire
-
-    _LOGFIRE_AVAILABLE = True
-except ImportError:
-    _LOGFIRE_AVAILABLE = False
-
 logger = get_logger(__name__)
-
-
-@contextmanager
-def _maybe_span(name: str, **attrs: Any) -> Iterator[None]:
-    if _LOGFIRE_AVAILABLE:
-        with logfire.span(name, **attrs):
-            yield
-    else:
-        yield
 
 
 async def route(task_key: str) -> None:
@@ -61,7 +42,7 @@ async def route(task_key: str) -> None:
     has_customer = bool(task.customer_context)
     has_system = bool(task.system_context)
 
-    with _maybe_span(
+    with logfire.span(
         "outbound_resolution.route",
         task_key=task_key,
         business_id=biz,
