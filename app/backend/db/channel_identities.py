@@ -13,7 +13,7 @@ from backend.chatbot.channels.base import Channel, ChannelIdentity
 from backend.db.connection import get_db
 
 
-_COLUMNS = "business_id, customer_id, channel, channel_user_id, last_inbound_at"
+_COLUMNS = "business_id, customer_id, channel, channel_user_id, channel_business_id, last_inbound_at"
 
 
 async def get_identity(
@@ -34,11 +34,15 @@ async def upsert_identity(identity: ChannelIdentity) -> None:
     pool = await get_db()
     query = """
         INSERT INTO channel_identities (
-            business_id, customer_id, channel, channel_user_id, last_inbound_at
+            business_id, customer_id, channel, channel_user_id,
+            channel_business_id, last_inbound_at
         )
-        VALUES ($1::uuid, $2::uuid, $3, $4, $5)
+        VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6)
         ON CONFLICT (business_id, customer_id, channel) DO UPDATE SET
             channel_user_id = EXCLUDED.channel_user_id,
+            channel_business_id = COALESCE(
+                EXCLUDED.channel_business_id, channel_identities.channel_business_id
+            ),
             last_inbound_at = EXCLUDED.last_inbound_at
     """
     async with pool.acquire() as conn:
@@ -48,6 +52,7 @@ async def upsert_identity(identity: ChannelIdentity) -> None:
             identity.customer_id,
             identity.channel,
             identity.channel_user_id,
+            identity.channel_business_id,
             identity.last_inbound_at,
         )
 
@@ -74,6 +79,7 @@ def _row_to_identity(row) -> ChannelIdentity:
         customer_id=str(row["customer_id"]),
         channel=row["channel"],
         channel_user_id=row["channel_user_id"],
+        channel_business_id=row["channel_business_id"],
         last_inbound_at=row["last_inbound_at"],
     )
 
