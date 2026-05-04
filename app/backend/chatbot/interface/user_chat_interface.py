@@ -3,7 +3,10 @@ User Chat Interface - Single entry via conversational_agent (orchestrator).
 """
 from __future__ import annotations
 
+import json
+import logging
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import logfire
@@ -25,6 +28,8 @@ from pydantic_ai.messages import (
     TextPart,
     UserPromptPart,
 )
+
+logger = logging.getLogger(__name__)
 
 
 async def chat(
@@ -50,6 +55,10 @@ async def _chat_inner(
     files: Optional[List[UploadFile]] = None,
 ) -> str:
     user_state = await get_user_state(user_request.user_id, user_request.vendor_id) or {}
+    if "conversation_started_at" not in user_state:
+        user_state["conversation_started_at"] = (
+            datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        )
 
     if debug:
         print(f"User state keys: {list(user_state.keys())}")
@@ -68,23 +77,30 @@ async def _chat_inner(
             if fid:
                 fcache[fid] = it.get("extracted_content") or ""
             attrs = it.get("product_attributes")
-            if attrs is not None:
-                name = attrs.product_name
-                if name:
-                    lst: List[str] = user_state.setdefault("products_discussed", [])
-                    low = {x.lower() for x in lst}
-                    n = str(name).strip()
-                    if n and n.lower() not in low:
-                        lst.append(n)
+            if attrs is not None and attrs.product_name:
+                from backend.chatbot.agents.conversational_agent import _track_product_discussed
+                _track_product_discussed(user_state, str(attrs.product_name).strip())
 
         rd = batch.get("receipt_data")
         if rd:
             user_state["receipt_data"] = rd
-            full_message += "\n\n[Receipt Data]\n" + "\n".join(rd)
+            # receipt_data is a single str from file_handler; do not str.join a str (iterates by character).
+            if isinstance(rd, str):
+                receipt_block = rd
+            else:
+                receipt_block = "\n\n---\n\n".join(str(x) for x in rd)
+            full_message += "\n\n[Receipt Data]\n" + receipt_block
 
         pl = batch.get("non_receipt_attachment_lines") or []
         if pl:
             full_message += "\n\n[Attachments — non-receipt files]\n" + "\n".join(pl)
+
+        logger.info(
+            "customer_chat full_message | user_id=%s vendor_id=%s | %s",
+            user_request.user_id,
+            user_request.vendor_id,
+            full_message if len(full_message) < 500_000 else full_message[:100_000] + "…[truncated]",
+        )
 
     business_name = (user_state.get("business_information") or {}).get("name")
     if not business_name:
@@ -94,7 +110,7 @@ async def _chat_inner(
             user_state.setdefault("business_information", {}).update(biz)
 
     # --- Cap file_text_cache to last N entries (older ones live in DB) ---
-    ftc: Dict[str, str] = user_state.get("file_text_cache", {})
+    ftc: Dict[str, str] = user_state.setdefault("file_text_cache", {})
     if len(ftc) > FILE_TEXT_CACHE_MAX:
         keys = list(ftc.keys())
         for k in keys[: len(keys) - FILE_TEXT_CACHE_MAX]:
@@ -126,13 +142,21 @@ async def _chat_inner(
     for pid, p in processes.items():
         if not isinstance(p, dict) or p.get("completed"):
             continue
-        oid = (p.get("order_id") or "").strip()
+        oid = str(p.get("order_id") or "").strip()
         pname = p.get("product_name") or ""
-        bits = [f"process={pid}", f"product={pname}"]
+        bits = [f"process={pid}", f"product={pname}", f"price={p.get('price') or 'N/A'}"]
         if oid:
             bits.append(f"order_id={oid}")
         oc_parts.append("[" + ", ".join(bits) + "]")
     order_context = ", ".join(oc_parts) if oc_parts else ""
+
+    logger.info(
+        "session_state | user_id=%s vendor_id=%s | processes=%s | products_discussed=%s",
+        user_request.user_id,
+        user_request.vendor_id,
+        json.dumps(dict(processes), default=str),
+        json.dumps(user_state.get("products_discussed") or [], default=str),
+    )
 
     response = await run_conversational_agent(
         user_message=full_message,

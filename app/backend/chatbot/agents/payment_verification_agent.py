@@ -2,7 +2,10 @@
 Payment Verification Agent - Verifies customer payments
 Converted to pydantic_ai with media processing support
 """
-
+import json
+import logging
+import re
+from datetime import date, datetime, time, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import BackgroundTasks
@@ -22,7 +25,8 @@ from backend.chatbot.utils.agent_utils import (
     get_process_snapshot,
     save_user_state,
 )
-from backend.db.db_utils import get_business_info, get_conversation_uploaded_file
+from backend.db.db_utils import get_business_info
+from backend.config import BANK_RECEIPT_AMOUNT_TOLERANCE, BANK_RECEIPT_MAX_AGE_HOURS
 from backend.payments.paystack_client import kobo_to_major, verify_transaction
 
 from .base_agent import BaseAgent
@@ -32,6 +36,23 @@ from pydantic_ai.messages import (
     TextPart,
     UserPromptPart,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _product_name_for_notify(us: Dict[str, Any], process_id: Optional[str]) -> str:
+    pid = (process_id or "").strip()
+    if pid:
+        raw = (us.get("processes") or {}).get(pid)
+        if isinstance(raw, dict) and (raw.get("product_name") or "").strip():
+            return str(raw.get("product_name")).strip()
+    pd = us.get("products_discussed")
+    if isinstance(pd, list) and pd:
+        last = pd[-1]
+        n = (last.get("name") if isinstance(last, dict) else str(last)).strip()
+        if n:
+            return n
+    return "Payment verification"
 
 
 class PaymentVerificationDeps(BaseModel):
@@ -44,20 +65,68 @@ class PaymentVerificationDeps(BaseModel):
     process_id: Optional[str] = None
 
 
+def _digits(s: str) -> str:
+    return re.sub(r"\D", "", s or "")
+
+
+def _parse_iso_date(s: str) -> Optional[date]:
+    t = (s or "").strip()[:10]
+    if not t:
+        return None
+    try:
+        return date.fromisoformat(t)
+    except ValueError:
+        return None
+
+
+def _parse_receipt_datetime_utc(
+    date_s: Optional[str], time_s: Optional[str]
+) -> Optional[datetime]:
+    """Combine receipt date + optional time for recency; naive UTC for comparison."""
+    d = _parse_iso_date((date_s or "")[:10] if (date_s or "") else "")
+    if d is None:
+        return None
+    ts = (time_s or "").strip()
+    if not ts:
+        return datetime.combine(d, time(12, 0), tzinfo=timezone.utc)
+    for fmt, sample in (("%H:%M", 5), ("%H:%M:%S", 8), ("%H.%M", 5)):
+        try:
+            tpart = datetime.strptime(ts[:sample], fmt).time()
+            return datetime.combine(d, tpart, tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    try:
+        tpart = datetime.strptime(ts, "%I:%M %p").time()
+        return datetime.combine(d, tpart, tzinfo=timezone.utc)
+    except ValueError:
+        pass
+    return datetime.combine(d, time(12, 0), tzinfo=timezone.utc)
+
+
+def _conversation_start_date_from_state(user_state: Dict[str, Any]) -> Optional[date]:
+    raw = (user_state or {}).get("conversation_started_at")
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        dtp = raw.replace("Z", "+00:00")
+        return datetime.fromisoformat(dtp).date()
+    except (ValueError, OSError, TypeError):
+        return _parse_iso_date(str(raw)[:10])
+
+
 # Initialize payment verification agent
 payment_verification_agent_base = BaseAgent(
-    system_prompt="""You are the **payment specialist**. Calm, precise, fraud-aware.
+    system_prompt="""You are the **payment specialist**. Calm, precise, fraud-aware. Your job is to verify payment claimed to be made for a product.
+    You verify this using either paystack or conversing with the business owner to ascertain if said amount for said product and quantity was indeed made given the sender's details.
 
 **Workflow**
-1. **Online payment (Paystack)**: call `verify_payment_link` with the transaction reference (customer may paste it after paying, or webhook may have already confirmed). On success → `notify_central_payment_confirmed`.
-2. **Bank transfer / receipt**: compare receipt details (amount, account) against the BUSINESS ACCOUNT DETAILS and PRODUCT DETAILS injected in the prompt. If they plausibly match → `notify_vendor_for_confirmation` so the vendor can verify. Only call `notify_central_payment_confirmed` after vendor confirms or policy rules are met.
-3. **Uploaded receipts**: use `list_uploaded_receipts` for file_id, filename, and description; call `get_cached_receipt_text(file_id)` for extracted text (session cache first, else database for this customer/store).
-4. **Ambiguous**: ask the customer for the missing detail (amount, reference, or screenshot).
+1. **Online payment (Paystack)**: if customer used paystack link, call `verify_payment_link` with the transaction reference. On success → `notify_payment_outcome(payment_confirmed=True, ...)`.
+2. **Bank transfer / receipt (no Paystack link)**: You will receive a `[Payment context]` with transaction/receipt details. Call `verify_bank_receipt_against_business` first. If all checks pass → `notify_payment_outcome(payment_confirmed=True, ...)` to create the order. If checks fail, inform the customer clearly and ask for a valid receipt.
+3. **Ambiguous**: If you have low confidence, call `notify_payment_outcome(payment_confirmed=False, receipt_details=..., transaction_reference=...)` to ask the vendor to confirm manually.
 
 **Rules**
-- Never claim payment verified without tool confirmation.
-- you must confirm that account details and product details are correct in the receipt and match the product the customer is purchasing and business account details.
-- Reassure with realistic timelines ("the vendor typically reviews within a few hours").""",
+- Run `verify_bank_receipt_against_business` when you have numeric/structured fields before claiming bank-transfer status.
+- Reassure with realistic timelines (vendor often reviews within a few hours).""",
     deps_type=PaymentVerificationDeps
 )
 
@@ -68,6 +137,51 @@ async def _pv_user_state(ctx: RunContext[PaymentVerificationDeps]) -> Dict[str, 
     if ctx.deps.user_state is not None:
         return ctx.deps.user_state
     return await get_user_state(ctx.deps.user_id, ctx.deps.business_id) or {}
+
+
+async def _run_notify_vendor_for_confirmation(
+    ctx: RunContext[PaymentVerificationDeps],
+    product_name: str,
+    amount: float,
+    process_id: Optional[str] = None,
+    task_type: Optional[TaskType] = None,
+    transaction_reference: Optional[Dict[Any, str]] = None,
+    receipt_details: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Send vendor a payment-confirmation request via central (shared by tool + auto path after verify)."""
+    us = await _pv_user_state(ctx)
+    tt = task_type or TaskType.PAYMENT_VERIFICATION
+    pid = ensure_central_process(
+        us,
+        task_type=tt,
+        customer_id=ctx.deps.user_id,
+        vendor_id=ctx.deps.business_id,
+        product_name=product_name,
+        process_id=process_id,
+    )
+    await modify_user_state(ctx.deps.user_id, ctx.deps.business_id, us)
+    agent_input = await create_structured_input(
+        sender=EntityType.AGENT,
+        recipient=EntityType.VENDOR,
+        message=f"Payment verification request: Customer claims payment for product '{product_name}', Amount: ${amount}. Receipt details: {receipt_details}, Transaction reference: {transaction_reference}. Please confirm if payment was received.",
+        customer=Customer(id=ctx.deps.user_id),
+        business=Vendor(id=ctx.deps.business_id),
+        product=Product(id="", name=product_name, quantity=1, price=amount),
+        process_id=pid,
+        task_type=tt,
+    )
+    try:
+        await run_central_agent(
+            event_message=agent_input,
+            user_state=us,
+            caller_agent="payment_verification_agent",
+        )
+    except Exception as e:
+        return {"status": "error", "message": f"Error notifying vendor: {e}"}
+    return {
+        "status": "vendor_notified",
+        "message": "Vendor notified. When vendor confirms payment, call notify_central_payment_confirmed to create order.",
+    }
 
 
 @payment_verification_agent.tool
@@ -110,49 +224,7 @@ async def verify_payment_link(
 
 
 @payment_verification_agent.tool
-async def list_uploaded_receipts(ctx: RunContext[PaymentVerificationDeps]) -> str:
-    """Receipt-classified uploads in this session: file_id, filename, description. Use get_cached_receipt_text for full text."""
-    us = await _pv_user_state(ctx)
-    lines: list[str] = []
-    for r in us.get("uploaded_files") or []:
-        if not isinstance(r, dict):
-            continue
-        if str(r.get("file_content_type") or "").lower() != "receipt":
-            continue
-        fid = r.get("file_id") or ""
-        lines.append(
-            f"- file_id={fid} name={r.get('filename')!r} desc={(r.get('description') or '')!r} "
-            f"uploaded_at={r.get('uploaded_at') or ''}"
-        )
-    if not lines:
-        return "No receipt uploads in this session."
-    return "Receipt uploads:\n" + "\n".join(lines)
-
-
-@payment_verification_agent.tool
-async def get_cached_receipt_text(
-    ctx: RunContext[PaymentVerificationDeps], file_id: str
-) -> str:
-    """Full extracted text: user_state file_text_cache first, else conversation_uploaded_files.text_content for this user/store."""
-    fid = (file_id or "").strip()
-    if not fid:
-        return "file_id required."
-    us = await _pv_user_state(ctx)
-    cached = (us.get("file_text_cache") or {}).get(fid)
-    if cached:
-        return cached if isinstance(cached, str) else str(cached)
-    row = await get_conversation_uploaded_file(
-        fid, ctx.deps.user_id, ctx.deps.business_id
-    )
-    if not row:
-        return f"No text for file_id={fid!r} (not in cache or database for this customer/store)."
-    text = row.get("text_content") or ""
-    if ctx.deps.user_state is not None:
-        ctx.deps.user_state.setdefault("file_text_cache", {})[fid] = text
-    return text
-
-@payment_verification_agent.tool
-async def modify_task_type(
+async def modify_task_type_for_process_id(
     ctx: RunContext[PaymentVerificationDeps],
     process_id: str,
     task_type: TaskType,
@@ -164,124 +236,228 @@ async def modify_task_type(
         task_type=task_type or TaskType.PAYMENT_VERIFICATION,
         customer_id=ctx.deps.user_id,
         vendor_id=ctx.deps.business_id,
-        process_id=process_id
+        process_id=process_id,
     )
-    proc = us.get("processes", {}).get(process_id)
+    proc = us.get("processes", {}).get(pid)
+    if not isinstance(proc, dict):
+        return {"status": "error", "message": f"Process {pid!r} not found."}
     proc["task_type"] = task_type
-    us["processes"][process_id] = proc
+    us["processes"][pid] = proc
     await modify_user_state(ctx.deps.user_id, ctx.deps.business_id, us)
-    return {"status": "success", "message": "Task type modified to Logistics Coordination."}
+    return {"status": "success", "message": f"Task type modified to {task_type.value}."}
+
+# @payment_verification_agent.tool
+# async def verify_amount_paid(ctx: RunContext[PaymentVerificationDeps], product_unit_price: float, quantity: float, amount_paid_by_customer: float) -> Dict[str, Any]:
+#     """Verify amount paid for the product. This is used to verify the amount paid for the product by the customer.
+#     You must call this function (before calling notify_central_payment_confirmed) if a receipt is uploaded by the customer to match amounts with the product unit price and quantity.
+#     """
+#     if amount_paid_by_customer < product_unit_price * quantity: 
+#         return {"verified": False, "detail": "Amount paid by customer is less than the product unit price * quantity."}           
+#     if amount_paid_by_customer > product_unit_price * quantity: 
+#         return {"verified": False, "detail": "Amount paid by customer is greater than the product unit price * quantity."}
+#     if amount_paid_by_customer == product_unit_price * quantity: 
+#         return {"verified": True, "detail": "Amount paid by customer is equal to the product unit price * quantity."}
+#     return {"verified": False, "detail": "Amount paid by customer is not equal to the product unit price * quantity."}
+
 
 @payment_verification_agent.tool
-async def verify_amount_paid(ctx: RunContext[PaymentVerificationDeps], product_unit_price: float, quantity: float, amount_paid_by_customer: float) -> Dict[str, Any]:
-    """Verify amount paid for the product. This is used to verify the amount paid for the product by the customer.
-    You must call this function (before calling notify_central_payment_confirmed) if a receipt is uploaded by the customer to match amounts with the product unit price and quantity.
-    """
-    if amount_paid_by_customer < product_unit_price * quantity: 
-        return {"verified": False, "detail": "Amount paid by customer is less than the product unit price * quantity."}           
-    if amount_paid_by_customer > product_unit_price * quantity: 
-        return {"verified": False, "detail": "Amount paid by customer is greater than the product unit price * quantity."}
-    if amount_paid_by_customer == product_unit_price * quantity: 
-        return {"verified": True, "detail": "Amount paid by customer is equal to the product unit price * quantity."}
-    return {"verified": False, "detail": "Amount paid by customer is not equal to the product unit price * quantity."}
+async def verify_bank_receipt_against_business(
+    ctx: RunContext[PaymentVerificationDeps],
+    amount_paid: float,
+    product_unit_price: float,
+    quantity: float,
+    receiver_account_on_receipt: str = "",
+    receipt_date: str = "",
+    receipt_time: str = "",
+) -> Dict[str, Any]:
+    """Deterministic checks: `amount_paid` from receipt; `product_unit_price` and `quantity` from session PRODUCT DETAILS (catalog), not the receipt. YYYY-MM-DD for receipt_date; receipt_time e.g. 14:30."""
+    us = await _pv_user_state(ctx)
+
+    def _done(result: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            line = json.dumps(result, default=str, ensure_ascii=False)
+        except (TypeError, ValueError):
+            line = repr(result)
+        if len(line) > 24000:
+            line = line[:24000] + "…[truncated]"
+        logger.info("verify_bank_receipt_against_business return | %s", line)
+        return result
+
+    try:
+        exp = float(product_unit_price) * float(quantity)
+        amount_ok = abs(float(amount_paid) - exp) <= BANK_RECEIPT_AMOUNT_TOLERANCE
+    except (TypeError, ValueError) as _fe:
+        return _done({"all_passed": False, "checks": {"amount": {"ok": False,
+            "detail": f"non-numeric value — product_unit_price={product_unit_price!r} quantity={quantity!r} amount_paid={amount_paid!r}: {_fe}"}}})
+    amount_detail = "ok" if amount_ok else f"expected {exp}, receipt shows {amount_paid}"
+
+    biz = us.get("business_information") or await get_business_info(ctx.deps.business_id) or {}
+    expected_acct = _digits(str(biz.get("bank_account_number") or ""))
+    recv = _digits(receiver_account_on_receipt or "")
+    if not expected_acct:
+        return _done(
+            {
+                "all_passed": False,
+                "checks": {
+                    "amount": {"ok": amount_ok, "detail": amount_detail},
+                    "receiver_account": {
+                        "ok": False,
+                        "detail": "Business bank account not on file — set bank_account_number for this store.",
+                    },
+                },
+            }
+        )
+    if not recv:
+        return _done(
+            {
+                "all_passed": False,
+                "checks": {
+                    "amount": {"ok": amount_ok, "detail": amount_detail},
+                    "receiver_account": {
+                        "ok": False,
+                        "detail": "No beneficiary/receiver account in prompt — conversational agent should pass it in [Payment context].",
+                    },
+                },
+            }
+        )
+    acct_match = (expected_acct == recv) or (
+        len(recv) >= 6
+        and (expected_acct.endswith(recv) or recv.endswith(expected_acct))
+    )
+    acct_ok = acct_match
+    acct_detail = "ok" if acct_ok else f"receipt {recv!r} vs business {expected_acct!r}"
+
+    conv_d = _conversation_start_date_from_state(us)
+    rd = _parse_iso_date((receipt_date or "").strip()[:10]) if (receipt_date or "").strip() else None
+    if rd is None:
+        date_ok = False
+        date_detail = "receipt date missing (pass YYYY-MM-DD from receipt)"
+    elif conv_d is not None and rd < conv_d:
+        date_ok = False
+        date_detail = f"receipt date {rd} before thread start {conv_d}"
+    else:
+        date_ok = True
+        date_detail = (
+            f"receipt {rd} on/after thread {conv_d}"
+            if conv_d is not None
+            else f"receipt {rd} (no conversation_started_at in state)"
+        )
+
+    rdt_utc = _parse_receipt_datetime_utc(
+        (receipt_date or "").strip() or None, (receipt_time or "").strip() or None
+    )
+    now = datetime.now(timezone.utc)
+    if rdt_utc is None or not (receipt_date or "").strip():
+        time_ok, time_detail = False, "need receipt date (and time if possible) for recency"
+    else:
+        if rdt_utc > now:
+            time_ok, time_detail = False, "receipt time is in the future"
+        else:
+            delta_h = (now - rdt_utc).total_seconds() / 3600.0
+            time_ok = delta_h <= float(BANK_RECEIPT_MAX_AGE_HOURS)
+            time_detail = (
+                f"ok within {BANK_RECEIPT_MAX_AGE_HOURS}h"
+                if time_ok
+                else f"receipt is {delta_h:.1f}h old; max {BANK_RECEIPT_MAX_AGE_HOURS}h"
+            )
+
+    all_passed = bool(amount_ok and acct_ok and date_ok and time_ok)
+    out: Dict[str, Any] = {
+        "all_passed": all_passed,
+        "checks": {
+            "amount": {"ok": amount_ok, "detail": amount_detail},
+            "receiver_account": {"ok": acct_ok, "detail": acct_detail},
+            "receipt_on_or_after_conversation_start": {"ok": date_ok, "detail": date_detail},
+            "receipt_recency": {"ok": time_ok, "detail": time_detail},
+        },
+    }
+    if all_passed:
+        pname = _product_name_for_notify(us, (ctx.deps.process_id or "").strip() or None)
+        rdetail = (
+            f"Auto checks passed: amount_paid={amount_paid} vs line={exp} "
+            f"acct_ok date={receipt_date} time={receipt_time or 'n/a'}"
+        )
+        out["vendor_notification"] = await _run_notify_vendor_for_confirmation(
+            ctx,
+            product_name=pname,
+            amount=float(amount_paid),
+            process_id=ctx.deps.process_id,
+            receipt_details=rdetail,
+        )
+    return _done(out)
 
 @payment_verification_agent.tool
-async def notify_central_payment_confirmed(
+async def notify_payment_outcome(
     ctx: RunContext[PaymentVerificationDeps],
     product_name: str,
     amount: float,
+    payment_confirmed: bool,
     process_id: Optional[str] = None,
     task_type: Optional[TaskType] = None,
     quantity: int = 1,
     delivery_address: Optional[str] = None,
+    transaction_reference: Optional[str] = None,
+    receipt_details: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Notify central agent that payment is confirmed. Central agent will create order in DB."""
-    us = await _pv_user_state(ctx)
-    pid = ensure_central_process(
-        us,
-        task_type=task_type or TaskType.PAYMENT_VERIFICATION,
-        customer_id=ctx.deps.user_id,
-        vendor_id=ctx.deps.business_id,
-        product_name=product_name,
-        process_id = process_id
-    )
-    proc = us.get("processes", {}).get(pid)
-    proc["amount"] = amount
-    proc["quantity"] = quantity
-    proc["delivery_address"] = delivery_address 
-    us["processes"][pid] = proc
-    await modify_user_state(ctx.deps.user_id, ctx.deps.business_id, us)
-    agent_input = await create_structured_input(
-        sender=EntityType.AGENT,
-        recipient=EntityType.AGENT,
-        message=f"Payment confirmed. Create order: product={product_name}, quantity={quantity}, amount=${amount}. "
-        f"Delivery address: {delivery_address or 'To be collected'}",
-        customer=Customer(id=ctx.deps.user_id),
-        business=Vendor(id=ctx.deps.business_id),
-        product=Product(id="", name=product_name, quantity=quantity, price=amount),
-        process_id=pid,
-        task_type= task_type or TaskType.PAYMENT_VERIFICATION,
-    )
-    try:
-        await run_central_agent(
-            event_message=agent_input,
-            user_state=us,
-            caller_agent="payment_verification_agent.notify_central_payment_confirmed",
+    """Single exit point after payment decision.
+
+    Set `payment_confirmed=True` when payment is verified (Paystack success OR all
+    `verify_bank_receipt_against_business` checks pass) — creates the order via central
+    and alerts the vendor.
+
+    Set `payment_confirmed=False` when you need the vendor to manually confirm an
+    ambiguous or unverifiable payment — sends a verification request to the vendor
+    with `receipt_details` and/or `transaction_reference`; the vendor replies through
+    the business chat to finalise the order.
+    """
+    if payment_confirmed:
+        us = await _pv_user_state(ctx)
+        pid = ensure_central_process(
+            us,
+            task_type=task_type or TaskType.PAYMENT_VERIFICATION,
+            customer_id=ctx.deps.user_id,
+            vendor_id=ctx.deps.business_id,
+            product_name=product_name,
+            process_id=process_id,
         )
-        return {"status": "sent", "message": "Central agent notified. Order will be created."}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-
-@payment_verification_agent.tool
-async def notify_vendor_for_confirmation(
-    ctx: RunContext[PaymentVerificationDeps],
-    product_name: str,
-    amount: float,
-    process_id: Optional[str] = None,
-    task_type: Optional[TaskType] = None,
-    transaction_reference: Optional[Dict[Any, str]] = None,
-    receipt_details: Optional[str] = None
-) -> Dict[str, Any]:
-    """Use this function to notify vendor to confirm payment verification manually if payment link is not used or invalid"""
-    us = await _pv_user_state(ctx)
-    pid = ensure_central_process(
-        us,
-        task_type=task_type or TaskType.PAYMENT_VERIFICATION,
-        customer_id=ctx.deps.user_id,
-        vendor_id=ctx.deps.business_id,
-        product_name=product_name,
-        process_id=process_id,
-    )
-    
-    await modify_user_state(ctx.deps.user_id, ctx.deps.business_id, us)
-    agent_input = await create_structured_input(
-        sender=EntityType.AGENT,
-        recipient=EntityType.VENDOR,
-        message=f"Payment verification request: Customer claims payment for product '{product_name}', Amount: ${amount}. Receipt details: {receipt_details}, Transaction reference: {transaction_reference}. Please confirm if payment was received.",
-        customer=Customer(id=ctx.deps.user_id),
-        business=Vendor(id=ctx.deps.business_id),
-        product=Product(id="", name=product_name, quantity=1, price=amount),
-        process_id=pid,
-        task_type=TaskType.PAYMENT_VERIFICATION,
-    )
-
-    try:
-        await run_central_agent(
-            event_message=agent_input,
-            user_state=us,
-            caller_agent="payment_verification_agent",
+        proc = us.get("processes", {}).get(pid) or {}
+        proc["amount"] = amount
+        proc["quantity"] = quantity
+        proc["delivery_address"] = delivery_address
+        us.setdefault("processes", {})[pid] = proc
+        await modify_user_state(ctx.deps.user_id, ctx.deps.business_id, us)
+        agent_input = await create_structured_input(
+            sender=EntityType.AGENT,
+            recipient=EntityType.AGENT,
+            message=(
+                f"Payment confirmed. Create order: product={product_name}, quantity={quantity}, "
+                f"amount={amount}. Delivery address: {delivery_address or 'To be collected'}"
+            ),
+            customer=Customer(id=ctx.deps.user_id),
+            business=Vendor(id=ctx.deps.business_id),
+            product=Product(id="", name=product_name, quantity=quantity, price=amount),
+            process_id=pid,
+            task_type=task_type or TaskType.PAYMENT_VERIFICATION,
         )
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": f"Error notifying vendor: {e}"
-        }
-    
-    return {
-        "status": "vendor_notified",
-        "message": "Vendor notified. When vendor confirms payment, call notify_central_payment_confirmed to create order.",
-    }
+        try:
+            await run_central_agent(
+                event_message=agent_input,
+                user_state=us,
+                caller_agent="payment_verification_agent.notify_payment_outcome",
+            )
+            return {"status": "order_created", "message": "Central agent notified. Order will be created."}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    else:
+        return await _run_notify_vendor_for_confirmation(
+            ctx,
+            product_name=product_name,
+            amount=amount,
+            process_id=process_id,
+            task_type=task_type,
+            transaction_reference=transaction_reference,
+            receipt_details=receipt_details,
+        )
 
 
 async def run_verification_agent(
@@ -297,6 +473,7 @@ async def run_verification_agent(
     append_chat_history: bool = True,
     instructions: Optional[str] = None,
     process_id: Optional[str] = None,
+    quantity: Optional[float] = None,
 ) -> str:
     """
     Run payment verification agent with dynamic business and product details.
@@ -341,20 +518,34 @@ async def run_verification_agent(
                 if pname and pname.lower() == product_name.lower():
                     product_name = pname
                     product_price = p.get("price")
-                    product_currency = (p.get("currency") or "").strip() or None
+                    product_currency = str(p.get("currency") or "").strip() or None
                     break
             if product_price is not None:
                 break
 
     if (not product_name or product_name.strip().upper() == "NONE") and products_cache:
-        latest_product_key = list(products_cache.keys())[0]
-        latest_product_data = products_cache[latest_product_key]
-        products = latest_product_data.get("retrieved_results", [])
+        latest_product_key = max(
+            products_cache,
+            key=lambda k: products_cache[k].get("_ts", 0) if isinstance(products_cache[k], dict) else 0,
+        )
+        products = products_cache[latest_product_key].get("retrieved_results", [])
         if products:
             product_info = products[0]
             product_name = product_info.get("name") or product_info.get("product_name")
             product_price = product_info.get("price")
-            product_currency = (product_info.get("currency") or "").strip() or None
+            product_currency = str(product_info.get("currency") or "").strip() or None
+
+    line_qty: float = 1.0
+    if quantity is not None:
+        try:
+            line_qty = max(0.01, float(quantity))
+        except (TypeError, ValueError):
+            line_qty = 1.0
+    elif proc and proc.get("quantity") is not None:
+        try:
+            line_qty = max(0.01, float(proc.get("quantity")))
+        except (TypeError, ValueError):
+            line_qty = 1.0
 
     # Build dynamic prompt with business and product details
     dynamic_prompt_parts = []
@@ -373,16 +564,30 @@ async def run_verification_agent(
 
     if product_name:
         cur = (
-            (product_currency or "").strip()
-            or (business_info.get("currency") or "").strip()
+            str(product_currency or "").strip()
+            or str(business_info.get("currency") or "").strip()
             or "NGN"
         )
         dynamic_prompt_parts.append("\n**PRODUCT DETAILS:**")
         dynamic_prompt_parts.append(f"Product Name: {product_name}")
         if product_price is not None:
-            dynamic_prompt_parts.append(f"Product Price: {product_price} {cur}")
+            dynamic_prompt_parts.append(f"Product Price (per unit): {product_price} {cur}")
         else:
             dynamic_prompt_parts.append("Product Price: Unknown")
+        dynamic_prompt_parts.append(f"Intended quantity: {line_qty} (for verify_bank_receipt_against_business)")
+        if product_price is not None:
+            try:
+                dynamic_prompt_parts.append(
+                    f"Expected line total: {float(product_price) * line_qty} {cur}"
+                )
+            except (TypeError, ValueError):
+                pass
+
+    csa = user_state.get("conversation_started_at")
+    if csa:
+        dynamic_prompt_parts.append(
+            f"\n**Thread started (receipt date must be on/after this, ISO):** {csa}"
+        )
 
     if order_id and str(order_id).strip():
         dynamic_prompt_parts.append(f"\n**ORDER CONTEXT:** order_id={order_id.strip()}")

@@ -60,17 +60,19 @@ class ProductAgentDeps(BaseModel):
 
 # Initialize product agent
 product_agent_base = BaseAgent(
-    system_prompt="""You are the **product specialist** for this store.
+    system_prompt="""You are the expert product specialist and sales lead for this storefront. Your goal is to provide accurate stock information, handle purchase intent with precision, and bridge the gap between the customer and the vendor when items are missing*
 
 **Workflow**
-1. ALWAYS call `get_product_info` before answering. Never invent stock, price, or availability.
-2. No product_name given → list what the tool returns (concise bullets, max 8). Customer-facing: name + price only; no raw IDs or stock counts unless they ask.
-3. Purchase intent → if the customer came from browse/cache or the thread paused, call `get_product_info` again before payment so price/stock match the database; then `fetch_payment_link`. If it returns ok=false or no payment_url, call `get_business_payment_info` and present bank-transfer details clearly.
-4. When Paystack succeeds: give the customer the payment link AND the reference (needed for verification after paying, especially from WhatsApp).
-5. **No row matches the customer's exact ask** (empty tool result, or nothing that matches model/color/SKU they stated) → **immediately** call `notify_vendor` with the customer's exact request; then reply in 1–2 short sentences that you're checking with the store, and mention at most one or two real alternatives from tool results if any—no multi-option menus.
-6. Missing catalog or payment setup → call `notify_vendor`. Never tell the customer to email the owner, visit an external website, or leave the app.
+1. **Verify First**: Always call `get_product_info` before answering. Never guess stock or price.
+2. **Browsing**: If no product is named, list up to 8 items from the tool (Format: **Name** - **Price**). Hide IDs and stock counts.
+3. **Closing the Sale**: Before payment, re-call `get_product_info` to confirm live price/stock. 
+    * Call `fetch_payment_link`. On success, provide the **link** and **reference code**.
+    * If it fails, call `get_business_payment_info` and present bank transfer details.
+4. **Zero Matches**: If the specific model/color is missing, call `notify_vendor` immediately with the user's request. Tell the customer you're checking with the store; suggest only **one** relevant alternative if it exists.
+5. **System Gaps**: If the catalog or payment setup is missing, call `notify_vendor`. Keep the user in-chat; never redirect to external sites or email.
 
-**Tone**: Helpful expert, concise, confident. Short chat lines. Acknowledge buy signals naturally.""",
+**Tone**
+Expert, concise, and confident. Use short chat lines. Acknowledge buying signals naturally..""",
     deps_type=ProductAgentDeps,
 )
 
@@ -216,7 +218,7 @@ async def get_business_payment_info(
     }
 
 @product_agent.tool
-async def modify_task_type(
+async def modify_task_type_for_process_id(
     ctx: RunContext[ProductAgentDeps],
     process_id: str,
     task_type: TaskType,
@@ -228,13 +230,15 @@ async def modify_task_type(
         task_type=task_type or TaskType.PRODUCT_ENQUIRY,
         customer_id=ctx.deps.user_id,
         vendor_id=ctx.deps.business_id,
-        process_id=process_id
+        process_id=process_id,
     )
-    proc = us.get("processes", {}).get(process_id)
+    proc = us.get("processes", {}).get(pid)
+    if not isinstance(proc, dict):
+        return {"status": "error", "message": f"Process {pid!r} not found."}
     proc["task_type"] = task_type
-    us["processes"][process_id] = proc
+    us["processes"][pid] = proc
     await modify_user_state(ctx.deps.user_id, ctx.deps.business_id, us)
-    return {"status": "success", "message": "Task type modified to Logistics Coordination."}
+    return {"status": "success", "message": f"Task type modified to {task_type.value}."}
         
         
         
@@ -246,7 +250,7 @@ async def notify_vendor(
     task_type: Optional[TaskType] = None,
     process_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Pushes a request to the **vendor inbox** via the central agent. Use when: catalog has no match for what the customer asked, stock/price unknown, or payment setup missing. Pass a single clear sentence for `message` (what the customer wants + any specs)."""
+    """Pushes a request to the **vendor inbox** via the central agent. Use when: catalog/database (get_product_info tool) has no match for what the customer asked, stock/price unknown, or payment setup missing. Pass a single clear sentence for `message` (what the customer wants + any specs)."""
     try:
         user_state = await get_user_state(ctx.deps.user_id, ctx.deps.business_id) or {}
         pid = ensure_central_process(
@@ -370,7 +374,7 @@ async def run_product_agent(
     products = product_cache.get("retrieved_results", [])
 
     if products:
-        biz_cur = ((business_info.get("currency") or "").strip() or "NGN")
+        biz_cur = str(business_info.get("currency") or "").strip() or "NGN"
         products_info = "\n".join(
             [
                 f"- {p.get('name', p.get('product_name', ''))}: {p.get('price', 0)} "

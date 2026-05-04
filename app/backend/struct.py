@@ -86,18 +86,18 @@ class CustomerComplaintAgent(BaseModel):
     customer_message: str
     customer_address: str
     miscellaneous: str
-    customer_id: Optional[str] = "09071536199"
+    customer_id: Optional[str] = None
     business_id: str
 
-class PaymentVerifcationAgent(BaseModel):
+class PaymentVerificationAgent(BaseModel):
     product_name: str
-    customer_id: Optional[str] = "09071536199"
+    customer_id: Optional[str] = None
     business_id: str
     product_price: str
     amount_paid: str
-    customer_name: Optional[str] = "Bode Thomas"
-    bank_account_number: Optional[str] = "120507869"
-    bank_name: Optional[str] = "GTBank"
+    customer_name: Optional[str] = None
+    bank_account_number: Optional[str] = None
+    bank_name: Optional[str] = None
 
 class UserRequest(BaseModel):
     user_id: str
@@ -125,7 +125,7 @@ class AgentRequest(BaseModel):
         Union[
             CentralAgentInput,
             CustomerComplaintAgent,
-            PaymentVerifcationAgent,
+            PaymentVerificationAgent,
             UpsellingAgentInput,
             ProductAgentInput,
         ]

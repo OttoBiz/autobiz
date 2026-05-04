@@ -4,9 +4,10 @@ Handles customer requests and interactions
 """
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, UploadFile
+from starlette.datastructures import UploadFile as StarletteUploadFile
 from pydantic import BaseModel
 
 from backend.chatbot.interface.user_chat_interface import chat
@@ -16,6 +17,25 @@ from backend.struct import UserRequest
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/customer", tags=["customer"])
+
+
+def _is_file_part(value: object) -> bool:
+    """
+    Detect multipart file parts. FastAPI and Starlette re-export UploadFile, but
+    mixed package versions can break isinstance(); Starlette's upload always has
+    read() and filename or content_type.
+    """
+    if value is None or isinstance(value, (str, bytes, bytearray)):
+        return False
+    if isinstance(value, (UploadFile, StarletteUploadFile)):
+        return True
+    if callable(getattr(value, "read", None)) and (
+        hasattr(value, "filename")
+        or hasattr(value, "content_type")
+        or type(value).__name__ == "UploadFile"
+    ):
+        return True
+    return False
 
 
 class CustomerMessageRequest(BaseModel):
@@ -71,12 +91,19 @@ async def customer_chat(
             msg_date_time=datetime.now()
         )
 
-        files_list = []
-        file_items = form_data.getlist("files")
-        for file_item in file_items:
-            if isinstance(file_item, UploadFile):
-                files_list.append(file_item)
+        files_list: List[Any] = []
+        for key, value in form_data.multi_items():
+            if not _is_file_part(value):
+                continue
+            files_list.append(value)
+            if key not in ("files", "file", "files[]", "file[]", "upload", "uploads"):
+                logger.warning("customer_chat | upload field name (nonstandard): %r", key)
         files_list = files_list if files_list else None
+        logger.info(
+            "customer_chat | multipart | user_id=%s file_parts=%s",
+            user_id,
+            len(files_list) if files_list else 0,
+        )
 
     try:
         response = await chat(

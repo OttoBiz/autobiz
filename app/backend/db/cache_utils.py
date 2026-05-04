@@ -32,7 +32,7 @@ async def get_user_state(user_id, vendor_id, session_id=None):
             vendor_id,
             exc_info=True,
         )
-        return {}
+        return None
 
 
 def _serialize_user_state(user_state: dict) -> dict:
@@ -44,10 +44,11 @@ def _serialize_user_state(user_state: dict) -> dict:
     return state
 
 
-async def modify_user_state(user_id, vendor_id, user_state, session_id=None):
+async def modify_user_state(user_id, vendor_id, user_state, session_id=None) -> bool:
     try:
         serializable = _serialize_user_state(user_state)
         redis_conn.set(f"{user_id}:{vendor_id}", serializable)
+        return True
     except Exception:
         logger.error(
             "redis_set_failed | user_id=%s vendor_id=%s",
@@ -55,6 +56,7 @@ async def modify_user_state(user_id, vendor_id, user_state, session_id=None):
             vendor_id,
             exc_info=True,
         )
+        return False
 
 
 async def delete_user_state(user_id, vendor_id):
@@ -77,7 +79,8 @@ def _hydrate_chat_history_if_needed(user_state: dict) -> None:
         try:
             user_state["chat_history"] = ModelMessagesTypeAdapter.validate_python(raw)
         except Exception:
-            user_state["chat_history"] = []
+            logger.warning("chat_history hydration failed; retaining raw format", exc_info=True)
+            # Leave raw dicts in place — they will be re-serialized correctly on next write
 
 
 async def get_party_state(party_id: str) -> dict:

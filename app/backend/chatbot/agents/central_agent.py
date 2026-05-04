@@ -61,7 +61,7 @@ class CentralAgentResponse(BaseModel):
         description="Who receives this message. Customer=relay product info/payment/delivery to customer. Vendor=ask vendor for confirmation. Logistics=coordinate shipping.",
     )
     message: str = Field(..., description="'short chat-style text for recipient(max ~3–4 sentences). Only facts and next steps—no essays, no internal monologue. Message to send")
-    finished_tasks: List[str] = Field(description="Updated List of finished tasks")
+    finished_tasks: List[str] = Field(description="Updated List of your finished tasks")
 
 
 class CentralAgentDeps(BaseModel):
@@ -116,12 +116,14 @@ def _slim_process_for_tool(pid: str, proc: Dict[str, Any]) -> Dict[str, Any]:
 central_agent_base = BaseAgent(
     model_name=CENTRAL_AGENT_MODEL_NAME,
     system_prompt="""
-    You are the Lead Transaction Architect. Your mission is to move every "Process" (thread) from initial inquiry to final delivery. You act as the sole intelligence hub connecting Customers, Vendor, and Logistics. You do not just pass messages; you interpret data, verify conditions, and drive the deal forward.
+    You are the Lead Transaction Architect. Your mission is to move every "Process" (thread) from initial inquiry to final delivery. 
+    You act as the sole intelligence hub connecting Customers, Vendor, and Logistics. 
+    You do not just pass messages; you interpret data, verify conditions, and drive the deal forward.
 
 #The Three-Step Execution Loop
 For every interaction, you MUST internally follow this sequence:
-    Status Audit: Check the finished_tasks and thread history. What is the current milestone? (Inquiry → Availability → Payment → Fulfillment → Delivery).
-    Tool Execution: Call necessary tools to fetch real-time facts (e.g., check bank API for payment, check vendor stock).
+    Status Audit: Check the finished_tasks and thread history. What is the current milestone and task type? (Inquiry → Availability → Payment → Fulfillment → Delivery).
+    Tool Execution: Call necessary tools to fetch real-time facts (e.g., check bank API for payment, check vendor stock) or update processes (e.g update stock in db, mark task as finished).
     Strategic Routing: Based on the Outcome, decide the single most logical recipient to act next.
 
 #Communication Protocols
@@ -144,8 +146,8 @@ For every interaction, you MUST internally follow this sequence:
     Constraint: Only engage Logistics after Vendor confirms "Ready for Pickup."
     
 Strict Business Rules (The "Guardrails")
-    The Payment Hard-Gate: You are strictly forbidden from generating an order or contacting Logistics until a tool has explicitly verified payment_status: SUCCESS.
-    The "Hint" Override: If a hint_recipient is provided, evaluate it against the transaction state. If the hint says "Logistics" but payment is not confirmed, ignore the hint and route to the Customer for payment.
+    The Payment Hard-Gate: You are strictly forbidden from generating an order or contacting Logistics until a tool has explicitly verified payment_status: SUCCESS or you have received a confirmation message from the vendor that the payment has been verified.
+    The "Hint" Override: If a hint_recipient is provided, evaluate it against your current state, finished tasks and communication history. If the hint says "Logistics" but payment is not confirmed, ignore the hint and route to the Customer for payment.
     Interpretation of Outcomes: Never dump raw tool data. "Fold" the outcome into a narrative.
         Bad: "Tool result: success."
         Good: (to Customer) "Your payment was successful! We are now coordinating with the vendor to prep your package."
@@ -189,9 +191,12 @@ async def create_order(
     """Create order in DB and cache in Redis processes. Call only after payment is confirmed."""
     customer_id = _customer_id(ctx)
     business_id = _business_id(ctx)
-    
+    pid = (ctx.deps.process_id or "").strip()
+
     if not customer_id or not business_id:
         return {"error": "Missing customer or business context"}
+    if not pid:
+        return {"error": "process_id is required to create an order — ensure_central_process must be called first."}
 
     try:
         order = await db_create_order(
@@ -207,7 +212,6 @@ async def create_order(
         order_id = str(order["id"])
         order_number = order["order_number"]
 
-        pid = ctx.deps.process_id
         ap = ctx.deps.active_process
         ap.update(
             {
@@ -353,9 +357,11 @@ async def get_delivery_address(
     customer_id = _customer_id(ctx)
     business_id = _business_id(ctx)
     user_state = await get_user_state(customer_id, business_id) or {}
-    addr = user_state.get("customer").get("address")
-    if addr:
-        return addr
+    _cust = user_state.get("customer")
+    if isinstance(_cust, dict):
+        addr = _cust.get("address")
+        if addr:
+            return addr
     
     processes = user_state.get("processes", {})
     addr = ctx.deps.active_process.get("customer_address")
@@ -387,23 +393,33 @@ async def get_logistics_info(ctx: RunContext[CentralAgentDeps], limit: int=5) ->
 
 @central_agent.tool
 async def get_delivery_logistics_context(ctx: RunContext[CentralAgentDeps]) -> Dict[str, Any]:
-    """DB partner logistics + vendor party Redis (`assigned_logistic_id`, `delivery_route`) + registry sample."""
+    """Read the vendor's current delivery setup: DB-linked partner logistics company (if any),
+    the `delivery_route` and `assigned_logistic_id` stored in vendor party Redis, and a registry
+    sample of available companies. Call this before deciding whether to assign a logistics partner
+    or confirm the vendor handles delivery themselves."""
     bid = _business_id(ctx)
     if not bid:
         return {"error": "No vendor context"}
     try:
         biz = await get_business_info(bid) or {}
         party = await get_party_state(bid) or {}
-        partner = biz.get("logistic_id") or party.get("logistic_id")
+        partner = biz.get("partner_logistic_id") or party.get("logistic_id")
         pname = None
         if partner:
             pr = await get_business_info(str(partner)) or {}
             pname = pr.get("name")
-            
+
+        # No configured partner — pull registry so agent can pick one
+        registry: List[Dict[str, Any]] = []
+        if not partner:
+            rows = await get_logistics_companies(limit=5)
+            registry = [{"id": str(r["id"]), "name": r.get("name"), "phone": r.get("phone_number")} for r in rows]
+
         return {
             "db_partner_logistic_id": str(partner) if partner else None,
             "db_partner_name": pname,
             "party_delivery_route": party.get("delivery_route"),
+            "registry_sample": registry or None,
         }
     except Exception as e:
         return {"error": str(e)}
@@ -415,7 +431,11 @@ async def finalize_vendor_delivery_route(
     self_handled: bool,
     logistic_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Persist vendor party Redis: vendor self-delivery vs logistics (`logistic_id` optional → random registry)."""
+    """Persist the vendor's delivery route to Redis party state.
+    `self_handled=True` → vendor delivers themselves (clears any assigned logistics).
+    `self_handled=False` → third-party logistics; supply `logistic_id` if already known,
+    or leave blank to auto-assign a random registered company.
+    The persisted route is read by the business chat and logistics agent on subsequent turns."""
     bid = _business_id(ctx)
     if not bid:
         return {"error": "No vendor context"}
@@ -450,7 +470,7 @@ async def get_contact_info(
     ctx: RunContext[CentralAgentDeps],
     entity: EntityType,
 ) -> Dict[str, Any]:
-    """Get contact info for Customer, Vendor, or Logistics."""
+    """Get contact info for Customer, Vendor, or Logistics ONLY WHEN NEEDED."""
     try:
         if entity == EntityType.CUSTOMER:
             uid = _customer_id(ctx)
@@ -477,7 +497,7 @@ async def get_contact_info(
 
 @central_agent.tool
 async def get_business_bank_details(ctx: RunContext[CentralAgentDeps]) -> Dict[str, Any]:
-    """Get vendor bank account details for payment. Fetches from cache or DB if not present."""
+    """Get vendor bank account details only for payment-associated tasks. USE ONLY WHEN NEEDED. Fetches from cache or DB if not present."""
     business_id = _business_id(ctx)
     if not business_id:
         return {"error": "No business context"}

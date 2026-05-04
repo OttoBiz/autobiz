@@ -60,16 +60,26 @@ async def get_or_create_user_state(user_id: str, business_id: str) -> Dict[str, 
         User state dictionary
     """
     user_state = await get_user_state(user_id, business_id)
-    
-    if not user_state:
+
+    if user_state is None:
+        # None = Redis error; return a minimal safe state without overwriting Redis
         business_information = await get_business_info(business_id)
         user_state = {
             "chat_history": [],
             "business_information": business_information,
             "products": {},
-            "processes": {}
+            "processes": {},
         }
-    
+    elif not user_state:
+        # {} = genuinely new user; same initialisation but this state will be saved normally
+        business_information = await get_business_info(business_id)
+        user_state = {
+            "chat_history": [],
+            "business_information": business_information,
+            "products": {},
+            "processes": {},
+        }
+
     return user_state
 
 

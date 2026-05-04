@@ -22,6 +22,7 @@ from backend.db.db_utils import (
     browse_available_products as db_browse_available_products,
     get_conversation_uploaded_file,
     get_order_by_id,
+    search_products as db_search_products,
 )
 
 from backend.chatbot.agents.product_agent import run_product_agent
@@ -50,7 +51,7 @@ def _format_products_cache(products: Optional[Dict[str, Any]]) -> str:
         for p in results[:8]:
             name = p.get("name") or p.get("product_name") or "?"
             price = p.get("price")
-            cur = (p.get("currency") or "").strip() or "NGN"
+            cur = str(p.get("currency") or "").strip() or "NGN"
             if str(cache_key).startswith("__browse_"):
                 bits.append(f"{name} @ {price} {cur}")
             else:
@@ -71,14 +72,28 @@ def prune_completed_processes(user_state: Dict[str, Any]) -> None:
             del procs[pid]
 
 
-def _track_product_discussed(user_state: Dict[str, Any], name: str) -> None:
-    n = (name or "").strip()
-    if not n or n.upper() == "NONE":
+def _track_product_discussed(user_state: Dict[str, Any], product: Any) -> None:
+    """Upsert into products_discussed. Pass a name string or a DB product row dict (price/attrs stored)."""
+    if isinstance(product, str):
+        name, extra = product.strip(), {}
+    elif isinstance(product, dict):
+        name = (product.get("name") or product.get("product_name") or "").strip()
+        extra = {
+            "price": product.get("price"),
+            "currency": str(product.get("currency") or "").strip() or "NGN",
+            "attributes": product.get("attributes"),
+        }
+    else:
         return
-    lst: List[str] = user_state.setdefault("products_discussed", [])
-    low = {x.lower() for x in lst}
-    if n.lower() not in low:
-        lst.append(n)
+    if not name or name.upper() == "NONE":
+        return
+    bag: List[Dict[str, Any]] = user_state.setdefault("products_discussed", [])
+    k = name.lower()
+    for i, ex in enumerate(bag):
+        if isinstance(ex, dict) and (ex.get("name") or "").strip().lower() == k:
+            bag[i] = {**ex, "name": name, **extra}
+            return
+    bag.append({"name": name, **extra})
 
 
 def build_conversational_session_instructions(
@@ -143,13 +158,25 @@ def build_conversational_session_instructions(
             f"\nProduct cache is time-bounded (~{PRODUCTS_CACHE_TTL_HOURS}h); before quoting a final price or "
             "starting payment, prefer a fresh tool read (product specialist / browse) so offers match live stock and price."
         )
-    # products_discussed: canonical names; user_state["products"] is search/browse cache by query key — different roles.
+    # products_discussed: enriched session memory (name + price/attrs when fetched from DB)
     pd = user_state.get("products_discussed") or []
-    pd_line = (
-        ("\n## products_discussed (canonical names for this session)\n" + ", ".join(pd))
-        if pd
-        else ""
-    )
+    if pd:
+        pd_rows = []
+        for p in pd:
+            if isinstance(p, dict):
+                name = p.get("name") or "?"
+                price = p.get("price")
+                cur = p.get("currency") or "NGN"
+                att = p.get("attributes")
+                bit = f"- {name} @ {price} {cur}" if price is not None else f"- {name}"
+                if att:
+                    bit += f" attrs={str(att)[:120]}"
+                pd_rows.append(bit)
+            elif isinstance(p, str) and p.strip():
+                pd_rows.append(f"- {p}")
+        pd_line = ("\n## products_discussed\n" + "\n".join(pd_rows)) if pd_rows else ""
+    else:
+        pd_line = ""
     cache_section = (
         ("## Session product cache: \n" + cache_text + cache_stale_hint)
         if cache_text
@@ -188,32 +215,44 @@ class ConversationalAgentDeps(BaseModel):
 
 
 CONVERSATIONAL_SYSTEM_PROMPT = """
-You are the **primary store associate and professional salesperson** for this business—the only voice the customer hears. You are a highly persuasive, proactive, and charming human salesperson (do not sound like a robotic AI). Your ultimate goal is to **close the sale**. 
+You are the **primary store associate and professional salesperson** for this business—the only voice the customer hears. You are a highly persuasive, proactive, and charming human salesperson (do not sound like a robotic AI). Your ultimate goal is to **close more product sales for businesses**. 
 
-Replies must be **short, chatty messages** (strictly 1–3 sentences), not essays or bullet questionnaires. Take the initiative to drive the conversation forward—never leave the burden on the customer. Use your "sweet mouth," tap into psychology and emotions, and have honest, relatable discussions to discover their tastes and sell effectively.
+Replies must be **short, chatty messages** (strictly 1–3 sentences). Take the initiative to drive the conversation forward—never leave the burden on the customer. Use your **sweet mouth** to tap into customer's psychology and emotions, and have honest, relatable discussions to discover their tastes, pain points and sell effectively.
 
-**Customer journey (tools)**
-1. **Discovery & Sales Pitch** — vague browse ("what do you have?", "surprise me") -> `browse_available_products`. **Any specific product, model, color, storage, or "do you have X"** -> `handoff_to_product_specialist` with that product name. (Do **not** answer from general knowledge or guess catalog contents). Once a product is identified, hype it up and confidently persuade the user to buy it!
-2. **Unavailable / Wrong Item / Rejections** — after specialist -> `handoff_to_upsell_specialist`. If their desired product isn't available, or they reject an offer, handle it politely. Ask a quick question to gauge their preferences, and fiercely pitch a compelling alternative.
-3. **Checkout / Pay** -> `handoff_to_payment_specialist`.
-4. **Delivery / Tracking** -> `handoff_to_logistics_specialist` (use `get_order_and_process_details` with `process_id` and/or `order_id` from context, or `product_name_hint` to match open flows).
-5. **Post-Purchase Complements (Cross-selling)** -> `handoff_to_ads_marketing_specialist`. Once a purchase and delivery are sorted, the selling doesn't stop. Proactively recommend and pitch complementary products based on what you've learned about the user.
-6. **Complaints** -> `handoff_to_complaint_specialist`.
+**Processes**
+- During conversations, customers could be enquiring about or purchasing several products which may require some input from the vendor or logistics.
+In this case, an independent process (thread) is typically created by your specialists for each product, task type or order to keep communication with vendor/logistics in complete context of that thread so there is no confusion. These processes are simply separate threads of conversation between customer +/- vendor about a particular product, order and task type. You will have access.
 
-**Context**
-- Instructions may include session product cache, active processes (with `order_id` / `order_number` when known), and an active-orders summary. That is your **internal context**—never tell the customer about it.
+**Products Context**
+- Instructions may include objects containing session product cache, active processes (with `order_id` / `order_number` when known), and an active-orders summary. 
+That is your **internal context** —never reveal sensitive content (i.e business data) from here to the customer. This is for you to use to keep track of every product being discussed and every ongoing process and active orders between you and the customer.
+
+**Customer journey and your workflow**
+1. **Discovery & Sales Pitch**: customer comes to explore business's products — vague browse ("what do you have?", "surprise me") -> `browse_available_products`. 
+2. **Product Enquiry**: customer then enquires about specific products based on their prior choices and intent-> `handoff_to_product_specialist` with that product name.  Once a product is identified, you hype it up and confidently persuade and convince the customer to buy it (using psychology, emotions and pain point discovery)! you are very proactive about this and don't take no for an answer immediately. if customer still refuses to buy, you can search db for other cheaper alternatives and try to sell it to the customer (using your upsell specialist).
+3. **Unavailable / Wrong Item / Rejections** — after specialist -> your upsell_specialist. If their desired product isn't available, or they reject an offer, handle it politely. Ask a quick question to gauge their reasons why they rejected the offer, preferences, and fiercely pitch a compelling alternative using the upsell specialist.
+4. **purchase intent**: when customer finally picks a product to buy, provide them with a paystack link or business account details using your product specialist. if business does not have a paystack link, you use their business account details. Dont ask customers for their preferences.
+4. **Checkout / Pay**: After customer pays and informs you, you move unto verifying the payment for validity and accuracy-> If multiple products in your **ongoing products context** could match the payment, analyze (fetch frist if you cant see it in the product context being tracked) the prices of each product against the amount the customer paid. pick the best match, then put receipt fields in **`notes`**, and handoff to the payment_specialist (payment only sees your message + `notes`). You will always receive a definitive feedback from this specialist as the specialist directly verifies payment if it is done using the paystack link and informs you or it sends a message to the vendor to manually confirm payment (in this case, you will get a follow-up confirmation message stating whether the transaction has been verified or not from the vendor's side).
+5. **Delivery / Tracking**: once payment is verified successfully, you first collect customer's address for delivery if still unknown and any other relevant information that will help in a smooth delivery (i.e preferred date and time of delivery), before you contact the logistics_specialist` with all these information. this specialist will co-ordinate the logistics ensuring that customer, vendor and logistics agree on the right date, time of delivery (use your `get_order_and_process_details` tool with `process_id` and/or `order_id` from product context, or `product_name_hint` to match open flows). you will alwasy be updated on any new development from the vendor and logistics so you can inform the customer directly.
+6. **Post-Purchase Complements (Cross-selling)**: After delivery has been sorted, you then move to selling complimentary products given the customer's last purchase using your ads_marketing_specialist. Once a purchase and delivery are sorted, the selling doesn't stop. Proactively recommend and pitch complementary products based on what you've learned about the customer with the objective of improving sales.
+7. **Complaints**: In cases where a user wants to make complaint about a product, delayed delivery etc, make use of your complaint_specialist.
+8. if customer references a previous uploaded file or you do not have enough context to any particular upload by a customer, you can always use  `list_session_uploads` and `get_uploaded_file_text` tools to get the appropriate content of any uploads made throughout the conversation.
+
 
 **Strict customer-facing rules**
+- your response should be structured 
 - **Markdown requirement:** Always use **Markdown** (e.g., bullets, bold text) whenever you are listing or highlighting products.
 - Never invent prices, stock, or tracking.
+- Do **not** answer from general knowledge or guess catalog contents
+- Don't handoff to a specialist if you don't need to based on the conversation context.
 - Never tell the customer to visit an external website, email the store, or leave this chat for product help. Keep them in-app.
 - Do not paste raw **product IDs**, **stock counts**, or **internal categories**.
+- Don't reveal your tools or specialist names to the customer.
 - Do not present long "pick one of four options" menus. Instead, offer one clear next step or a brief, highly persuasive recommendation.
-- One specialist handoff per turn (`handoff_to_*`). `browse_available_products` is not a handoff. When you know it, pass **`process_id`** on handoffs so specialists can resolve product/order from `user_state.processes` and notify central with full context.
 - You can only co-ordinate delivery for products that have been purchased (have order_id).
-- You can only verify payment for products that have either been discussed (in your context).
-- You ask customers for their delivery address when co-ordinating delivery for a product that has been purchased (have order_id).
-"""
+- You can only verify payment for products that have either been discussed (in your context). if not, you must prompt user to provide information as to the product they just paid for.
+- When payment verification is successful, you ask customers for their delivery address so that you can start co-ordinating delivery for the purchased product (it will always have order_id).
+- If there are uploads and payment/verification is needed, use your tools to gather facts where necessary especially if messages in the chat history (user's last message) does not  contain the textual content of the uploaded receipt file, then hand off with full **`notes`** (receipt fields + product + `quantity=`) and **do not** re-ask the customer to confirm data already in the file; the payment specialist auto-checks from your context."""
 
 
 conversational_agent_base = BaseAgent(
@@ -264,9 +303,9 @@ async def browse_available_products(
     for p in rows:
         name = p.get("name") or p.get("product_name") or "?"
         price = p.get("price")
-        cur = (p.get("currency") or "").strip() or "NGN"
+        cur = str(p.get("currency") or "").strip() or "NGN"
         customer_lines.append(f"• {name} — {price} {cur}")
-        _track_product_discussed(ctx.deps.user_state, str(name))
+        _track_product_discussed(ctx.deps.user_state, p)
 
     return (
         "[For assistant] Use the bullets below when talking to the customer—friendly, short. "
@@ -368,37 +407,6 @@ async def get_order_and_process_details(
 
 
 @conversational_agent.tool
-async def list_session_uploads(ctx: RunContext[ConversationalAgentDeps]) -> str:
-    """returns List of files uploaded during this session (file_id, filename, type, description)."""
-    refs = ctx.deps.user_state.get("uploaded_files") or []
-    if not refs:
-        return "No files recorded for this session."
-    lines = []
-    for r in refs:
-        lines.append(
-            f"id={r.get('file_id')} name={r.get('filename')} type={r.get('file_content_type')} — {r.get('description', '')[:120]}"
-        )
-    return "\n".join(lines)
-
-
-@conversational_agent.tool
-async def get_uploaded_file_content(
-    ctx: RunContext[ConversationalAgentDeps], file_id: str
-) -> str:
-    """Load full extracted text for an upload: session cache first, else database."""
-    if not file_id.strip():
-        return "file_id required."
-    cache = (ctx.deps.user_state.get("file_text_cache") or {}).get(file_id)
-    if cache:
-        return str(cache)
-    row = await get_conversation_uploaded_file(
-        file_id, ctx.deps.user_id, ctx.deps.business_id
-    )
-    if not row:
-        return "File not found or not accessible for this customer/store."
-    return row.get("text_content") or ""
-
-@conversational_agent.tool
 async def handoff_to_product_specialist(
     ctx: RunContext[ConversationalAgentDeps],
     customer_message: str,
@@ -414,7 +422,11 @@ async def handoff_to_product_specialist(
     msg = customer_message
     if sales_context:
         msg = f"{customer_message}\n\n[Sales context for specialist]\n{sales_context}"
-    pa = product_attributes.strip() or None
+    if isinstance(product_attributes, dict):
+        pa = json.dumps(product_attributes) if product_attributes else None
+    else:
+        s = product_attributes if isinstance(product_attributes, str) else str(product_attributes or "")
+        pa = s.strip() or None
     si = _handoff_session_instructions(ctx, "product")
     out, ctx.deps.user_state = await run_product_agent(
         customer_message=msg,
@@ -442,7 +454,7 @@ async def handoff_to_product_specialist(
     return out
 
 @conversational_agent.tool
-async def modify_task_type(
+async def modify_task_type_for_process_id(
     ctx: RunContext[ConversationalAgentDeps],
     process_id: str,
     task_type: TaskType,
@@ -450,12 +462,105 @@ async def modify_task_type(
     """Modify task type for the current (existing) process. Use this to change the task type accordingly based on the context or stage of the conversation about products."""
     processes = ctx.deps.user_state.get("processes", {})
     if not isinstance(processes, dict):
-        return "Invalid processes state."
-    proc = ctx.deps.user_state.get("processes", {}).get(process_id)
+        return {"status": "error", "message": "Invalid processes state."}
+    proc = processes.get(process_id)
+    if not isinstance(proc, dict):
+        return {"status": "error", "message": f"Process {process_id!r} not found in session."}
     proc["task_type"] = task_type
-    ctx.deps.user_state["processes"][process_id] = proc
+    processes[process_id] = proc
     await modify_user_state(ctx.deps.user_id, ctx.deps.business_id, ctx.deps.user_state)
     return {"status": "success", "message": f"Task type modified to {task_type.value}"}
+
+
+@conversational_agent.tool
+async def get_product_info(
+    ctx: RunContext[ConversationalAgentDeps],
+    product_candidates: List[str],
+) -> str:
+    """Resolve suspected product names to **live** catalog rows (price, stock, currency, id). Pass 1–8 short names (e.g. from open processes vs `products_discussed`) when unsure which item a payment/receipt applies to—then choose one `product_name` + `quantity` for payment handoff."""
+    cands = [str(c).strip() for c in (product_candidates or []) if str(c).strip()][:8]
+    if not cands:
+        return "No product_candidates passed. List process product_name(s) and products_discussed from your context as short strings."
+
+    us = ctx.deps.user_state
+    pd = us.get("products_discussed") or []
+    pd_line = ", ".join(
+        (p.get("name") if isinstance(p, dict) else str(p))
+        for p in pd if (p.get("name") if isinstance(p, dict) else str(p)).strip()
+    ) if pd else "(none)"
+
+    proc_lines: List[str] = []
+    for pid, pr in (us.get("processes") or {}).items():
+        if not isinstance(pr, dict) or pr.get("completed"):
+            continue
+        proc_lines.append(
+            f"- process_id={pid!r} product_name={pr.get('product_name')!r} task_type={pr.get('task_type')!r} order_id={pr.get('order_id')!r}"
+        )
+    proc_block = "\n".join(proc_lines) if proc_lines else "(no open processes)"
+
+    bid = ctx.deps.business_id
+    out: List[str] = [
+        "[For assistant] Live catalog lookup for disambiguation (not for customer verbatim).",
+        f"## products_discussed\n{pd_line}",
+        "## open processes",
+        proc_block,
+        "## search by candidate",
+    ]
+
+    for c in cands:
+        rows = await db_search_products(c, business_id=bid, limit=8, offset=0)
+        out.append(f"\n** {c!r} **")
+        if not rows:
+            out.append("  (no DB matches — try a shorter name token)")
+            continue
+        for r in rows:
+            name = r.get("name") or r.get("product_name") or "?"
+            cur = str(r.get("currency") or "").strip() or "NGN"
+            out.append(
+                f"  - id={r.get('id')} name={name!r} price={r.get('price')} {cur} "
+                f"stock={r.get('stock_quantity')} category={r.get('category')!r}"
+            )
+            _track_product_discussed(us, r)
+
+    return "\n".join(out)
+
+
+@conversational_agent.tool
+async def list_session_uploads(ctx: RunContext[ConversationalAgentDeps]) -> str:
+    """List files attached in this chat: file_id, filename, type, description. Use to find a receipt (or `others` that look like a transfer) before payment handoff."""
+    us = ctx.deps.user_state
+    lines: List[str] = []
+    for r in us.get("uploaded_files") or []:
+        if not isinstance(r, dict):
+            continue
+        lines.append(
+            f"- file_id={r.get('file_id')!r} name={r.get('filename')!r} type={r.get('file_content_type')!r} "
+            f"desc={(r.get('description') or '')!r} uploaded_at={r.get('uploaded_at') or ''}"
+        )
+    if not lines:
+        return "No uploads in this session."
+    return "Session uploads:\n" + "\n".join(lines)
+
+
+@conversational_agent.tool
+async def get_uploaded_file_text(
+    ctx: RunContext[ConversationalAgentDeps], file_id: str
+) -> str:
+    """Full extracted text for one upload (session cache, else DB). Use to build `notes` for `handoff_to_payment_specialist` (amount, accounts, date, time, reference)."""
+    fid = (file_id or "").strip()
+    if not fid:
+        return "file_id required."
+    us = ctx.deps.user_state
+    cached = (us.get("file_text_cache") or {}).get(fid)
+    if cached:
+        return cached if isinstance(cached, str) else str(cached)
+    row = await get_conversation_uploaded_file(fid, ctx.deps.user_id, ctx.deps.business_id)
+    if not row:
+        return f"No file text for file_id={fid!r} (not in cache or DB for this store)."
+    text = row.get("text_content") or ""
+    us.setdefault("file_text_cache", {})[fid] = text
+    return text
+
 
 @conversational_agent.tool
 async def handoff_to_payment_specialist(
@@ -465,8 +570,9 @@ async def handoff_to_payment_specialist(
     order_id: Optional[str] = None,
     process_id: Optional[str] = None,
     notes: str = "",
+    quantity: Optional[float] = None,
 ) -> str:
-    """Delegate to the payment specialist for payment inquiries & verification. They verify the payment and notify the vendor when something is missing—use this whenever the customer names a product or model."""
+    """Delegate to the payment specialist. Use `list_session_uploads` + `get_uploaded_file_text` first if uploads exist; `notes` must carry receipt/bank details (amount, receiver account, date/time, ref). Pass `product_name`, `quantity` from the discussion; the payment agent does not fetch uploads—only this `notes` and message text."""
     msg = customer_message
     if notes:
         msg = f"{customer_message}\n\n[Payment context]\n{notes}"
@@ -483,6 +589,7 @@ async def handoff_to_payment_specialist(
         append_chat_history=False,
         instructions=si,
         process_id=process_id,
+        quantity=quantity,
     )
 
 
@@ -529,7 +636,7 @@ async def handoff_to_complaint_specialist(
     issue_summary: str = "",
     process_id: Optional[str] = None,
 ) -> str:
-    """Delegate to the complaint specialist for complaints and issues. They handle complaints and issues and notify the vendor when something is missing—use this whenever the customer names a product or model."""
+    """Delegate to the complaint specialist for customer complaints and  about products. They handle complaints and issues and notify the vendor when something is missing—use this whenever the customer names a product or model."""
     msg = customer_message
     if issue_summary:
         msg = f"{customer_message}\n\n[Issue summary]\n{issue_summary}"
@@ -626,6 +733,12 @@ async def run_conversational_agent(
     dynamic_instructions = build_conversational_session_instructions(
         user_state, business_name, order_context_summary
     )
+    if receipt_data and str(receipt_data).strip():
+        dynamic_instructions += (
+            "\n## Receipt in this turn\n"
+            "If multiple products could apply, call `get_product_info` with candidate names first. Then `list_session_uploads` / `get_uploaded_file_text` as needed, then `handoff_to_payment_specialist` with `notes` and `quantity`. "
+            "Do not ask the customer to re-confirm what is already in the receipt text.\n"
+        )
     polish_block = ""
     if polish_only:
         polish_block = (

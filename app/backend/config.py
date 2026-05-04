@@ -69,6 +69,9 @@ FILE_TEXT_CACHE_MAX = int(os.getenv("FILE_TEXT_CACHE_MAX", "5"))
 PRODUCTS_CACHE_TTL_HOURS = int(os.getenv("PRODUCTS_CACHE_TTL_HOURS", "6"))
 # Cap Redis list paystack_webhook_confirmed (webhook also persists to Postgres).
 PAYSTACK_WEBHOOK_CONFIRMED_MAX = int(os.getenv("PAYSTACK_WEBHOOK_CONFIRMED_MAX", "50"))
+# Bank transfer / receipt: auto-verification in payment agent (not Paystack)
+BANK_RECEIPT_MAX_AGE_HOURS = int(os.getenv("BANK_RECEIPT_MAX_AGE_HOURS", "72"))
+BANK_RECEIPT_AMOUNT_TOLERANCE = float(os.getenv("BANK_RECEIPT_AMOUNT_TOLERANCE", "0.001"))
 
 # Rate limiting (requests per window). Off by default; set RATE_LIMIT_ENABLED=true to enable.
 RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "false").lower() == "true"

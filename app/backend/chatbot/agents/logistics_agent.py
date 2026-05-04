@@ -43,7 +43,8 @@ logistics_agent_base = BaseAgent(
 1. With an order_id (or process_id that has an order in session), call `get_order_tracking` for status, tracking number, and delivery details.
 2. If delivery address is missing or needs confirmation, ask the customer directly.
 3. When you need to escalate (e.g. delivery date and time alignment between customer and vendor+/- logistics company, 
-delayed shipment, missing tracking), call `notify_central_agent` with the order_id.
+delayed shipment, missing tracking), call `notify_central_agent` with the order_id to get feedback response from the vendor/logistics company.
+if you need more information from the customer (i.e when they will be available for the delivery), you can't about it all at once and ask the customer for a seamless experience.
 
 **Rules**
 - Never guess tracking numbers or ETAs. If unknown, tell the customer what you are doing next.
@@ -57,29 +58,47 @@ logistics_agent = logistics_agent_base.agent
 @logistics_agent.tool
 async def get_order_for_product(
     ctx: RunContext[LogisticsDeps],
+    process_id: Optional[str] = None,
+    order_id: Optional[str] = None,
     product_name: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Get order_id from session process (prefer `process_id` on deps) or by product name match. Pass order_id to notify_central_agent."""
+    """Resolve the order for a delivery request. Prefer passing `process_id` or `order_id` directly
+    (both are visible in the session context injected at run time). Falls back to fuzzy-matching
+    `product_name` across open processes. Returns `order_id` + `process_id` for use with
+    `get_order_tracking` and `notify_central_agent`."""
     processes = ctx.deps.processes or {}
-    focus = (getattr(ctx.deps, "process_id", None) or "").strip()
+
+    # 1. Explicit process_id (from context or caller)
+    focus = (process_id or getattr(ctx.deps, "process_id", None) or "").strip()
     if focus:
         raw = processes.get(focus)
         if isinstance(raw, dict) and raw.get("order_id"):
-            pn = (raw.get("product_name") or "").strip()
-            pname = (product_name or ctx.deps.product_name or "").strip()
             return {
-                "order_id": raw.get("order_id"),
-                "product_name": pn or pname,
+                "order_id": raw["order_id"],
+                "product_name": (raw.get("product_name") or "").strip() or product_name,
                 "process_id": focus,
             }
+
+    # 2. Explicit order_id — scan processes for a match
+    oid_in = (order_id or "").strip()
+    if oid_in:
+        for _pid, proc in processes.items():
+            if isinstance(proc, dict) and str(proc.get("order_id") or "") == oid_in:
+                return {
+                    "order_id": oid_in,
+                    "product_name": (proc.get("product_name") or "").strip() or product_name,
+                    "process_id": _pid,
+                }
+        return {"order_id": oid_in, "product_name": product_name or None, "process_id": None}
+
+    # 3. Fuzzy product name scan
     pname = (product_name or ctx.deps.product_name or "").strip()
     for _pid, proc in processes.items():
         if not isinstance(proc, dict):
             continue
         pn = (proc.get("product_name") or "").strip()
-        if pname and pn:
-            if pname.lower() not in pn.lower() and pn.lower() not in pname.lower():
-                continue
+        if pname and pn and pname.lower() not in pn.lower() and pn.lower() not in pname.lower():
+            continue
         oid = proc.get("order_id")
         if oid:
             return {"order_id": oid, "product_name": pn or pname, "process_id": _pid}

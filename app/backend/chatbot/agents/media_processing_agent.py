@@ -2,11 +2,12 @@
 Media Processing Agent - Handles images and documents
 Used as a tool for payment verification, product enquiry, etc.
 """
-from typing import Any, Dict, List, Optional, Union
+import base64
+from typing import Any, Dict, Optional, Tuple, Union
+from urllib.parse import unquote_to_bytes
 
-import httpx
 from pydantic import BaseModel, Field
-from pydantic_ai import ImageUrl, DocumentUrl
+from pydantic_ai import BinaryContent, BinaryImage, DocumentUrl, ImageUrl
 
 from .base_agent import BaseAgent
 import enum
@@ -36,7 +37,9 @@ class ReceiptExtract(BaseModel):
     time: str = ""
     amount: float = 0.0
     currency: str = ""
-    currency_rate: float = 1.0
+    # currency_rate: float = 1.0
+    sender_account_details: Dict[str, Any] = Field(default_factory=dict)
+    receiver_account_details: Dict[str, Any] = Field(default_factory=dict)
 
 
 class UploadKind(enum.Enum):
@@ -75,11 +78,28 @@ Rules:
 - Fill extracted_content with all text/details useful to downstream agents (OCR, visible text, key facts).
 - For receipt: parse receipt object when possible; estimate currency_rate 1.0 if single currency.
 - For product: put guesses in product_attributes (product_name, color, brand, category hints).
-- Be conservative: if unsure between receipt and others, use others.""",
+- PDF/slip showing **bank transfer, payment to account, or transfer confirmation** → **receipt** (not others). If genuinely not payment-related, use others.""",
     output_type=ProcessedUploadOutput,
 )
 
 _upload_analyzer = _upload_analyzer_base.agent
+
+
+def _data_url_to_bytes_mime(data_url: str) -> Tuple[bytes, str]:
+    """Parse a data: URL to raw bytes and declared MIME (no network fetch; SSRF-safe for pydantic_ai)."""
+    if not data_url.startswith("data:"):
+        raise ValueError("not a data URL")
+    rest = data_url[5:]
+    idx = rest.find(",")
+    if idx < 0:
+        raise ValueError("invalid data URL")
+    meta, payload = rest[:idx], rest[idx + 1 :]
+    if ";base64" in meta.lower():
+        mime = (meta.split(";base64", 1)[0] or "application/octet-stream").strip() or "application/octet-stream"
+        raw_b64 = "".join(payload.split())
+        return base64.b64decode(raw_b64), mime
+    mime = (meta.split(";", 1)[0] or "text/plain").strip() or "text/plain"
+    return unquote_to_bytes(payload), mime
 
 
 async def analyze_upload_for_conversation(
@@ -88,19 +108,44 @@ async def analyze_upload_for_conversation(
     filename: str = "",
 ) -> ProcessedUploadOutput:
     """
-    Classify and extract via media model only (no local OCR/PIL). Requires a URL the model can fetch (e.g. public S3).
+    Classify and extract via media model only (no local OCR/PIL). Uses http(s) URLs
+    (e.g. S3) or inline data: URLs (decoded to BinaryImage/BinaryContent for the model).
     """
     meta = f"\n\nOriginal filename: {filename}\nMIME: {content_type}"
+    use_data = file_url.strip().lower().startswith("data:")
+    data_bytes: Optional[bytes] = None
+    if use_data:
+        data_bytes, _declared = _data_url_to_bytes_mime(file_url)
+
     if content_type.startswith("image/"):
         prompt = f"Analyze this customer upload (image).{meta}"
-        result = await _upload_analyzer.run([prompt, ImageUrl(url=file_url)])
+        if use_data and data_bytes is not None:
+            part = BinaryImage(
+                data=data_bytes,
+                media_type=content_type,
+                identifier=filename or None,
+            )
+        else:
+            part = ImageUrl(url=file_url)
+        result = await _upload_analyzer.run([prompt, part])
     elif content_type == "application/pdf" or content_type.startswith("text/"):
         prompt = f"Analyze this customer upload (document).{meta}"
-        result = await _upload_analyzer.run([prompt, DocumentUrl(url=file_url)])
+        if use_data and data_bytes is not None:
+            part = BinaryContent(
+                data=data_bytes,
+                media_type=content_type,
+                identifier=filename or None,
+            )
+        else:
+            part = DocumentUrl(url=file_url)
+        result = await _upload_analyzer.run([prompt, part])
     else:
+        url_for_prompt = file_url
+        if use_data and data_bytes is not None:
+            url_for_prompt = f"data:<inline, {len(data_bytes)} bytes>"
         prompt = (
             "Classify this upload from metadata only (URL may not be loadable as PDF in this channel).\n"
-            f"URL: {file_url}{meta}\n"
+            f"URL: {url_for_prompt}{meta}\n"
             "Set file_content_type conservatively; extracted_content empty if unsure."
         )
         result = await _upload_analyzer.run(prompt)

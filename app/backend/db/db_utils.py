@@ -229,9 +229,12 @@ async def get_product_by_id(product_id: str) -> Optional[Dict[str, Any]]:
         WHERE p.id = $1::uuid
     """
 
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(query, product_id)
-        return dict(row) if row else None
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(query, product_id)
+            return dict(row) if row else None
+    except Exception:
+        return None
 
 
 ## BUSINESS FUNCTIONS

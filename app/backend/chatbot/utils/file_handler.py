@@ -1,11 +1,13 @@
 """
-Upload pipeline: S3 only → media_processing_agent (structured output) → DB → batch for chat layer.
+Upload pipeline: S3 (when configured) or inline data URL → media_processing_agent → DB → batch for chat.
 No local disk persistence; no PIL/file_processor in this path.
 """
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -57,14 +59,50 @@ def _upload_s3_sync(content: bytes, key: str) -> Optional[str]:
         return None
 
 
-def _require_s3_url(content: bytes, key: str) -> str:
-    url = _upload_s3_sync(content, key)
-    if not url:
-        raise RuntimeError(
-            "File uploads require S3: set SAVE_UPLOADS_TO_S3=true, AWS_S3_BUCKET, "
-            "AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_REGION; install boto3."
+def _s3_configured() -> bool:
+    return bool(
+        SAVE_UPLOADS_TO_S3
+        and AWS_S3_BUCKET
+        and AWS_ACCESS_KEY_ID
+        and AWS_SECRET_ACCESS_KEY
+    )
+
+
+def _heuristic_looks_like_bank_receipt(extracted: str, description: str) -> bool:
+    """If the vision model labeled document as *others* but text clearly describes a transfer/bank receipt."""
+    blob = f"{extracted or ''} {description or ''}".lower()
+    if len(blob) < 16:
+        return False
+    bankish = any(
+        w in blob
+        for w in (
+            "transfer",
+            "gtco",
+            "gtbank",
+            "providus",
+            "naira",
+            "beneficiar",
+            "receipt",
+            "debit",
+            "credit",
+            "reference",
         )
-    return url
+    ) or "bank" in blob
+    moneyish = "₦" in blob or "ngn" in blob or re.search(
+        r"\d{1,3}(?:,\d{3})*(?:\.\d{1,2})", blob
+    ) is not None
+    return bool(bankish and (moneyish or re.search(r"\b\d{8,12}\b", blob)))
+
+
+def _inline_data_url_for_model(file_content: bytes, content_type: str) -> str:
+    """Public URL the media agent can use when S3 is off (e.g. local Docker). Capped for API limits."""
+    if len(file_content) > 10_485_760:
+        raise RuntimeError(
+            "File exceeds 10 MB inline limit. Configure S3 (SAVE_UPLOADS_TO_S3 + bucket/credentials) for larger files."
+        )
+    b64 = base64.b64encode(file_content).decode("ascii")
+    ct = (content_type or "application/octet-stream").split(";")[0].strip() or "application/octet-stream"
+    return f"data:{ct};base64,{b64}"
 
 
 async def _process_single_file(
@@ -76,12 +114,14 @@ async def _process_single_file(
     file_content = await file.read()
     await file.seek(0)
     content_type = file.content_type or "application/octet-stream"
-
-    public_url = await asyncio.to_thread(
-        _require_s3_url,
-        file_content,
-        _s3_key(business_id, user_id, raw_name),
-    )
+    key = _s3_key(business_id, user_id, raw_name)
+    s3_url = await asyncio.to_thread(_upload_s3_sync, file_content, key) if _s3_configured() else None
+    if s3_url:
+        public_url = s3_url
+        file_url_for_db: Optional[str] = s3_url
+    else:
+        public_url = _inline_data_url_for_model(file_content, content_type)
+        file_url_for_db = None  # do not store huge data: URLs in DB
 
     structured: ProcessedUploadOutput = await analyze_upload_for_conversation(
         public_url,
@@ -91,29 +131,47 @@ async def _process_single_file(
 
     kind = structured.file_content_type
 
-    text_for_db = (structured.extracted_content or "").strip()
+    ex = structured.extracted_content
+    if ex is None:
+        text_for_db = ""
+    elif isinstance(ex, str):
+        text_for_db = ex.strip()
+    else:
+        text_for_db = (
+            ex.model_dump_json() if hasattr(ex, "model_dump_json") else str(ex)
+        ).strip()
     desc = (structured.description or raw_name).strip()
 
+    kind_str = kind.value if hasattr(kind, "value") else str(kind)
+    if (kind_str or "").lower() != UploadKind.receipt.value and _heuristic_looks_like_bank_receipt(
+        text_for_db, desc
+    ):
+        kind_str = UploadKind.receipt.value
     file_id = await insert_conversation_uploaded_file(
         user_id,
         business_id,
-        file_url=public_url,
-        file_content_type=kind,
+        file_url=file_url_for_db,
+        file_content_type=kind_str,
         description=desc,
         text_content=text_for_db,
     )
 
     uploaded_at = datetime.now(timezone.utc).isoformat()
+    _ec = structured.extracted_content
     receipt_payload = (
-        structured.extracted_content.model_dump() if kind==UploadKind.receipt.value else None
+        _ec.model_dump()
+        if str(kind_str).lower() == UploadKind.receipt.value
+        and _ec is not None
+        and hasattr(_ec, "model_dump")
+        else None
     )
 
     return {
         "filename": raw_name,
         "file_id": file_id,
-        "file_url": public_url,
+        "file_url": file_url_for_db or public_url,
         # "mime_type": content_type,
-        "file_content_type": kind,
+        "file_content_type": kind_str,
         "description": desc,
         "extracted_content": text_for_db,
         "receipt": receipt_payload,
@@ -165,10 +223,16 @@ async def process_uploaded_files(
                 "uploaded_at": it["uploaded_at"],
             }
         )
-        if it["file_content_type"] == UploadKind.receipt:
-            tx = (it.get("extracted_content") or "").strip()
-            if tx:
-                receipt_parts.append(tx.model_dump())
+        if str(it["file_content_type"]).lower() == UploadKind.receipt.value:
+            rp = it.get("receipt")
+            if rp is not None:
+                receipt_parts.append(
+                    rp if isinstance(rp, str) else str(rp)
+                )
+            else:
+                tx = (it.get("extracted_content") or "").strip()
+                if tx:
+                    receipt_parts.append(tx)
         else:
             non_receipt_lines.append(
                 f"- id={it['file_id']} name={it['filename']} type={it['file_content_type']}: "

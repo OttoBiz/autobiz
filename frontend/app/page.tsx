@@ -297,20 +297,25 @@ export default function Page() {
       formData.append("user_id", selectedUser.id)
       formData.append("vendor_id", selectedBusiness.id)
       formData.append("session_id", customerSessionId)
-      formData.append("message", message)
-      
+      formData.append("message", message ?? "")
+
       if (apiKey.trim()) {
         formData.append("api_key", apiKey)
       }
 
       currentFiles.forEach((file) => {
-        formData.append("files", file)
+        formData.append("files", file, file.name || "upload")
       })
 
       const response = await fetch(`${BACKEND_URL}/api/v1/customer/chat`, {
         method: "POST",
         body: formData,
       })
+
+      if (!response.ok) {
+        const errText = await response.text()
+        throw new Error(errText || response.statusText || `HTTP ${response.status}`)
+      }
 
       const data = await response.json()
       const aiMessage: ChatMessage = {
@@ -693,7 +698,6 @@ export default function Page() {
             </div>
           </div>
         </div>
-      </div>
 
         {/* Chat Windows - Side by Side */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
@@ -713,9 +717,9 @@ export default function Page() {
                     className={`max-w-[80%] px-3 py-2 rounded-lg text-sm ${
                       msg.sender === "user"
                         ? "bg-blue-500 text-white"
-                          : "bg-gray-100 text-gray-800"
-                      }`}
-                    >
+                        : "bg-gray-100 text-gray-800"
+                    }`}
+                  >
                     <ChatMessageBody content={msg.content} invert={msg.sender === "user"} />
                   </div>
                   </div>
@@ -773,6 +777,7 @@ export default function Page() {
                   disabled={!canChat || isCustomerLoading}
                 />
                 <button
+                  type="button"
                   onClick={handleCustomerSend}
                   disabled={!canChat || isCustomerLoading || (!customerInput.trim() && selectedFiles.length === 0)}
                   className="bg-blue-500 text-white px-4 py-2 rounded disabled:opacity-50"
@@ -785,7 +790,7 @@ export default function Page() {
               ref={fileInputRef}
               type="file"
               multiple
-              accept="image/*,audio/*,.pdf,.doc,.docx,.txt"
+              accept="image/*,audio/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/*,.pdf,.doc,.docx,.txt,.xls,.xlsx"
               onChange={handleFileSelect}
               className="hidden"
             />

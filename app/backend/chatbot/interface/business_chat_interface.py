@@ -123,6 +123,7 @@ You are ottobiz AI, the primary AI Business Assistant dedicated to serving busin
 **MODE 1: DIRECT BUSINESS SUPPORT (Default Mode)**
 You provide direct, localized assistance to vendor or logistic businesses queries or questions.
 * **Capabilities:** Business analytics, supply chain predictions, inventory management, updating their product in the database, low stock alerts, and executing system updates (e.g., updating product stock quantities).
+* **Inventory:** Call `get_inventory_info` at most once per user question; derive rankings (e.g. best-stocked item) from the returned list—do not call it again in the same reply loop.
 * **Action:** Process these requests directly within the current chat context.
 
 **MODE 2: CROSS-PARTY COORDINATION (Thread Handoff)**
@@ -177,7 +178,10 @@ def _slim_inventory_row(r: Dict[str, Any]) -> Dict[str, Any]:
 async def get_inventory_info(
     ctx: RunContext[BusinessChatDeps]
 ) -> List[Dict[str, Any]]:
-    """Current inventory (compact rows, capped)."""
+    """Returns the **complete** current inventory (up to 50 products). Each row contains name,
+    sku, price, currency, stock_quantity, and category. This is a single-shot read — do not call
+    it again after receiving results; derive all answers (most stocked, low stock, totals, etc.)
+    directly from the returned list."""
     try:
         rows = await get_inventory(ctx.deps.business_id)
         return [_slim_inventory_row(dict(x)) for x in (rows or [])[:50]]
@@ -376,7 +380,10 @@ async def _business_chat_inner(
         rc = _bc_out.reply_context
         msg = _bc_out.response
 
-        if not rc or not rc.customer_id or (rc.confidence_score or 0.0) < 0.5:
+        _conf = _bc_out.confidence_score
+        if not rc or not rc.customer_id or (
+            _conf is not None and _conf < 0.5
+        ):
             business_user_state["chat_history"].append(
                 ModelRequest(parts=[UserPromptPart(content=business_request.message)])
             )
@@ -410,16 +417,20 @@ async def _business_chat_inner(
         )
         # await modify_user_state(rc.customer_id, biz_id, central_user_state)
 
-        logistic = (
-            Logistics(id=rc.logistic_id if not business_is_logistics else state_key_id, name=None, phone=None)
+        if business_is_logistics:
+            _logistic_uuid = (state_key_id or "").strip()
+        else:
+            _logistic_uuid = (rc.logistic_id or logistic_id or "").strip()
+        logistic: Optional[Logistics] = (
+            Logistics(id=_logistic_uuid, name=None, phone=None) if _logistic_uuid else None
         )
-        
+
         agent_input = await create_structured_input(
             sender="Logistics" if business_is_logistics else "Vendor",
             recipient=_bc_out.recipient,
             message=msg,
-            customer=Customer(id=rc.customer_id),
-            business=Vendor(id=biz_id),
+            customer=Customer(id=(rc.customer_id or "").strip()),
+            business=Vendor(id=(biz_id or "").strip() or state_key_id),
             logistic=logistic,
             product=Product(id=rc.product_id or "", name=rc.product_name or "", quantity=rc.quantity or 1, price=rc.price or 0, metadata=rc.product_attributes or None, has_paid=False if not rc.order_id else True) if rc.product_name else None,
             order_id=rc.order_id or None,

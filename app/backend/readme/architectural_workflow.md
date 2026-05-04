@@ -2,6 +2,8 @@
 
 A concise overview of the Autobiz backend from the first customer message through multi-party coordination and delivery.
 
+**Related:** For operational risks (Redis vs DB, payments, processes, central agent), see [`journey_risks_and_hardening.md`](./journey_risks_and_hardening.md).
+
 ---
 
 ## 1. System Overview
