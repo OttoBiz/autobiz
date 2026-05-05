@@ -56,6 +56,20 @@ At a blended ARPU of ~$180/year (the floor + credits model, anchored to a fracti
 
 **The global ceiling.** Meta's WhatsApp paid-messaging line crossed **$2 billion in annual run-rate revenue in Q4 2025** ([Meta Q4 2025 earnings](https://s21.q4cdn.com/399680738/files/doc_financials/2025/q4/META-Q4-2025-Earnings-Call-Transcript.pdf)) on top of **3 billion WhatsApp users** ([TechCrunch, May 2025](https://techcrunch.com/2025/05/01/whatsapp-now-has-more-than-3-billion-users/)) and 200M+ business accounts. Every one of those business accounts is a candidate for the layer we are building. The category is not crowded with anyone solving it the way we do; it is crowded with inbound chatbots that don't replace operations work.
 
+**At a glance:**
+
+| | Today | Source |
+|---|---|---|
+| **Meta's WhatsApp paid-messaging line** | **$2B+ annual run-rate, Q4 2025** | [Meta Q4 2025 Earnings Call](https://s21.q4cdn.com/399680738/files/doc_financials/2025/q4/META-Q4-2025-Earnings-Call-Transcript.pdf) |
+| **Meta Family of Apps "other revenue"** *(largely WhatsApp business messaging)* | **$801M in Q4 2025 alone** | [Meta Q4 2025 Earnings Press Release](https://investor.atmeta.com/investor-news/press-release-details/2026/Meta-Reports-Fourth-Quarter-and-Full-Year-2025-Results/default.aspx) |
+| **WhatsApp click-to-message ad revenue** | **>50% YoY growth in the US**, Q4 2025 | Meta Q4 2025 Earnings Call |
+| **SAM — Nigeria (launch market)** | **~$360M/year** | ~2M addressable shops × ~$180 ARPU. Funnel: [NBS/SMEDAN](https://nigerianstat.gov.ng/pdfuploads/MSMES.pdf) + [Moniepoint Informal Economy Report 2024](https://techcabal.com/2024/07/05/nigerias-informal-economy-earn-above-%E2%82%A62-5m-monthly/) |
+| **SAM — Nigeria + Phase 2 (KE, GH, SA, EG)** | **$1B+/year** | Same funnel × MSME counts. Sources: [FSD Kenya](https://www.fsdkenya.org/wp-content/uploads/2024/06/Micro-Small-and-Medium-Enterprises-outlook-report.pdf), [GCB Ghana](https://www.gcbbank.com.gh/research-reports/sector-industry-reports/361-sme-sector-in-ghana-2023-v1/file), [FinScope SA](https://finmark.org.za/knowledge-hub/articles/finscope-msme-south-africa-2024-key-findings-highlight-urgent-need-for-informal-sector-support) |
+| **SOM — Nigeria, 5 years** | **$20–40M ARR** | 5–10% share at floor + credits model |
+| **Network revenue upside** | **+15–30%** on top | Cross-vendor referral cut, structurally available only to a multi-vendor architecture |
+
+**What we capture.** The investable target is **$20–40M ARR within five years from Nigeria alone**, before Phase 2 expansion or the network upside. Phase 2 markets push the ceiling past **$50–100M ARR by Year 7**. Meta's own paid-messaging line — already at $2B+ annual run-rate, with click-to-message ads growing more than 50% year-over-year — is the proof that the underlying channel is monetizable at scale. We capture a share of the *operations layer* on top of that flow.
+
 The ceiling is large. What makes it reachable is starting somewhere narrow enough to actually win first.
 
 ## How we make money
@@ -95,7 +109,7 @@ That is the difference between a chatbot and an operations team. As Meta commodi
 
 Because every Ottobiz-powered shop is already wired into the same coordination layer, those shops naturally form a network — and on top of that network, Ottobiz introduces customers across shops at the moment of intent.
 
-When a customer buys a dress, their Ottobiz can suggest shoes from the boutique next door, a tailor for adjustments, or a stylist who already serves the same neighborhood. When a customer fills a prescription, their pharmacy's Ottobiz can suggest the nearby clinic, the lab that ran their last test, or a delivery rider who already knows the address. Recommendations are restricted to **complements**, never substitutes — a shop is never offered up against its competitors. Participation is opt-in per shop, per direction, per category.
+When a customer buys a dress, their Ottobiz can suggest shoes from the boutique next door, a tailor for adjustments, or a stylist who already serves the same neighborhood. When a customer buys a new phone, their Ottobiz can suggest a screen protector from the accessories shop on the same street, a data plan from the agent next door, or a repair tech who can transfer the data from their old device. Recommendations are restricted to **complements**, never substitutes — a shop is never offered up against its competitors. Participation is opt-in per shop, per direction, per category.
 
 Two things make this layer hard for any competitor to copy. First, every other player on the field runs as a siloed install per merchant — their architecture has no way to see across vendors. Second, recommendations only convert when they fire inside the conversation that is already happening, at the moment of intent, on a channel the customer already trusts. Click-through ad-style recommendations don't work in chat. Ours do, because they're delivered by the agent the customer is already talking to.
 
