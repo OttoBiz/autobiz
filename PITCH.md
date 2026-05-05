@@ -38,7 +38,11 @@ These are businesses that have never been served by Shopify, Square, or any conv
 
 ## How we make money
 
-We charge as a service. Owners pay either a percentage of orders Ottobiz transacts, or a flat monthly fee scaled to volume. We are not per-seat SaaS — what we replace isn't software, it's the labor of running a sales desk and a procurement desk.
+Two lines of revenue, both volume-aligned with the customer's success.
+
+**Service fee.** Owners pay either a percentage of orders Ottobiz transacts or a flat monthly fee scaled to volume. We are not per-seat SaaS — what we replace isn't software, it's the labor of running a sales desk and a procurement desk.
+
+**Referral cut.** On the optional cross-sell network, Ottobiz takes a share of every cross-vendor referral that converts. The shop sending the customer earns a commission; we earn a cut on top. This line scales with the network, not with individual shops.
 
 ## The competitive picture
 
@@ -58,6 +62,16 @@ Ottobiz operates on **both sides**. Behind every customer reply, a real business
 We hold those conversations in parallel with the customer's, and we stitch the outcomes back together automatically. The supplier who answers forty minutes later lands in the right thread, with the right context, and triggers the right follow-up to the right customer — without the owner touching anything.
 
 That is the difference between a chatbot and an operations team. As Meta commoditizes the inbound side, the value migrates to the side we built first.
+
+## The network underneath
+
+Because every Ottobiz-powered shop is already wired into the same coordination layer, those shops naturally form a network. We are building a cross-sell layer on top of it.
+
+When a customer buys a dress, their Ottobiz can suggest shoes from the boutique next door, a tailor for adjustments, or a stylist who already serves the same neighborhood. When a customer fills a prescription, their pharmacy's Ottobiz can suggest the nearby clinic, the lab that ran their last test, or a delivery rider who already knows the address. Recommendations are restricted to **complements**, never substitutes — a shop is never offered up against its competitors.
+
+Cross-sell is **opt-in per shop**. Owners choose whether to participate, on which catalog, and on what commission split. Shops that opt in earn a referral fee on every sale they send to a neighbor. Ottobiz takes a cut.
+
+Two things make this layer hard for any of our competitors to copy quickly. First, every other player on the field runs as a siloed install per merchant — their architecture has no way to see across vendors. Second, recommendations only matter if they convert; ours fire inside the conversation that is already happening, at the moment of intent, on a channel the customer already trusts. Click-through ad-style recommendations don't work in chat. Ours do, because they're delivered by the agent the customer is already talking to.
 
 ## Why now
 
