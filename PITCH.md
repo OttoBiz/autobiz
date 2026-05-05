@@ -88,12 +88,19 @@ The floor and credits scale linearly with shops on the platform. The referral cu
 
 ## The competitive picture
 
-The category looks crowded from the outside. Up close, almost every player is doing one half of the job — the customer-facing half.
+The category looks crowded from the outside. Up close, almost every player is doing one half of the job — the customer-facing half. The table below names the strongest competitors, what each one does well, where each one falls short, and where Ottobiz is structurally different.
 
-- **Global WhatsApp commerce platforms** — Wati, Yalo, AiSensy, Interakt, Gallabox, Gupshup, SleekFlow. Inbound chatbots, shared inboxes, and customer re-engagement. SleekFlow's *AgentFlow* ships role-specialized agents (sales, support, analyst); their forthcoming "outbound agent" re-engages *customers* for lead recovery, not suppliers for restocks.
-- **Direct-commerce platforms** — Flowcart (Kenya) is the closest-named overlap on paper; in practice it is conversational commerce focused on click-to-WhatsApp ads, cart recovery, and Shopify/WooCommerce checkout. Customer-facing only.
-- **Africa-specific** — **Vendy** (YC W22, Lagos) is agentic payments infrastructure and a Meta-approved BSP — a payments rail we coexist with rather than compete against. **Bumpa** is the strongest Nigerian comparable but operates on the opposite model: a hosted web storefront that pulls customers off WhatsApp onto a separate site, with manual back-office tools the owner has to run. We do the opposite — we keep the customer in chat and replace the owner's operations work entirely. **Kayko** (Rwanda) does small-business automation at fast-growing scale.
-- **The structural threat** — Meta is shipping native AI agents inside WhatsApp Business itself, which will commoditize inbound conversational AI.
+| Competitor | Strengths | Weaknesses | How Ottobiz differs |
+|---|---|---|---|
+| **Global WhatsApp commerce platforms** *(Wati, Yalo, AiSensy, Interakt, Gallabox, Gupshup)* | Mature inbound chatbot tooling; large global customer bases; well-funded distribution | Inbound-only; siloed per merchant; built for non-African markets; no concept of supplier-side coordination | We handle both sides — customer + supplier + rider + payment reconciliation — with a shared ledger that survives across hours and parties |
+| **SleekFlow AgentFlow** | Multi-agent role specialization (sales, support, analyst); enterprise-grade infrastructure | Their "outbound agent" re-engages *customers* (lead recovery), not suppliers; no asynchronous multi-party state | Our outbound agent holds persistent threads with the vendor side of the business — suppliers, riders, partners — not just re-engaging customers |
+| **Flowcart (Kenya)** | Click-to-WhatsApp ads, cart recovery, Shopify / Woo integration | Customer-facing only; no operations replacement; pulls customer off WhatsApp to checkout | We keep the customer in chat throughout and replace the owner's operations labour, not the customer's checkout flow |
+| **Vendy (YC W22, Lagos)** | Meta-approved BSP, payments-infra moat, CBN-regulated processor | Payments rail, not operations layer | Orthogonal — we coexist with Vendy as a rail; the operations layer sits above it |
+| **Bumpa (Lagos)** | Storefront-and-inventory tools for Nigerian SMEs; ~60K merchants over six years | Hosted web storefront pulls customers off WhatsApp; manual back-office tools the owner has to run; product-only (no services) | We keep customers in chat and replace the owner's labour rather than saving them data entry. Storefront-style features are absorbed natively into the agent surface |
+| **Kayko (Rwanda)** | Fast-growing small-business automation in East Africa | Geographic focus elsewhere; same customer-side-only limitation | Different geographic wedge; same architectural ceiling on multi-party coordination |
+| **Meta itself** *(structural threat)* | Owns the channel; shipping native AI agents inside WhatsApp Business | Will only commoditise the *inbound* side; their business is messaging infrastructure, not vendor coordination | The more Meta commoditises inbound, the more value migrates to the outbound coordination layer — which is exactly what Ottobiz built first |
+
+**The pattern.** Every credible competitor is on the customer side of the conversation. None is built for the asynchronous, multi-party, stateful coordination that real Nigerian commerce actually requires. The shop-facing incumbents are architecturally siloed; retrofitting our outbound + ledger model would require rebuilding their foundation. That gap is the category we operate in.
 
 ## How we stand out
 
@@ -117,7 +124,15 @@ Two things make this layer hard for any competitor to copy. First, every other p
 
 ## Why now
 
-Two things changed at once. AI models are now competent enough to hold a real commercial conversation across multiple parties without supervision. And in Nigeria and across the markets we are building toward, WhatsApp has already become the system of record for commerce — there is no underlying ERP, CRM, or POS to displace. The chat *is* the business. We don't have to fight entrenched software; we get to formalize what is already happening in chat, with AI doing the work the owner currently does by hand.
+Three thresholds crossed at the same time, and the window won't stay open.
+
+**1. AI is finally competent enough to run a commercial conversation without supervision.** Frontier LLMs combined with maturing agent frameworks, plus a roughly 10× drop in inference cost over the past 18 months, mean a system can now hold a multi-party transaction — across customers, suppliers, dispatchers, and bank alerts — autonomously, in production, in chat. Two years ago this was a research problem. Today it ships.
+
+**2. Meta is monetizing the WhatsApp channel at scale and signalling permanence.** WhatsApp paid messaging crossed **$2B annual run-rate in Q4 2025**, and click-to-message ads grew **>50% YoY in the US** ([Meta Q4 2025 earnings](https://s21.q4cdn.com/399680738/files/doc_financials/2025/q4/META-Q4-2025-Earnings-Call-Transcript.pdf)). The underlying rails are stable, the audience is captive, and Meta has explicitly bet that chat is the commerce surface. The category is real because Meta has decided it is.
+
+**3. Nigerian digital commerce hit an inflection.** Moniepoint, OPay, Paystack, and Flutterwave have collectively proved that Nigerian SMEs will adopt digital tooling when the value is obvious. The 2025 Tax Act zero-rates corporate income tax for sub-₦50M-revenue businesses, accelerating formalisation across the same segment Ottobiz serves. The buyer is already paying for tools; the operations layer is the gap nobody has filled.
+
+**The window.** Inbound conversational AI on WhatsApp is about to be commoditised by Meta itself. The value migrates to the **outbound, operations side** — exactly where Ottobiz is built. The shop-side incumbents are architecturally siloed and customer-only; retrofitting outbound coordination requires rebuilding their foundation. The category is open for someone with the right primitives, in the right market, at this exact moment. We don't get to assume it stays open.
 
 ## Market validation
 
