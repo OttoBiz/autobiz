@@ -1,53 +1,68 @@
 # Ottobiz
 
-## What we are
+## In one line
 
-Ottobiz is an AI-native operations layer for businesses that run on WhatsApp. We don't sell a chatbot and we don't sell software — we sell the service of running a small business's commerce operation: customer sales, supplier coordination, payment reconciliation, and delivery dispatch, performed autonomously by agents that talk on the business's behalf.
+Ottobiz runs the WhatsApp sales desk for small businesses — replying to customers, chasing suppliers, confirming payments, and booking deliveries — all at once, all on its own.
 
-For the customer of an Ottobiz-powered business, nothing changes. They message the business on WhatsApp the way they always have. The difference is that the reply comes in seconds, the stock answer is correct, the payment receipt gets verified, the supplier gets pinged about a restock, and the dispatch rider gets booked — all without the owner touching the thread.
+## The problem
 
-## What we do
+In our launch markets, commerce happens in WhatsApp. The shop owner is the bottleneck. They are the salesperson, the procurement clerk, the accountant, and the dispatcher — at the same time.
 
-Most small businesses in our target markets sell over WhatsApp. The owner is the bottleneck: they are simultaneously the salesperson replying to customers, the procurement clerk chasing suppliers, the accountant reconciling bank alerts, and the dispatcher coordinating riders. They lose sales because they can't reply fast enough. They forget to follow up with suppliers. They miss restocks. They lose receipts.
+They lose sales because they can't reply fast enough. They forget to follow up with the supplier about a restock. They miss bank alerts and ship the wrong order. They lose receipts. They've already tried hiring an assistant; the assistant cost more than they made and still missed the supplier follow-ups.
 
-Ottobiz replaces that bottleneck with a system of coordinated agents:
+The result is a business that can never grow past the owner's attention span.
 
-- A **customer-facing agent** holds every customer conversation, answers product questions, negotiates, takes orders, and confirms payments.
-- An **outbound agent** holds persistent conversations with the business's suppliers, riders, and partners — pinging them when stock runs low, when a delivery is needed, when a price needs confirming — and threading their replies back into the original customer conversation.
-- A **back-office coordinator** turns those vendor replies into actions: updating inventory, re-pricing products, escalating to the owner when a human decision is needed.
+## What Ottobiz does
 
-These agents share a common ledger and conversation memory, so a vendor confirming "yes we have 3 left" forty minutes later gets stitched correctly back into the customer thread that has been waiting on it. This is the hard part of running a real business in chat, and it is what makes Ottobiz a transactional system rather than a chatbot.
+Ottobiz is the operations team this business never had. From the moment a customer sends "hi, do you have size 8?" to the moment that customer's order is paid, packed, restocked, and out for delivery, Ottobiz handles it.
 
-## Who our customers are
+- It **answers customers** in seconds, in their language, with the right product and the right price.
+- It **negotiates and takes orders** the way the owner would.
+- It **chases the supplier** when stock is low, holds that conversation across hours and days, and brings the answer back into the customer's thread without losing context.
+- It **verifies payments** by reading bank alerts and matching them to the right order.
+- It **books the rider** and updates the customer when the delivery is on its way.
 
-Our buyer is the owner of a 1–20 person business that sells over WhatsApp — fashion boutiques, FMCG resellers, pharmacies, electronics shops, food vendors, beauty supply stores. They are drowning in chat threads. They are losing revenue every day to slow replies and forgotten follow-ups. They have already tried hiring an assistant; the assistant cost more than they made and still missed the supplier follow-ups.
+To the customer, nothing changes. They message the business on WhatsApp the way they always have. The business just answers faster, gets it right, and never drops them.
 
-Their customers — who never see Ottobiz directly — get a faster, more competent business to buy from.
+## Who we serve
+
+Owners of 1–20 person businesses that sell over WhatsApp:
+
+- Fashion boutiques and resellers
+- FMCG and household goods shops
+- Pharmacies and beauty supply stores
+- Electronics and accessory vendors
+- Food and grocery vendors
+
+These are businesses that have never been served by Shopify, Square, or any conventional commerce stack — because the chat *is* the storefront, the receipt book, and the CRM all at once. Ottobiz is built for the way they actually operate, not the way Western SaaS assumes they should.
 
 ## How we make money
 
-We price as a service, not as software. Owners pay either a percentage of orders Ottobiz transacts or a flat monthly fee scaled to volume. We are not a per-seat SaaS, because what we replace isn't software — it's the labor of running a sales desk and a procurement desk.
+We charge as a service. Owners pay either a percentage of orders Ottobiz transacts, or a flat monthly fee scaled to volume. We are not per-seat SaaS — what we replace isn't software, it's the labor of running a sales desk and a procurement desk.
+
+## The competitive picture
+
+The category looks crowded from the outside. Up close, almost every player is doing one half of the job — the customer-facing half.
+
+- **Global WhatsApp commerce platforms** — Wati, Yalo, AiSensy, Interakt, Gallabox, Gupshup, SleekFlow. Inbound chatbots, shared inboxes, and customer re-engagement. SleekFlow's *AgentFlow* ships role-specialized agents (sales, support, analyst); their forthcoming "outbound agent" re-engages *customers* for lead recovery, not suppliers for restocks.
+- **Direct-commerce platforms** — Flowcart (Kenya) is the closest-named overlap on paper; in practice it is conversational commerce focused on click-to-WhatsApp ads, cart recovery, and Shopify/WooCommerce checkout. Customer-facing only.
+- **Africa-specific** — Vendy (YC W22, Lagos) is agentic payments infrastructure and a Meta-approved BSP — a payments rail we coexist with rather than compete against. Bumpa builds storefront tools for small WhatsApp/Instagram sellers. Kayko (Rwanda) does small-business automation at fast-growing scale.
+- **The structural threat** — Meta is shipping native AI agents inside WhatsApp Business itself, which will commoditize inbound conversational AI.
+
+## How we stand out
+
+Every competitor we have examined operates on the **customer side only**: answer questions, take orders, recover carts, re-engage. That is the easier half of running a real business in chat.
+
+Ottobiz operates on **both sides**. Behind every customer reply, a real business has another conversation it has to run — with a supplier to confirm stock, with a rider to book a pickup, with a bank alert to verify a payment, with a partner to chase an exception. Those conversations are asynchronous, multi-party, and stateful. They are also where most lost sales actually happen.
+
+We hold those conversations in parallel with the customer's, and we stitch the outcomes back together automatically. The supplier who answers forty minutes later lands in the right thread, with the right context, and triggers the right follow-up to the right customer — without the owner touching anything.
+
+That is the difference between a chatbot and an operations team. As Meta commoditizes the inbound side, the value migrates to the side we built first.
 
 ## Why now
 
-Two things changed at the same time. AI models are now competent enough to hold a real commercial conversation across multiple parties without supervision. And in our target markets, WhatsApp has become the system of record for commerce — there is no Shopify, no Square, no CRM, no ERP underneath. The chat *is* the business. That makes WhatsApp-first markets uniquely well-suited to an AI-native operations layer, because we are not displacing entrenched software; we are formalizing what was already happening in chat.
+Two things changed at once. AI models are now competent enough to hold a real commercial conversation across multiple parties without supervision. And in our launch markets, WhatsApp has already become the system of record for commerce — there is no underlying ERP, CRM, or POS to displace. The chat *is* the business. We don't have to fight entrenched software; we get to formalize what is already happening in chat, with AI doing the work the owner currently does by hand.
 
-## What we have built
+## What we have
 
-A production system, in active use, with:
-
-- A unified inbox abstraction that folds customer and vendor conversations into a single coherent state
-- A persistent outbound agent that maintains long-running threads with each of a business's suppliers and partners
-- A task ledger in Postgres that tracks every promise, commitment, and pending resolution across parties
-- A products API and inventory pipeline with real-time side-effects
-- Channel abstraction (WhatsApp today, web and others wired in) so the same brain runs across surfaces
-- A coordinator that turns vendor replies into back-office actions automatically
-- An observability stack (Logfire) over every agent run, tool call, and resolution
-
-The architecture is deliberate: agents are composed as tools, not chained, so we avoid the routing-and-context-loss problem that breaks most multi-agent systems. State lives in a ledger, not in agent memory, so vendor replies arriving hours later still resolve correctly. Channels are abstracted, so adding Instagram DM, SMS, or a web widget is a configuration change, not a rewrite.
-
-## Where we are going
-
-The next phase turns Ottobiz from "the agent that runs your sales desk" into "the brain that runs your business" — a layer that makes a small business legible to AI by ingesting everything the owner currently keeps in their head, their phone, and their paper books, and exposing it as a system the owner can query and that our agents can act on. On top of that brain, we will progressively replace the patchwork of tools (or absence of tools) that SMEs use today: bookkeeping, procurement, CRM, point-of-sale, payments and credit tracking, and marketing.
-
-The brain is the moat. The modules are the revenue. Each module we ship makes the brain richer; each brain improvement makes every module work better. That is the compounding loop we are building toward.
+A production system, in active use, with the customer agent, the persistent supplier-side agent, the back-office coordinator, the products and inventory pipeline, multi-channel reach, and full observability — running today, for real businesses, on real orders.
