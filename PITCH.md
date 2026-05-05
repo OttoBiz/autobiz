@@ -36,6 +36,28 @@ Owners of 1–20 person businesses that sell over WhatsApp. We are launching in 
 
 These are businesses that have never been served by Shopify, Square, or any conventional commerce stack — because the chat *is* the storefront, the receipt book, and the CRM all at once. Ottobiz is built for the way they actually operate, not the way Western SaaS assumes they should.
 
+## The market
+
+**Nigeria's commerce economy is large, almost entirely informal, and barely digitised. The honest, bottom-up Nigeria SAM is the opportunity we lead with.**
+
+Nigeria has **~39.65 million MSMEs** ([NBS/SMEDAN MSME Survey](https://nigerianstat.gov.ng/pdfuploads/MSMES.pdf)) — the largest MSME base on the continent. Most are subsistence: Moniepoint's 2024 *Informal Economy Report*, drawn from ~2 million businesses on its rails, shows **79% earn under ₦250,000/month in profit, with only 21% earning above that threshold** ([TechCabal, July 2024](https://techcabal.com/2024/07/05/nigerias-informal-economy-earn-above-%E2%82%A62-5m-monthly/)). The subsistence layer is not who we serve.
+
+Above it sits the segment Ottobiz is built for: shop- and service-like businesses already running customer transactions through chat. Filtering 39.65M down through these criteria — out of subsistence, into commerce and service categories Ottobiz can serve, already using WhatsApp or Instagram as a primary commercial channel, with transaction volume meaningful enough to value automation — leaves on the order of **2 million addressable Nigerian businesses**.
+
+Crucially, that pool is broader than the storefront-and-inventory segment alone. It includes salons, clinics, tailors, repair shops, food vendors with live menus, and service operators whose work is structurally conversational rather than catalogued. These segments are excluded by tools built around SKUs and shipping; they are core to what Ottobiz does.
+
+At a blended ARPU of ~$180/year (the floor + credits model, anchored to a fraction of a junior shop assistant's salary), this represents a **~$360M Nigeria SAM**. A 5–10% share over five years is **$20–40M ARR**, before the cross-vendor referral cut, which adds a network-driven layer that grows non-linearly with vendor density and is structurally unavailable to any siloed-merchant competitor.
+
+**A note on data.** The NBS/SMEDAN MSME Survey provides the most authoritative absolute count of Nigerian businesses but is from 2021. Where revenue distributions matter, we anchor on Moniepoint's 2024–2025 reports — the freshest credible signal available, drawn from real transactional data on ~2 million actively-operating businesses. Updated official MSME survey data has not been released as of May 2026.
+
+**Why Nigeria first.** Nigeria has the sharpest version of the dynamic Ottobiz is built for — the highest WhatsApp commerce intensity in Africa, the largest absolute MSME population, and the most acute mismatch between informal scale and formal tooling. Solving Nigeria forces the system to handle every hard case: language, cash flow, payment-rail openness, supplier informality, urban density. Any market we expand into afterwards is easier.
+
+**Where we go next.** Once Nigeria is working at scale, the same product expands directly into **Kenya, Ghana, South Africa, and Egypt** — each with multi-million-MSME bases ([FSD Kenya 2024](https://www.fsdkenya.org/wp-content/uploads/2024/06/Micro-Small-and-Medium-Enterprises-outlook-report.pdf), [GCB Ghana SME Report](https://www.gcbbank.com.gh/research-reports/sector-industry-reports/361-sme-sector-in-ghana-2023-v1/file), [FinScope South Africa 2024](https://finmark.org.za/knowledge-hub/articles/finscope-msme-south-africa-2024-key-findings-highlight-urgent-need-for-informal-sector-support)) and the same WhatsApp-as-storefront pattern. With Nigeria included, the addressable opportunity across these markets crosses the **$1 billion** mark.
+
+**The global ceiling.** Meta's WhatsApp paid-messaging line crossed **$2 billion in annual run-rate revenue in Q4 2025** ([Meta Q4 2025 earnings](https://s21.q4cdn.com/399680738/files/doc_financials/2025/q4/META-Q4-2025-Earnings-Call-Transcript.pdf)) on top of **3 billion WhatsApp users** ([TechCrunch, May 2025](https://techcrunch.com/2025/05/01/whatsapp-now-has-more-than-3-billion-users/)) and 200M+ business accounts. Every one of those business accounts is a candidate for the layer we are building. The category is not crowded with anyone solving it the way we do; it is crowded with inbound chatbots that don't replace operations work.
+
+The ceiling is large. What makes it reachable is starting somewhere narrow enough to actually win first.
+
 ## How we make money
 
 Ottobiz prices like airtime, not like software. We charge for the work the agent does — not for the money the shop receives. This is deliberate: in our market, payment rails are open and shops can collect bank transfers directly. We never depend on seeing the shop's money. We only depend on doing the shop's work, and that work is observable from our own side.
