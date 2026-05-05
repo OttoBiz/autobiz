@@ -38,11 +38,15 @@ These are businesses that have never been served by Shopify, Square, or any conv
 
 ## How we make money
 
-Two lines of revenue, both volume-aligned with the customer's success.
+Ottobiz prices like airtime, not like software. We charge for the work the agent does — not for the money the shop receives. This is deliberate: in our market, payment rails are open and shops can collect bank transfers directly. We never depend on seeing the shop's money. We only depend on doing the shop's work, and that work is observable from our own side.
 
-**Service fee.** Owners pay either a percentage of orders Ottobiz transacts or a flat monthly fee scaled to volume. We are not per-seat SaaS — what we replace isn't software, it's the labor of running a sales desk and a procurement desk.
+**Monthly floor.** Each shop pays a monthly floor anchored to a fraction of what a junior sales assistant would cost. The floor covers access to the agent and a starter pack of credits.
 
-**Referral cut.** On the optional cross-sell network, Ottobiz takes a share of every cross-vendor referral that converts. The shop sending the customer earns a commission; we earn a cut on top. This line scales with the network, not with individual shops.
+**Credits for usage.** Beyond the starter pack, owners top up credits whenever they want — the same way every Nigerian SME already buys airtime. Each credit covers one unit of work the agent does: a customer reply, a supplier follow-up, an order processed end-to-end. There is no card-on-file, no surprise bill, no separate usage invoice — just one balance the owner watches and tops up.
+
+**Referral cut on the cross-vendor network.** When Ottobiz introduces a customer from one shop to another — shoes to go with a dress, a clinic next to a pharmacy — the receiving shop pays the source shop a commission, and Ottobiz takes a cut on top. This line is structurally enforceable in a way primary commerce is not, because the introduction itself happens inside our system. It is also where the network effect lives: every new shop in a neighborhood makes the recommendation graph richer for every shop already on it.
+
+The floor and credits scale linearly with shops on the platform. The referral cut scales with shops × density × complementarity — the layer that compounds. As model and infrastructure costs continue their decline, our cost per credit shrinks while the price the owner pays stays steady; gross margins expand automatically over time.
 
 ## The competitive picture
 
