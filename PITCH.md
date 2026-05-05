@@ -103,6 +103,12 @@ Two things make this layer hard for any competitor to copy. First, every other p
 
 Two things changed at once. AI models are now competent enough to hold a real commercial conversation across multiple parties without supervision. And in Nigeria and across the markets we are building toward, WhatsApp has already become the system of record for commerce — there is no underlying ERP, CRM, or POS to displace. The chat *is* the business. We don't have to fight entrenched software; we get to formalize what is already happening in chat, with AI doing the work the owner currently does by hand.
 
+## The team
+
+**Dr. Jeffrey Otoibhi, Co-founder & CEO.** Medical Doctor and AI researcher. Led the Aletheia AI team that built **SabiYarn**, Nigeria's first decoder-only foundational LLM for African languages, published at AfricaNLP 2025. Recipient of the **ML Collective Compute Grant**. Five years of applied AI work spanning large language models, computer vision, medical imaging, and clinical decision support. Brings the rare combination of African-context AI research depth and clinical-systems rigor — exactly the leadership a multi-party agent system handling real commerce demands.
+
+**David Okpare, Co-founder & CTO.** Ivorian-born Nigerian. Co-authored *SabiYarn* (AfricaNLP 2025). Top contributor to **Instructor**, the open-source Python library for structured LLM outputs (3M+ downloads). Has consulted on production AI systems for venture-backed startups including **Lighttable AI** ($6M pre-seed). Builds the multi-agent orchestration layer Ottobiz is built around, with native fluency across the West African markets the company will expand into.
+
 ## What we have
 
 A production system, in active use, with the customer agent, the persistent supplier-side agent, the back-office coordinator, the products and inventory pipeline, multi-channel reach, and full observability — running today, for real businesses, on real orders.
