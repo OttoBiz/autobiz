@@ -6,7 +6,7 @@ Ottobiz runs the WhatsApp sales desk for small businesses — replying to custom
 
 ## The problem
 
-In our launch markets, commerce happens in WhatsApp. The shop owner is the bottleneck. They are the salesperson, the procurement clerk, the accountant, and the dispatcher — at the same time.
+In Nigeria — our launch market — commerce happens in WhatsApp. The same is true across most of sub-Saharan Africa, and increasingly across Latin America and South Asia. The shop owner is the bottleneck. They are the salesperson, the procurement clerk, the accountant, and the dispatcher — at the same time.
 
 They lose sales because they can't reply fast enough. They forget to follow up with the supplier about a restock. They miss bank alerts and ship the wrong order. They lose receipts. They've already tried hiring an assistant; the assistant cost more than they made and still missed the supplier follow-ups.
 
@@ -26,7 +26,7 @@ To the customer, nothing changes. They message the business on WhatsApp the way 
 
 ## Who we serve
 
-Owners of 1–20 person businesses that sell over WhatsApp:
+Owners of 1–20 person businesses that sell over WhatsApp. We are launching in Nigeria, where the dynamic is sharpest, with a clear path into the rest of sub-Saharan Africa and any market where chat has become the storefront. Today that means:
 
 - Fashion boutiques and resellers
 - FMCG and household goods shops
@@ -54,14 +54,16 @@ The category looks crowded from the outside. Up close, almost every player is do
 
 - **Global WhatsApp commerce platforms** — Wati, Yalo, AiSensy, Interakt, Gallabox, Gupshup, SleekFlow. Inbound chatbots, shared inboxes, and customer re-engagement. SleekFlow's *AgentFlow* ships role-specialized agents (sales, support, analyst); their forthcoming "outbound agent" re-engages *customers* for lead recovery, not suppliers for restocks.
 - **Direct-commerce platforms** — Flowcart (Kenya) is the closest-named overlap on paper; in practice it is conversational commerce focused on click-to-WhatsApp ads, cart recovery, and Shopify/WooCommerce checkout. Customer-facing only.
-- **Africa-specific** — Vendy (YC W22, Lagos) is agentic payments infrastructure and a Meta-approved BSP — a payments rail we coexist with rather than compete against. Bumpa builds storefront tools for small WhatsApp/Instagram sellers. Kayko (Rwanda) does small-business automation at fast-growing scale.
+- **Africa-specific** — **Vendy** (YC W22, Lagos) is agentic payments infrastructure and a Meta-approved BSP — a payments rail we coexist with rather than compete against. **Bumpa** is the strongest Nigerian comparable but operates on the opposite model: a hosted web storefront that pulls customers off WhatsApp onto a separate site, with manual back-office tools the owner has to run. We do the opposite — we keep the customer in chat and replace the owner's operations work entirely. **Kayko** (Rwanda) does small-business automation at fast-growing scale.
 - **The structural threat** — Meta is shipping native AI agents inside WhatsApp Business itself, which will commoditize inbound conversational AI.
 
 ## How we stand out
 
 Every competitor we have examined operates on the **customer side only**: answer questions, take orders, recover carts, re-engage. That is the easier half of running a real business in chat.
 
-Ottobiz operates on **both sides**. Behind every customer reply, a real business has another conversation it has to run — with a supplier to confirm stock, with a rider to book a pickup, with a bank alert to verify a payment, with a partner to chase an exception. Those conversations are asynchronous, multi-party, and stateful. They are also where most lost sales actually happen.
+They also share an architectural assumption we reject: that the customer should leave the conversation to complete the sale — clicking through to a storefront, filling a form, going to a checkout page. In a market where DM-shopping is already the default behaviour, that's friction every step of the way. Ottobiz keeps the customer in chat. The thread is the storefront. The conversation is the checkout. The agent is the salesperson.
+
+Ottobiz also operates on **both sides**. Behind every customer reply, a real business has another conversation it has to run — with a supplier to confirm stock, with a rider to book a pickup, with a bank alert to verify a payment, with a partner to chase an exception. Those conversations are asynchronous, multi-party, and stateful. They are also where most lost sales actually happen.
 
 We hold those conversations in parallel with the customer's, and we stitch the outcomes back together automatically. The supplier who answers forty minutes later lands in the right thread, with the right context, and triggers the right follow-up to the right customer — without the owner touching anything.
 
@@ -69,17 +71,15 @@ That is the difference between a chatbot and an operations team. As Meta commodi
 
 ## The network underneath
 
-Because every Ottobiz-powered shop is already wired into the same coordination layer, those shops naturally form a network. We are building a cross-sell layer on top of it.
+Because every Ottobiz-powered shop is already wired into the same coordination layer, those shops naturally form a network — and on top of that network, Ottobiz introduces customers across shops at the moment of intent.
 
-When a customer buys a dress, their Ottobiz can suggest shoes from the boutique next door, a tailor for adjustments, or a stylist who already serves the same neighborhood. When a customer fills a prescription, their pharmacy's Ottobiz can suggest the nearby clinic, the lab that ran their last test, or a delivery rider who already knows the address. Recommendations are restricted to **complements**, never substitutes — a shop is never offered up against its competitors.
+When a customer buys a dress, their Ottobiz can suggest shoes from the boutique next door, a tailor for adjustments, or a stylist who already serves the same neighborhood. When a customer fills a prescription, their pharmacy's Ottobiz can suggest the nearby clinic, the lab that ran their last test, or a delivery rider who already knows the address. Recommendations are restricted to **complements**, never substitutes — a shop is never offered up against its competitors. Participation is opt-in per shop, per direction, per category.
 
-Cross-sell is **opt-in per shop**. Owners choose whether to participate, on which catalog, and on what commission split. Shops that opt in earn a referral fee on every sale they send to a neighbor. Ottobiz takes a cut.
-
-Two things make this layer hard for any of our competitors to copy quickly. First, every other player on the field runs as a siloed install per merchant — their architecture has no way to see across vendors. Second, recommendations only matter if they convert; ours fire inside the conversation that is already happening, at the moment of intent, on a channel the customer already trusts. Click-through ad-style recommendations don't work in chat. Ours do, because they're delivered by the agent the customer is already talking to.
+Two things make this layer hard for any competitor to copy. First, every other player on the field runs as a siloed install per merchant — their architecture has no way to see across vendors. Second, recommendations only convert when they fire inside the conversation that is already happening, at the moment of intent, on a channel the customer already trusts. Click-through ad-style recommendations don't work in chat. Ours do, because they're delivered by the agent the customer is already talking to.
 
 ## Why now
 
-Two things changed at once. AI models are now competent enough to hold a real commercial conversation across multiple parties without supervision. And in our launch markets, WhatsApp has already become the system of record for commerce — there is no underlying ERP, CRM, or POS to displace. The chat *is* the business. We don't have to fight entrenched software; we get to formalize what is already happening in chat, with AI doing the work the owner currently does by hand.
+Two things changed at once. AI models are now competent enough to hold a real commercial conversation across multiple parties without supervision. And in Nigeria and across the markets we are building toward, WhatsApp has already become the system of record for commerce — there is no underlying ERP, CRM, or POS to displace. The chat *is* the business. We don't have to fight entrenched software; we get to formalize what is already happening in chat, with AI doing the work the owner currently does by hand.
 
 ## What we have
 
