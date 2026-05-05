@@ -1,5 +1,7 @@
 # Ottobiz
 
+**Founded** April 2026 · **Based in** Lagos, Nigeria · **Team** 2 co-founders · **Stage** Pre-seed, building MVP · **Raising** $100,000 · **Launch market** Nigeria
+
 ## In one line
 
 Ottobiz runs the WhatsApp sales desk for small businesses — replying to customers, chasing suppliers, confirming payments, and booking deliveries — all at once, all on its own.
@@ -117,12 +119,67 @@ Two things make this layer hard for any competitor to copy. First, every other p
 
 Two things changed at once. AI models are now competent enough to hold a real commercial conversation across multiple parties without supervision. And in Nigeria and across the markets we are building toward, WhatsApp has already become the system of record for commerce — there is no underlying ERP, CRM, or POS to displace. The chat *is* the business. We don't have to fight entrenched software; we get to formalize what is already happening in chat, with AI doing the work the owner currently does by hand.
 
+## Market validation
+
+Market validation for Ottobiz rests on three layers, none of them aspirational.
+
+**The problem is observable, not hypothetical.** Nigerian commerce already happens in WhatsApp threads — that pattern is established, not something we need to demonstrate. Any Nigerian SME owner can describe the daily reality of dropped sales, forgotten supplier follow-ups, and bank-alert chaos without prompting. The job is to solve it, not to prove it exists.
+
+**Comparable market signal from investors with deep Africa context.** Bumpa ($4M seed), Sabi ($38M raised, $300M valuation), Vendy (YC W22), Wasoko + MaxAB ($526M post-merger valuation), and TradeDepot ($123M raised) have collectively absorbed nine figures of capital building adjacent products for the same merchant base. Investors who underwrite Africa have already validated this segment as venture-fundable. Where each of those companies stopped short — storefronts only, B2B distribution only, payments only, customer-side chatbots only — is exactly where Ottobiz operates.
+
+**Founder proximity to the technical and market context.** Both founders bring direct engagement with the African AI and Nigerian commerce context — Jeffrey through the SabiYarn research that established the technical foundation for Nigerian-language LLMs, David through applied AI systems shipped to production at multiple startups. The defensibility claims in this pitch are not theoretical — they are extensions of work already done.
+
+**Live customer discovery in progress.** Design-partner onboarding begins in Q1. Specific shop-level outcomes, retention signal, and direct quotes will be captured as they become available, and will replace this paragraph in subsequent versions of this pitch.
+
 ## The team
 
 **Dr. Jeffrey Otoibhi, Co-founder & CEO.** Medical Doctor and AI researcher. Led the Aletheia AI team that built **SabiYarn**, Nigeria's first decoder-only foundational LLM for African languages, published at AfricaNLP 2025. Recipient of the **ML Collective Compute Grant**. Five years of applied AI work spanning large language models, computer vision, medical imaging, and clinical decision support. Brings the rare combination of African-context AI research depth and clinical-systems rigor — exactly the leadership a multi-party agent system handling real commerce demands.
 
 **David Okpare, Co-founder & CTO.** Ivorian-born Nigerian. Co-authored *SabiYarn* (AfricaNLP 2025). Top contributor to **Instructor**, the open-source Python library for structured LLM outputs (3M+ downloads). Has consulted on production AI systems for venture-backed startups including **Lighttable AI** ($6M pre-seed). Builds the multi-agent orchestration layer Ottobiz is built around, with native fluency across the West African markets the company will expand into.
 
-## What we have
+## Where we are
 
-A production system, in active use, with the customer agent, the persistent supplier-side agent, the back-office coordinator, the products and inventory pipeline, multi-channel reach, and full observability — running today, for real businesses, on real orders.
+**Three months in, in active build.** Ottobiz has been in development for three months by a two-person founding team. The core architecture is operational — central agent, persistent outbound agent, back-office coordinator, multi-channel routing, products and inventory pipeline, and the task ledger that ties them together. The system runs end-to-end in test scenarios across customer, vendor, and logistics conversations. Observability is in place over every agent run, tool call, and resolution.
+
+**What's still ahead of full launch.** Onboarding the first paying Nigerian shops with hands-on setup, completing the brain ingestion layer (voice notes, bank-SMS reconciliation, historical chat backfill), and validating willingness-to-pay across the customer-discovery cohort. The system is past prototype; it is not yet at GA.
+
+## The plan and the ask
+
+We are raising **$100,000 in pre-seed capital** to take Ottobiz from production system to repeatable revenue in Nigeria over twelve months.
+
+**What the money buys, by quarter:**
+
+- **Q1 (months 1–3): Validation.** Onboard 5–15 design-partner shops with founder-led, hands-on setup. System stable in production. First end-to-end orders processed through real customer–supplier chains. Baseline metrics captured.
+- **Q2 (months 4–6): First paying customers.** Convert design partners to paying. 20–60 shops on the floor + credits model. Validate willingness-to-pay. First word-of-mouth referrals.
+- **Q3 (months 7–9): Acquisition experiments + brain queryability live.** 60–150 paying shops. Test channels: payment-processor partnerships, neighbourhood density plays, community-led signup. Ship the brain queryability layer — owner Q&A, daily briefings, anomaly alerts. Identify the cheapest repeatable acquisition path.
+- **Q4 (months 10–12): Repeatable acquisition + first network conversions.** 150–300 paying shops. Cross-vendor referrals firing. Unit economics validated. Ready to raise a seed round on real Nigerian-shop revenue, retention, and a working network layer.
+
+**Use of funds.** Roughly half is founder runway for a lean two-person operation across twelve months. The remainder splits between infrastructure (AI inference, hosting, observability — all USD-denominated), customer acquisition experiments, and buffer.
+
+**End-of-Year-1 targets.** 100–300 paying Nigerian shops; ~$15–45k ARR; >70% monthly retention on paying shops; tens of thousands of orders processed end-to-end through the agent; first cross-vendor referrals converted; **brain ingestion and queryability layers both shipped within the year**. These are conservative — they reflect a realistic comparison against the slowest credible Nigerian comparable and an honest read of what $100k buys in this market. They are also the foundation for the Year 2 trajectory: 1,500–3,000 paying shops and the first SaaS-challenger module shipped, on a seed round raised against validated Year 1 unit economics.
+
+## How we acquire shops
+
+Acquisition runs on three layers, each with a distinct cost profile and a different role across the first twelve months.
+
+**Founder-led design partnership (Q1–Q2).** The first 60 paying shops are onboarded directly by the founders — selected for **neighbourhood density** (clustered in the same Lagos blocks so cross-vendor referrals can fire as soon as they hit the platform), **category mix** (boutiques, pharmacies, food vendors, salons, electronics), and willingness to feed back into the product. Acquisition cost is founder time; conversion is high because every shop gets hands-on setup.
+
+**Channel partnerships with payment infrastructure (Q3).** Nigeria's payment processors — Paystack, Flutterwave, Vendy, Moniepoint — already have direct relationships with the merchant base we serve. We pursue co-marketing partnerships where they refer their merchants to Ottobiz for the operations layer they don't provide, and we provide them with a structured upsell into their existing customer base. Acquisition cost is revenue share; volume is meaningful.
+
+**Network-driven pull (Q4 onwards).** Once neighbourhood density crosses a threshold, the cross-vendor referral network becomes its own acquisition channel — existing shops pull their neighbours in because referrals only work when the neighbour is also on the platform. Acquisition cost approaches zero; growth shifts from linear to exponential.
+
+Underneath all three sits **community and content**, not as a discrete strategy but as the organic compound of doing the first three well: every shop on Ottobiz is a story we share publicly on Twitter, Instagram, and WhatsApp Status; every founder-led conversation is a recruiting moment.
+
+## Roadmap
+
+The product is being built from day one with a SaaS-challenger mindset — every adjacent tool a Nigerian shop currently uses (storefront, inventory tracker, sales record book, customer database) is something Ottobiz absorbs natively into the chat surface rather than asking the owner to maintain on the side. The roadmap below extends that posture across the full operations stack.
+
+**Year 1 (2026).** Validate Nigeria with 100–300 paying shops; ~$15–45k ARR; retention at >70%. Ship **brain ingestion** (voice notes, bank-SMS reconciliation, historical chat backfill) and **brain queryability** (owner Q&A, daily briefings, anomaly alerts) — both within twelve months of operations. Raise seed round on validated unit economics.
+
+**Year 2 (2027).** Scale Nigeria to 1,500–3,000 paying shops. Ship the **first SaaS-challenger module — procurement / supplier management** — building on the outbound ledger that already exists. Begin Phase 2 preparation — Kenya first.
+
+**Year 3 (2028).** Multi-market presence (Nigeria + Kenya + Ghana). Ship the **second and third SaaS-challenger modules — bookkeeping and CRM**. Network density meaningful in three or more Nigerian cities.
+
+**Year 5 (2030).** $20–40M ARR from Nigeria; $50M+ ARR with Phase 2 markets contributing. Multiple SaaS-challenger modules at scale. Cross-vendor referral revenue at meaningful contribution.
+
+**Year 7 (2032).** $50–100M ARR across Nigeria and Phase 2. Phase 3 expansion under consideration — Francophone West Africa is the natural next step; markets where chat is the storefront and no underlying ERP/CRM exists are the universe. Brain modules approaching parity with the operations layer in revenue contribution.
