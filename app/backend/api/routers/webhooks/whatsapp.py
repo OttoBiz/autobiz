@@ -14,6 +14,7 @@ Importing `chatbot.channels.whatsapp` registers the channel as a side effect.
 """
 
 import asyncio
+import base64
 import json
 import logging
 from datetime import datetime, timezone
@@ -35,7 +36,6 @@ from backend.chatbot.conversations.registry import (
     customer_conversation,
     vendor_conversation,
 )
-from backend.chatbot.utils.file_handler import save_file
 from backend.db import channel_identities
 
 logger = logging.getLogger(__name__)
@@ -43,25 +43,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 
-_MEDIA_EXT = {
-    "image/jpeg": ".jpg",
-    "image/png": ".png",
-    "image/webp": ".webp",
-    "image/gif": ".gif",
-    "application/pdf": ".pdf",
-}
-
-
 async def _materialize_media(
     attachments: list[MediaAttachment],
-    business_id: str,
-    user_id: str,
 ) -> list[dict]:
-    """Pull each attachment's bytes from Meta and persist to local storage.
+    """Pull each attachment's bytes from Meta and stash them inline.
 
-    Returns inbox-shaped media dicts with a fetchable `url`. Skips audio/video
-    (the chat agents can't consume them inline today) and any attachment we
-    fail to download — webhook handling continues with whatever we got.
+    Returns inbox-shaped media dicts carrying base64 `data` so the renderer
+    can build pydantic_ai BinaryContent without round-tripping through the
+    filesystem (the prod container's CWD isn't writable) or relying on
+    Meta's auth-gated media URLs being reachable by the model. Skips
+    audio/video (chat agents can't consume them inline today) and any
+    attachment we fail to download.
     """
     out: list[dict] = []
     for att in attachments:
@@ -75,9 +67,13 @@ async def _materialize_media(
         if downloaded is None:
             continue
         data, mime = downloaded
-        ext = _MEDIA_EXT.get(mime, "")
-        url = await save_file(data, f"{att.media_id}{ext}", business_id, user_id)
-        out.append({"kind": att.kind, "url": url, "mime_type": mime})
+        out.append(
+            {
+                "kind": att.kind,
+                "data": base64.b64encode(data).decode("ascii"),
+                "mime_type": mime,
+            }
+        )
     return out
 
 
@@ -146,7 +142,7 @@ async def whatsapp_webhook(request: Request) -> dict:
             biz = str(sender.business_id)
             cid = str(sender.contact_id)
             text = msg.text or ""
-            media = await _materialize_media(msg.media, biz, cid)
+            media = await _materialize_media(msg.media)
             if not text and not media:
                 # Empty interactive / unsupported media kind — nothing to feed
                 # the agent. 200 so Meta stops retrying.
@@ -187,7 +183,7 @@ async def whatsapp_webhook(request: Request) -> dict:
                 )
             )
             wamid = _wamid(msg)
-            media = await _materialize_media(msg.media, biz, cust)
+            media = await _materialize_media(msg.media)
             convo = customer_conversation(biz, cust)
             inbox.ingest(
                 PartyKey.customer(biz, cust),

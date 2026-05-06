@@ -9,11 +9,15 @@ prompt renderer (mirrors today's outbound.deliver_contact_reply joined input).
 
 from __future__ import annotations
 
+import base64
+import logging
 from typing import Any
 from uuid import UUID
 
-from pydantic_ai import DocumentUrl, ImageUrl
+from pydantic_ai import BinaryContent, DocumentUrl, ImageUrl
 from pydantic_ai.usage import UsageLimits
+
+logger = logging.getLogger(__name__)
 
 from backend.chatbot.agents.central import agent as central_agent
 from backend.chatbot.agents.deps import AgentDeps
@@ -51,18 +55,39 @@ async def _resolve_customer_identity(party: PartyKey) -> ChannelIdentity | None:
 def _media_inputs(payload: dict) -> list[Any]:
     """Convert inbox media entries to pydantic_ai UserContent objects.
 
-    Skips entries with no URL (the webhook couldn't resolve them) and
-    audio/video kinds that the chat agents can't consume directly today.
+    Two carrier shapes are supported:
+    - `data` (base64) + `mime_type` → BinaryContent (used by WhatsApp,
+      where Meta's media URLs are auth-gated and not directly fetchable).
+    - `url` → ImageUrl/DocumentUrl (used by the HTTP channel, where the
+      frontend hosts the file at a public URL).
+
+    Skips audio/video kinds and unparseable entries.
     """
     out: list[Any] = []
     for m in payload.get("media") or []:
+        kind = m.get("kind")
+        if kind not in ("image", "document"):
+            continue
+        data_b64 = m.get("data")
+        if data_b64:
+            try:
+                raw = base64.b64decode(data_b64)
+            except (ValueError, TypeError):
+                logger.warning("skipping media with undecodable data kind=%s", kind)
+                continue
+            out.append(
+                BinaryContent(
+                    data=raw,
+                    media_type=m.get("mime_type") or "application/octet-stream",
+                )
+            )
+            continue
         url = m.get("url")
         if not url:
             continue
-        kind = m.get("kind")
         if kind == "image":
             out.append(ImageUrl(url=url))
-        elif kind == "document":
+        else:
             out.append(DocumentUrl(url=url))
     return out
 
