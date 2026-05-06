@@ -38,9 +38,16 @@ async def http_inbound(request: Request) -> dict:
     biz = str(msg.identity.business_id)
     cust = str(msg.identity.customer_id)
     convo = customer_conversation(biz, cust)
+    media = [
+            {"kind": m.kind, "url": m.url, "mime_type": m.mime_type}
+            for m in msg.media
+            if m.url and m.kind in ("image", "document")
+    ]
     inbox.ingest(
         PartyKey.customer(biz, cust),
-        inbox.make_user_message_item(text=msg.text or "", raw=msg.raw),
+        inbox.make_user_message_item(
+            text=msg.text or "", raw=msg.raw, media=media
+        ),
         dedup_id=None,  # http channel has no native dedup id
         runner=convo.drain,
     )

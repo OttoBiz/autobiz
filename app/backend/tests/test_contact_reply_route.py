@@ -131,5 +131,5 @@ def test_contact_branch_returns_ignored_when_text_is_empty(app_client, monkeypat
     )
 
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "ignored": "contact_no_text"}
+    assert response.json() == {"ok": True, "ignored": "contact_no_content"}
     ingest_mock.assert_not_called()

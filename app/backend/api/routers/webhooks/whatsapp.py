@@ -13,6 +13,7 @@ classifies the sender via `resolve_inbound_sender`, then forks:
 Importing `chatbot.channels.whatsapp` registers the channel as a side effect.
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -22,7 +23,7 @@ from fastapi.responses import PlainTextResponse
 
 import backend.chatbot.channels.whatsapp  # noqa: F401  triggers channel registration
 from backend.chatbot.channels import registry
-from backend.chatbot.channels.base import ChannelIdentity
+from backend.chatbot.channels.base import ChannelIdentity, MediaAttachment
 from backend.chatbot.channels.whatsapp import NonMessageEvent, _whatsapp_bot
 from backend.chatbot.channels.whatsapp_resolver import (
     resolve_inbound_sender,
@@ -34,11 +35,50 @@ from backend.chatbot.conversations.registry import (
     customer_conversation,
     vendor_conversation,
 )
+from backend.chatbot.utils.file_handler import save_file
 from backend.db import channel_identities
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+
+
+_MEDIA_EXT = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "application/pdf": ".pdf",
+}
+
+
+async def _materialize_media(
+    attachments: list[MediaAttachment],
+    business_id: str,
+    user_id: str,
+) -> list[dict]:
+    """Pull each attachment's bytes from Meta and persist to local storage.
+
+    Returns inbox-shaped media dicts with a fetchable `url`. Skips audio/video
+    (the chat agents can't consume them inline today) and any attachment we
+    fail to download — webhook handling continues with whatever we got.
+    """
+    out: list[dict] = []
+    for att in attachments:
+        if att.kind not in ("image", "document"):
+            continue
+        if not att.media_id:
+            continue
+        downloaded = await asyncio.to_thread(
+            _whatsapp_bot.download_media, att.media_id
+        )
+        if downloaded is None:
+            continue
+        data, mime = downloaded
+        ext = _MEDIA_EXT.get(mime, "")
+        url = await save_file(data, f"{att.media_id}{ext}", business_id, user_id)
+        out.append({"kind": att.kind, "url": url, "mime_type": mime})
+    return out
 
 
 def _wamid(msg) -> str | None:
@@ -103,24 +143,26 @@ async def whatsapp_webhook(request: Request) -> dict:
             )
             return {"ok": True, "ignored": "owner_self_message"}
         case "contact":
+            biz = str(sender.business_id)
+            cid = str(sender.contact_id)
             text = msg.text or ""
-            if not text:
-                # Media-only or empty interactive — nothing to feed the agent.
-                # 200 so Meta stops retrying; can revisit when the agent
-                # handles non-text inbound from contacts.
+            media = await _materialize_media(msg.media, biz, cid)
+            if not text and not media:
+                # Empty interactive / unsupported media kind — nothing to feed
+                # the agent. 200 so Meta stops retrying.
                 logger.info(
-                    "contact inbound has no text contact=%s name=%s",
+                    "contact inbound has no usable content contact=%s name=%s",
                     sender.contact_id,
                     sender.contact_name,
                 )
-                return {"ok": True, "ignored": "contact_no_text"}
-            biz = str(sender.business_id)
-            cid = str(sender.contact_id)
+                return {"ok": True, "ignored": "contact_no_content"}
             wamid = _wamid(msg)
             convo = vendor_conversation(biz, cid)
             inbox.ingest(
                 PartyKey.vendor(biz, cid),
-                inbox.make_user_message_item(text=text, raw=msg.raw, dedup_id=wamid),
+                inbox.make_user_message_item(
+                    text=text, raw=msg.raw, dedup_id=wamid, media=media
+                ),
                 dedup_id=wamid,
                 runner=convo.drain,
             )
@@ -145,11 +187,15 @@ async def whatsapp_webhook(request: Request) -> dict:
                 )
             )
             wamid = _wamid(msg)
+            media = await _materialize_media(msg.media, biz, cust)
             convo = customer_conversation(biz, cust)
             inbox.ingest(
                 PartyKey.customer(biz, cust),
                 inbox.make_user_message_item(
-                    text=msg.text or "", raw=msg.raw, dedup_id=wamid
+                    text=msg.text or "",
+                    raw=msg.raw,
+                    dedup_id=wamid,
+                    media=media,
                 ),
                 dedup_id=wamid,
                 runner=convo.drain,
