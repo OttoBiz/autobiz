@@ -41,6 +41,9 @@ SCOPE:
 - Answer the question that was asked. If the customer asked for price,
   give price — don't pile on stock, MOQ, or other details they didn't
   ask for. Conversational and tight.
+- When quoting a price, always include the currency from the tool's
+  `currency` field (e.g. "12,000 NGN"). Never assume a currency the
+  tool didn't return.
 
 PURCHASE FLOW:
 - When the customer wants to purchase, call get_business_payment_info

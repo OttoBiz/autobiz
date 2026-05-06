@@ -42,9 +42,9 @@ async def get_products(
     pool = await get_db()
 
     query = """
-        SELECT id, business_id, name, description, price, stock_quantity,
-               sku, category, attributes, is_active, is_negotiable,
-               floor_price, created_at, updated_at
+        SELECT id, business_id, name, description, price, currency,
+               stock_quantity, sku, category, attributes, is_active,
+               is_negotiable, floor_price, created_at, updated_at
         FROM products
         WHERE is_active = true
     """
