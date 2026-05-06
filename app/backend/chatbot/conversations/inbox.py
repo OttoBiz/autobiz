@@ -34,7 +34,7 @@ from backend.chatbot import _redis_queue
 
 logger = logging.getLogger(__name__)
 
-DRAIN_WINDOW_SECONDS = 10
+DRAIN_WINDOW_SECONDS = 2
 INBOX_TTL_SECONDS = 24 * 60 * 60
 LOCK_TTL_SECONDS = 60
 DEDUP_TTL_SECONDS = 24 * 60 * 60
@@ -47,6 +47,7 @@ class PartyKey:
     `kind` exists so customer and vendor namespaces don't collide if the same UUID
     is reused across roles (extremely unlikely but cheap to guard against).
     """
+
     kind: Literal["customer", "vendor"]
     business_id: str
     party_id: str
@@ -144,7 +145,9 @@ async def _drain_after_window(party: PartyKey, runner: DrainRunner) -> None:
         _SCHEDULED_DRAINS.discard(party)
 
     owner = uuid4().hex
-    if not _redis_queue.acquire_lock(_lock_key(party), owner, ttl_seconds=LOCK_TTL_SECONDS):
+    if not _redis_queue.acquire_lock(
+        _lock_key(party), owner, ttl_seconds=LOCK_TTL_SECONDS
+    ):
         # Another drain is in flight. Mark redrain so it loops on completion.
         _PENDING_REDRAIN.add(party)
         return
