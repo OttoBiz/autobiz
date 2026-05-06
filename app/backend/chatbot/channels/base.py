@@ -28,6 +28,10 @@ class MediaAttachment(BaseModel):
     kind: Literal["image", "audio", "video", "document"]
     url: str | None
     mime_type: str | None
+    # Channel-native media id (e.g. WhatsApp media id). The webhook layer uses
+    # this to pull bytes from the carrier's media API before stashing a
+    # publicly reachable URL in `url`.
+    media_id: str | None = None
 
 
 class InboundMessage(BaseModel):

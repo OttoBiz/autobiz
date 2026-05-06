@@ -23,6 +23,7 @@ from backend.chatbot.channels.base import (
     Channel,
     ChannelIdentity,
     InboundMessage,
+    MediaAttachment,
     WindowPolicy,
 )
 
@@ -43,6 +44,18 @@ class HTTPChannel(Channel):
         channel_user_id = raw.get("channel_user_id") or customer_id
         text = raw.get("text")
         interactive = raw.get("interactive")
+        # Frontend uploaders POST attachments as `[{kind, url, mime_type}, ...]`
+        # alongside `text`. The route layer is responsible for hosting the URL
+        # somewhere the model can fetch.
+        media = [
+            MediaAttachment(
+                kind=m.get("kind"),
+                url=m.get("url"),
+                mime_type=m.get("mime_type"),
+                media_id=m.get("media_id"),
+            )
+            for m in (raw.get("media") or [])
+        ]
 
         identity = ChannelIdentity(
             business_id=business_id,
@@ -54,7 +67,7 @@ class HTTPChannel(Channel):
         return InboundMessage(
             identity=identity,
             text=text,
-            media=[],
+            media=media,
             raw=raw,
             received_at=datetime.now(timezone.utc),
             interactive=interactive,

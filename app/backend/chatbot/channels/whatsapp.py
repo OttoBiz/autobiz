@@ -67,6 +67,7 @@ def _extract_media(message: dict) -> list[MediaAttachment]:
                 kind=kind,  # type: ignore[arg-type]
                 url=None,
                 mime_type=payload.get("mime_type"),
+                media_id=payload.get("id"),
             )
         )
     return attachments
@@ -208,6 +209,46 @@ class WhatsappBot:
         except Exception as exc:
             logger.error("Error sending WhatsApp message: %s", exc)
             return False
+
+
+    def download_media(self, media_id: str) -> tuple[bytes, str] | None:
+        """Resolve a Meta media id to (bytes, mime_type).
+
+        Two-step Cloud API call: GET /<media_id> returns a short-lived URL,
+        which we then fetch with the same bearer token. Returns None on any
+        failure so the caller can fall back to text-only handling.
+        """
+        if not self.page_access_token or not media_id:
+            return None
+        headers = {"Authorization": f"Bearer {self.page_access_token}"}
+        try:
+            meta_resp = requests.get(
+                f"https://graph.facebook.com/v18.0/{media_id}",
+                headers=headers,
+                timeout=10,
+            )
+            if meta_resp.status_code != 200:
+                logger.error(
+                    "WA media metadata fetch failed: %s - %s",
+                    meta_resp.status_code,
+                    meta_resp.text[:300],
+                )
+                return None
+            info = meta_resp.json()
+            url = info.get("url")
+            mime = info.get("mime_type") or "application/octet-stream"
+            if not url:
+                return None
+            bin_resp = requests.get(url, headers=headers, timeout=15)
+            if bin_resp.status_code != 200:
+                logger.error(
+                    "WA media bytes fetch failed: %s", bin_resp.status_code
+                )
+                return None
+            return bin_resp.content, mime
+        except Exception as exc:
+            logger.error("WA media download error: %s", exc)
+            return None
 
 
 _whatsapp_bot = WhatsappBot()
