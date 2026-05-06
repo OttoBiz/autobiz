@@ -9,8 +9,10 @@ prompt renderer (mirrors today's outbound.deliver_contact_reply joined input).
 
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID
 
+from pydantic_ai import DocumentUrl, ImageUrl
 from pydantic_ai.usage import UsageLimits
 
 from backend.chatbot.agents.central import agent as central_agent
@@ -46,16 +48,45 @@ async def _resolve_customer_identity(party: PartyKey) -> ChannelIdentity | None:
     )
 
 
-def _render_customer_prompt(items: list[dict]) -> str:
+def _media_inputs(payload: dict) -> list[Any]:
+    """Convert inbox media entries to pydantic_ai UserContent objects.
+
+    Skips entries with no URL (the webhook couldn't resolve them) and
+    audio/video kinds that the chat agents can't consume directly today.
+    """
+    out: list[Any] = []
+    for m in payload.get("media") or []:
+        url = m.get("url")
+        if not url:
+            continue
+        kind = m.get("kind")
+        if kind == "image":
+            out.append(ImageUrl(url=url))
+        elif kind == "document":
+            out.append(DocumentUrl(url=url))
+    return out
+
+
+def _render_customer_prompt(items: list[dict]) -> Any:
     parts: list[str] = ["Customer messages this turn:"]
+    media: list[Any] = []
     for it in items:
         if it.get("type") == "user_message":
-            text = it.get("payload", {}).get("text") or ""
-            parts.append(f"- {text}")
+            payload = it.get("payload", {})
+            text = payload.get("text") or ""
+            attachments = _media_inputs(payload)
+            if attachments and not text:
+                parts.append("- [attachment]")
+            else:
+                parts.append(f"- {text}")
+            media.extend(attachments)
         elif it.get("type") == "system_event":
             summary = it.get("payload", {}).get("summary") or ""
             parts.append(f"- (system) {summary}")
-    return "\n".join(parts)
+    text_block = "\n".join(parts)
+    if media:
+        return [text_block, *media]
+    return text_block
 
 
 async def _build_customer_deps(party: PartyKey) -> AgentDeps:
@@ -104,15 +135,25 @@ async def _resolve_vendor_identity(party: PartyKey) -> ChannelIdentity | None:
     return await _contact_identity(UUID(party.party_id))
 
 
-def _render_vendor_prompt(items: list[dict]) -> str:
+def _render_vendor_prompt(items: list[dict]) -> Any:
     # Vendor inbox holds only user_message items today (vendor doesn't receive
-    # system_events). Join texts in order, mirroring the old behavior.
-    texts = [
-        it.get("payload", {}).get("text", "").strip()
-        for it in items
-        if it.get("type") == "user_message"
-    ]
-    return "\n".join(t for t in texts if t)
+    # system_events). Join texts in order, and forward any attachments inline
+    # so the outbound agent can read receipts / shipping labels / photos a
+    # vendor sends back.
+    texts: list[str] = []
+    media: list[Any] = []
+    for it in items:
+        if it.get("type") != "user_message":
+            continue
+        payload = it.get("payload", {})
+        text = (payload.get("text") or "").strip()
+        if text:
+            texts.append(text)
+        media.extend(_media_inputs(payload))
+    text_block = "\n".join(texts)
+    if media:
+        return [text_block or "[attachment]", *media]
+    return text_block
 
 
 async def _build_vendor_deps(party: PartyKey) -> OutboundDeps:

@@ -37,8 +37,10 @@ class Conversation:
     # the party has no channel on file (rare for vendor; possible for customer
     # if a webhook never landed).
     resolve_identity: Callable[[PartyKey], Awaitable[ChannelIdentity | None]]
-    # Build the system/user prompt from a list of inbox items.
-    render_prompt: Callable[[list[dict]], str]
+    # Build the system/user prompt from a list of inbox items. Returns either
+    # a plain string or a list (mixed text + pydantic_ai UserContent like
+    # ImageUrl/DocumentUrl) when inbound items carry media.
+    render_prompt: Callable[[list[dict]], Any]
     # Build the agent's deps for this run. Async because vendor deps need DB
     # lookups (open-task ledger) and customer deps stay async for parity.
     build_deps: Callable[[PartyKey], Awaitable[Any]]

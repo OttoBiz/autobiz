@@ -184,11 +184,22 @@ def now_iso() -> str:
 
 
 def make_user_message_item(
-    *, text: str, raw: dict | None = None, dedup_id: str | None = None
+    *,
+    text: str,
+    raw: dict | None = None,
+    dedup_id: str | None = None,
+    media: list[dict] | None = None,
 ) -> dict:
+    """Build an inbox user-message item.
+
+    `media` is a list of `{kind, url, mime_type}` dicts populated by the
+    webhook after it has resolved the channel-native media id to a URL the
+    model can fetch. Stored alongside the text so the conversation drainer
+    can hand both to the agent.
+    """
     return {
         "type": "user_message",
-        "payload": {"text": text, "raw": raw or {}},
+        "payload": {"text": text, "raw": raw or {}, "media": media or []},
         "enqueued_at": now_iso(),
         "dedup_key": dedup_id,
     }
