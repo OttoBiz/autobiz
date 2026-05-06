@@ -44,6 +44,11 @@ class OutboundTaskSummary(BaseModel):
 
     Full dispatch_prompt is fetched on demand via get_task_details(task_key)
     when the vendor's reply is ambiguous and the agent needs more context.
+
+    `state` and `resolved_at` are populated for both running and recently-
+    resolved tasks: a task that succeeded within the grace window stays in
+    the manifest so the agent can recognize a vendor's amendment / correction
+    and call share_update again with the new info.
     """
 
     task_key: str
@@ -51,6 +56,8 @@ class OutboundTaskSummary(BaseModel):
     summary: str
     dispatched_at: datetime
     customer_id: UUID  # so the agent knows which customer this is on behalf of
+    state: Literal["running", "succeeded"] = "running"
+    resolved_at: datetime | None = None
 
 
 _COLUMNS = (
@@ -114,24 +121,60 @@ async def mark_completed(
     customer_context: str | None,
     system_context: str | None,
 ) -> bool:
+    """Resolve or amend a task. Allowed on running OR succeeded rows.
+
+    Vendors often follow up with corrections after their first reply, so
+    share_update may fire more than once per task. The first call flips
+    running → succeeded; later calls refresh the latest customer_context /
+    system_context on the row and bump resolved_at. A separate
+    `outbound_task_updates` table preserves the trail.
+
+    Terminal-but-not-succeeded states (failed, timed_out, cancelled,
+    escalated) stay no-op so a stray late update doesn't reanimate them.
+    """
     if not (customer_context or system_context):
         raise ValueError(
             "mark_completed requires at least one of customer_context or system_context"
         )
 
     pool = await get_db()
-    # Idempotency guard: only running rows transition to succeeded. A second
-    # call (or a race after timeout/cancel) is a no-op.
     query = """
         UPDATE outbound_tasks
         SET state = 'succeeded',
             customer_context = $2,
             system_context = $3,
             resolved_at = NOW()
-        WHERE task_key = $1 AND state = 'running'
+        WHERE task_key = $1 AND state IN ('running', 'succeeded')
     """
     async with pool.acquire() as conn:
         status = await conn.execute(query, task_key, customer_context, system_context)
+    return _rowcount(status) > 0
+
+
+async def insert_task_update(
+    task_key: str,
+    customer_context: str | None,
+    system_context: str | None,
+    content_hash: str,
+) -> bool:
+    """Append one share_update entry to the task's update history.
+
+    Returns False on UNIQUE (task_key, content_hash) conflict — i.e. the
+    agent emitted the same content twice. Callers use that signal to skip
+    the customer-side fan-out (no new info to relay).
+    """
+    pool = await get_db()
+    query = """
+        INSERT INTO outbound_task_updates (
+            task_key, customer_context, system_context, content_hash
+        )
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (task_key, content_hash) DO NOTHING
+    """
+    async with pool.acquire() as conn:
+        status = await conn.execute(
+            query, task_key, customer_context, system_context, content_hash
+        )
     return _rowcount(status) > 0
 
 
@@ -170,25 +213,36 @@ async def get_by_key(task_key: str) -> OutboundTaskRow | None:
     return OutboundTaskRow(**dict(row)) if row else None
 
 
+RESOLVED_GRACE_MINUTES = 90
+
+
 async def list_open_tasks_by_contact(
     business_id: UUID,
     contact_id: UUID,
 ) -> list[OutboundTaskSummary]:
-    """All currently-running tasks for this contact, newest first.
+    """Tasks the agent should still consider for this contact, newest first.
 
-    Returns the lightweight summary projection — what the agent reads on
-    every reply run to decide which (if any) tasks the vendor is answering.
-    Full dispatch_prompt is fetched on demand via get_by_key.
+    Includes both running tasks AND tasks that succeeded within the last
+    `RESOLVED_GRACE_MINUTES`. The grace window keeps recently-resolved tasks
+    visible so the agent can recognize vendor amendments / corrections and
+    call share_update again with the new info instead of dropping the
+    update on the floor. Tasks past the grace window — or in any other
+    terminal state — are excluded.
 
     Tenant-scoped (business_id) for defense-in-depth.
     """
     pool = await get_db()
-    query = """
-        SELECT task_key, contact_role, summary, dispatched_at, customer_id
+    query = f"""
+        SELECT task_key, contact_role, summary, dispatched_at, customer_id,
+               state, resolved_at
         FROM outbound_tasks
         WHERE business_id = $1
           AND contact_id  = $2
-          AND state       = 'running'
+          AND (
+              state = 'running'
+              OR (state = 'succeeded'
+                  AND resolved_at > NOW() - INTERVAL '{RESOLVED_GRACE_MINUTES} minutes')
+          )
         ORDER BY dispatched_at DESC
     """
     async with pool.acquire() as conn:

@@ -147,13 +147,31 @@ def stub_postgres(monkeypatch):
         return False
 
     async def _mark_completed(task_key, customer_context, system_context):
-        if task_key in tasks and tasks[task_key]["state"] == "running":
+        if task_key in tasks and tasks[task_key]["state"] in ("running", "succeeded"):
             tasks[task_key]["state"] = "succeeded"
             tasks[task_key]["customer_context"] = customer_context
             tasks[task_key]["system_context"] = system_context
             tasks[task_key]["resolved_at"] = datetime.now(timezone.utc)
             return True
         return False
+
+    task_updates: list[dict] = []
+
+    async def _insert_task_update(task_key, customer_context, system_context, content_hash):
+        if any(
+            u["task_key"] == task_key and u["content_hash"] == content_hash
+            for u in task_updates
+        ):
+            return False
+        task_updates.append(
+            {
+                "task_key": task_key,
+                "customer_context": customer_context,
+                "system_context": system_context,
+                "content_hash": content_hash,
+            }
+        )
+        return True
 
     async def _mark_failed(task_key, system_context):
         if task_key in tasks:
@@ -170,25 +188,51 @@ def stub_postgres(monkeypatch):
         return OutboundTaskRow(**row) if row else None
 
     async def _list_open_tasks_by_contact(business_id, contact_id):
-        from backend.db.outbound_ledger import OutboundTaskSummary
+        from datetime import timedelta as _td
 
-        return [
-            OutboundTaskSummary(
-                task_key=row["task_key"],
-                contact_role=row["contact_role"],
-                summary=row.get("summary", ""),
-                dispatched_at=row["dispatched_at"],
-                customer_id=row["customer_id"],
+        from backend.db.outbound_ledger import (
+            OutboundTaskSummary,
+            RESOLVED_GRACE_MINUTES,
+        )
+
+        now = datetime.now(timezone.utc)
+        grace = _td(minutes=RESOLVED_GRACE_MINUTES)
+        out: list[OutboundTaskSummary] = []
+        for row in tasks.values():
+            if row.get("contact_id") != contact_id:
+                continue
+            if row.get("business_id") != business_id:
+                continue
+            state = row.get("state")
+            if state == "running":
+                pass
+            elif (
+                state == "succeeded"
+                and row.get("resolved_at") is not None
+                and (now - row["resolved_at"]) < grace
+            ):
+                pass
+            else:
+                continue
+            out.append(
+                OutboundTaskSummary(
+                    task_key=row["task_key"],
+                    contact_role=row["contact_role"],
+                    summary=row.get("summary", ""),
+                    dispatched_at=row["dispatched_at"],
+                    customer_id=row["customer_id"],
+                    state=state,
+                    resolved_at=row.get("resolved_at"),
+                )
             )
-            for row in tasks.values()
-            if row.get("contact_id") == contact_id
-            and row.get("business_id") == business_id
-            and row.get("state") == "running"
-        ]
+        return out
 
     monkeypatch.setattr(outbound_mod.outbound_ledger, "insert_task", _insert_task)
     monkeypatch.setattr(outbound_mod.outbound_ledger, "mark_running", _mark_running)
     monkeypatch.setattr(outbound_mod.outbound_ledger, "mark_completed", _mark_completed)
+    monkeypatch.setattr(
+        outbound_mod.outbound_ledger, "insert_task_update", _insert_task_update
+    )
     monkeypatch.setattr(outbound_mod.outbound_ledger, "mark_failed", _mark_failed)
     monkeypatch.setattr(outbound_mod.outbound_ledger, "get_state", _get_state)
     monkeypatch.setattr(outbound_mod.outbound_ledger, "get_by_key", _get_by_key)

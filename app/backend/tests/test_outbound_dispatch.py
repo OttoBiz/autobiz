@@ -105,6 +105,7 @@ def patch_ledger(monkeypatch):
         get_state=AsyncMock(return_value="running"),
         get_by_key=AsyncMock(return_value=None),
         list_open_tasks_by_contact=AsyncMock(return_value=[]),
+        insert_task_update=AsyncMock(return_value=True),
     )
     monkeypatch.setattr(outbound, "outbound_ledger", fake)
     return fake
@@ -375,125 +376,211 @@ async def test_dispatch_passes_current_depth_to_deps(patch_ledger, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# resolve_tasks tool.
+# share_update tool.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_resolve_tasks_acknowledges_only_running_rows(patch_ledger):
-    # Two items: first ledger update succeeds, second fails (not running).
+async def test_share_update_accepts_only_amendable_rows(patch_ledger):
+    # Two items: first ledger update succeeds, second fails (terminal state).
     patch_ledger.mark_completed = AsyncMock(side_effect=[True, False])
 
     items = [
-        outbound.ResolveItem(task_key="tk-1", customer_context="answer 1"),
-        outbound.ResolveItem(task_key="tk-2", customer_context="answer 2"),
+        outbound.UpdateItem(task_key="tk-1", customer_context="answer 1"),
+        outbound.UpdateItem(task_key="tk-2", customer_context="answer 2"),
     ]
 
-    result = await outbound.resolve_tasks(_ctx(), items)
+    result = await outbound.share_update(_ctx(), items)
 
-    assert result == {"acknowledged": ["tk-1"], "skipped": ["tk-2"]}
+    assert result["skipped"] == ["tk-2"]
+    assert [a["task_key"] for a in result["accepted"]] == ["tk-1"]
+    assert result["accepted"][0]["customer_context"] == "answer 1"
+    assert result["accepted"][0]["content_hash"] == outbound._content_hash("answer 1", None)
     assert patch_ledger.mark_completed.await_count == 2
 
 
 @pytest.mark.asyncio
-async def test_resolve_tasks_skips_items_with_no_context(patch_ledger):
+async def test_share_update_skips_items_with_no_context(patch_ledger):
     patch_ledger.mark_completed = AsyncMock(return_value=True)
 
     items = [
-        outbound.ResolveItem(task_key="tk-empty", customer_context=None, system_context=None),
-        outbound.ResolveItem(task_key="tk-keep", customer_context="ok"),
+        outbound.UpdateItem(task_key="tk-empty", customer_context=None, system_context=None),
+        outbound.UpdateItem(task_key="tk-keep", customer_context="ok"),
     ]
 
-    result = await outbound.resolve_tasks(_ctx(), items)
+    result = await outbound.share_update(_ctx(), items)
 
-    assert result == {"acknowledged": ["tk-keep"], "skipped": ["tk-empty"]}
-    # mark_completed only called for the one with context.
+    assert result["skipped"] == ["tk-empty"]
+    assert [a["task_key"] for a in result["accepted"]] == ["tk-keep"]
     patch_ledger.mark_completed.assert_awaited_once_with("tk-keep", "ok", None)
 
 
 @pytest.mark.asyncio
-async def test_resolve_tasks_empty_input_returns_empty(patch_ledger):
-    result = await outbound.resolve_tasks(_ctx(), [])
-    assert result == {"acknowledged": [], "skipped": []}
+async def test_share_update_empty_input_returns_empty(patch_ledger):
+    result = await outbound.share_update(_ctx(), [])
+    assert result == {"accepted": [], "skipped": []}
     patch_ledger.mark_completed.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_on_resolve_tasks_hook_ingests_per_acknowledged(monkeypatch, patch_ledger):
-    """The hook now ingests a system_event onto each resolved task's
-    customer inbox via `conversations.inbox.ingest`."""
+async def test_share_update_can_be_called_multiple_times_per_task(patch_ledger):
+    """A vendor amendment fires share_update again with the same task_key.
+    Both calls land on `accepted` with distinct content_hashes."""
+    patch_ledger.mark_completed = AsyncMock(return_value=True)
+
+    first = await outbound.share_update(
+        _ctx(), [outbound.UpdateItem(task_key="tk-1", customer_context="10 in stock")]
+    )
+    second = await outbound.share_update(
+        _ctx(), [outbound.UpdateItem(task_key="tk-1", customer_context="actually 5 in stock")]
+    )
+
+    assert first["accepted"][0]["task_key"] == "tk-1"
+    assert second["accepted"][0]["task_key"] == "tk-1"
+    assert (
+        first["accepted"][0]["content_hash"] != second["accepted"][0]["content_hash"]
+    ), "different payloads should hash differently"
+
+
+@pytest.mark.asyncio
+async def test_on_share_update_hook_appends_history_and_ingests(monkeypatch, patch_ledger):
+    """The hook records each accepted update in outbound_task_updates and
+    pushes a system_event to the customer inbox keyed on content_hash."""
     from backend.chatbot.conversations import inbox as conv_inbox
 
-    # Two acknowledged tasks — each one must lookup ledger + ingest once.
     task_a = _make_task_row(task_key="tk-a")
-    task_a = task_a.model_copy(update={"customer_context": "answer-a"})
     task_b = _make_task_row(task_key="tk-b")
-    task_b = task_b.model_copy(update={"customer_context": "answer-b"})
-
     by_key = {"tk-a": task_a, "tk-b": task_b}
     patch_ledger.get_by_key = AsyncMock(side_effect=lambda k: by_key.get(k))
+    insert_history = AsyncMock(return_value=True)
+    patch_ledger.insert_task_update = insert_history
 
     ingest_mock = MagicMock(return_value=True)
     monkeypatch.setattr(conv_inbox, "ingest", ingest_mock)
 
-    result = await outbound._on_resolve_tasks(
+    accepted = [
+        {
+            "task_key": "tk-a",
+            "customer_context": "answer-a",
+            "system_context": None,
+            "content_hash": "hash-a",
+        },
+        {
+            "task_key": "tk-b",
+            "customer_context": "answer-b",
+            "system_context": None,
+            "content_hash": "hash-b",
+        },
+    ]
+
+    result = await outbound._on_share_update(
         _ctx(),
         call=None,
         tool_def=None,
         args={"items": []},
-        result={"acknowledged": ["tk-a", "tk-b"], "skipped": []},
+        result={"accepted": accepted, "skipped": []},
     )
 
-    assert result == {"acknowledged": ["tk-a", "tk-b"], "skipped": []}
+    assert result["accepted"] == accepted
+    assert insert_history.await_count == 2
     assert ingest_mock.call_count == 2
     summaries = sorted(
         call.args[1]["payload"]["summary"] for call in ingest_mock.call_args_list
     )
     assert summaries == ["answer-a", "answer-b"]
+    # Dedup id includes task_key + content_hash so successive distinct
+    # updates aren't squashed at the inbox.
+    dedup_ids = sorted(call.kwargs["dedup_id"] for call in ingest_mock.call_args_list)
+    assert dedup_ids == ["share:tk-a:hash-a", "share:tk-b:hash-b"]
 
 
 @pytest.mark.asyncio
-async def test_on_resolve_tasks_hook_skips_tasks_with_no_customer_context(
-    monkeypatch, patch_ledger
-):
-    """Acknowledged tasks without `customer_context` must NOT enqueue."""
+async def test_on_share_update_hook_skips_when_history_dedups(monkeypatch, patch_ledger):
+    """When insert_task_update returns False (UNIQUE conflict), the hook
+    must NOT re-push the customer event — the same payload was already
+    forwarded once."""
     from backend.chatbot.conversations import inbox as conv_inbox
 
-    task = _make_task_row(task_key="tk-sysonly")
-    # customer_context stays None (system_context only).
-    patch_ledger.get_by_key = AsyncMock(return_value=task)
+    patch_ledger.get_by_key = AsyncMock(return_value=_make_task_row("tk-dup"))
+    patch_ledger.insert_task_update = AsyncMock(return_value=False)
 
     ingest_mock = MagicMock(return_value=True)
     monkeypatch.setattr(conv_inbox, "ingest", ingest_mock)
 
-    result = await outbound._on_resolve_tasks(
+    await outbound._on_share_update(
         _ctx(),
         call=None,
         tool_def=None,
         args={"items": []},
-        result={"acknowledged": ["tk-sysonly"], "skipped": []},
+        result={
+            "accepted": [
+                {
+                    "task_key": "tk-dup",
+                    "customer_context": "same payload",
+                    "system_context": None,
+                    "content_hash": "h",
+                }
+            ],
+            "skipped": [],
+        },
     )
 
-    assert result == {"acknowledged": ["tk-sysonly"], "skipped": []}
     ingest_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_on_resolve_tasks_hook_noop_when_nothing_acknowledged(monkeypatch):
+async def test_on_share_update_hook_skips_items_with_no_customer_context(
+    monkeypatch, patch_ledger
+):
+    """Accepted updates with system_context only must record history but
+    NOT enqueue a customer-side event."""
+    from backend.chatbot.conversations import inbox as conv_inbox
+
+    patch_ledger.get_by_key = AsyncMock(return_value=_make_task_row("tk-sysonly"))
+    insert_history = AsyncMock(return_value=True)
+    patch_ledger.insert_task_update = insert_history
+
+    ingest_mock = MagicMock(return_value=True)
+    monkeypatch.setattr(conv_inbox, "ingest", ingest_mock)
+
+    await outbound._on_share_update(
+        _ctx(),
+        call=None,
+        tool_def=None,
+        args={"items": []},
+        result={
+            "accepted": [
+                {
+                    "task_key": "tk-sysonly",
+                    "customer_context": None,
+                    "system_context": "internal",
+                    "content_hash": "h",
+                }
+            ],
+            "skipped": [],
+        },
+    )
+
+    insert_history.assert_awaited_once()
+    ingest_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_on_share_update_hook_noop_when_nothing_accepted(monkeypatch):
     from backend.chatbot.conversations import inbox as conv_inbox
 
     ingest_mock = MagicMock()
     monkeypatch.setattr(conv_inbox, "ingest", ingest_mock)
 
-    result = await outbound._on_resolve_tasks(
+    result = await outbound._on_share_update(
         _ctx(),
         call=None,
         tool_def=None,
         args={"items": []},
-        result={"acknowledged": [], "skipped": ["tk-x"]},
+        result={"accepted": [], "skipped": ["tk-x"]},
     )
 
-    assert result == {"acknowledged": [], "skipped": ["tk-x"]}
+    assert result == {"accepted": [], "skipped": ["tk-x"]}
     ingest_mock.assert_not_called()
 
 
@@ -521,6 +608,103 @@ async def test_get_task_details_returns_dispatch_prompt(patch_ledger):
 async def test_get_task_details_returns_none_when_missing(patch_ledger):
     patch_ledger.get_by_key = AsyncMock(return_value=None)
     assert await outbound.get_task_details(_ctx(), "missing") is None
+
+
+# ---------------------------------------------------------------------------
+# Regression: vendor amendment after initial resolution must still reach the
+# customer. Before this change, mark_completed gated on state='running' so
+# the second share_update silently no-op'd, and the customer-inbox dedup_id
+# was task-only so even bypassing the gate would have squashed the second
+# event. This test exercises share_update + the after-tool hook end-to-end
+# with an in-memory ledger to make sure both paths now flow through.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_vendor_amendment_after_resolution_reaches_customer(
+    monkeypatch, patch_ledger
+):
+    from backend.chatbot.conversations import inbox as conv_inbox
+
+    # In-memory ledger: one task that starts in 'running'.
+    state = {"state": "running", "customer_context": None, "system_context": None}
+    history: list[tuple[str, str | None, str | None, str]] = []
+
+    async def _mark_completed(task_key, customer_context, system_context):
+        if state["state"] in ("running", "succeeded"):
+            state["state"] = "succeeded"
+            state["customer_context"] = customer_context
+            state["system_context"] = system_context
+            return True
+        return False
+
+    async def _insert_task_update(task_key, customer_context, system_context, content_hash):
+        if any(h[3] == content_hash for h in history):
+            return False
+        history.append((task_key, customer_context, system_context, content_hash))
+        return True
+
+    task_row = _make_task_row(task_key="tk-amend")
+    patch_ledger.mark_completed = AsyncMock(side_effect=_mark_completed)
+    patch_ledger.insert_task_update = AsyncMock(side_effect=_insert_task_update)
+    patch_ledger.get_by_key = AsyncMock(return_value=task_row)
+
+    ingest_mock = MagicMock(return_value=True)
+    monkeypatch.setattr(conv_inbox, "ingest", ingest_mock)
+
+    # First reply: vendor says "10 in stock". share_update + hook.
+    first = await outbound.share_update(
+        _ctx(),
+        [outbound.UpdateItem(task_key="tk-amend", customer_context="10 in stock")],
+    )
+    assert state["state"] == "succeeded"
+    await outbound._on_share_update(
+        _ctx(),
+        call=None,
+        tool_def=None,
+        args={},
+        result=first,
+    )
+
+    # Second reply: vendor amends — "actually only 5". The state is already
+    # 'succeeded', but mark_completed must still accept and the hook must
+    # still fire a fresh customer event with a different dedup_id.
+    second = await outbound.share_update(
+        _ctx(),
+        [outbound.UpdateItem(task_key="tk-amend", customer_context="actually only 5")],
+    )
+    assert second["accepted"], "amendment must be accepted, not skipped"
+    await outbound._on_share_update(
+        _ctx(),
+        call=None,
+        tool_def=None,
+        args={},
+        result=second,
+    )
+
+    # Both updates landed in history with distinct hashes.
+    assert len(history) == 2
+    assert {h[1] for h in history} == {"10 in stock", "actually only 5"}
+    assert history[0][3] != history[1][3]
+
+    # Customer inbox received TWO distinct system_events.
+    assert ingest_mock.call_count == 2
+    summaries = [c.args[1]["payload"]["summary"] for c in ingest_mock.call_args_list]
+    assert summaries == ["10 in stock", "actually only 5"]
+    dedups = [c.kwargs["dedup_id"] for c in ingest_mock.call_args_list]
+    assert dedups[0] != dedups[1]
+
+    # Repeating the SAME amendment a third time must dedup at history and
+    # NOT push a third customer event.
+    third = await outbound.share_update(
+        _ctx(),
+        [outbound.UpdateItem(task_key="tk-amend", customer_context="actually only 5")],
+    )
+    await outbound._on_share_update(
+        _ctx(), call=None, tool_def=None, args={}, result=third
+    )
+    assert len(history) == 2
+    assert ingest_mock.call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -642,4 +826,4 @@ def test_hooks_registered_on_agent():
     registry = outbound._hooks._registry
     assert "after_tool_execute" in registry
     after_entries = registry["after_tool_execute"]
-    assert any("resolve_tasks" in (e.tools or ()) for e in after_entries)
+    assert any("share_update" in (e.tools or ()) for e in after_entries)

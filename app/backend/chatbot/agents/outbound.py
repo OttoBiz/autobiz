@@ -25,6 +25,7 @@ vendor-inbox lock so dispatch and the conversation drain share it.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 from contextlib import contextmanager
@@ -101,24 +102,24 @@ class OutboundDeps(BaseModel):
     current_depth: int = 0
 
 
-class ResolveItem(BaseModel):
-    """One task close in a batch resolve_tasks call."""
+class UpdateItem(BaseModel):
+    """One task update in a batch share_update call."""
 
-    task_key: str = Field(description="The task to mark succeeded.")
+    task_key: str = Field(description="The task this update belongs to.")
     customer_context: str | None = Field(
         default=None,
         description=(
             "Customer-safe summary with concrete answers. Set whenever "
             "there's something to tell the customer; omit when nothing "
-            "customer-facing comes out of this resolution."
+            "customer-facing comes out of this update."
         ),
     )
     system_context: str | None = Field(
         default=None,
         description=(
             "Internal back-office notes (DB updates, restocking, follow-ups). "
-            "Triggers the coordinator agent. Omit when no system-side action "
-            "is needed."
+            "Triggers downstream system actions. Omit when no system-side "
+            "action is needed."
         ),
     )
 
@@ -131,41 +132,50 @@ YOUR INPUT EACH RUN
 - The first run on a NEW thread is an OPENING dispatch from the store
   manager. Its text is internal instructions describing what we need to
   ask {contact_name} — write a single clear, polite outreach in your own
-  voice. Don't echo internal phrasing. Don't call resolve_tasks on this
+  voice. Don't echo internal phrasing. Don't call share_update on this
   run; you haven't heard back yet.
 - Every later run is triggered by {contact_name}'s reply (possibly several
-  messages they sent in quick succession, joined together). Read the
-  manifest of open tasks below, then decide which (if any) their reply
-  resolves.
+  messages they sent in quick succession, joined together). Read the task
+  manifest below — it lists both tasks still awaiting an answer AND tasks
+  you recently resolved (the partner may be amending or correcting one of
+  those). Decide which (if any) their reply maps to.
 
-OPEN TASKS WITH {contact_name}
+TASK MANIFEST WITH {contact_name}
 {open_tasks_block}
 
-WHEN THERE ARE OPEN TASKS
+WHEN THE MANIFEST HAS TASKS
 - Match the partner's reply to one or more tasks above. A single message
   can answer multiple tasks at once.
-- Default to closing. If the partner's reply gives a usable answer to
-  the question we asked, call resolve_tasks immediately — don't demand a
-  more precise wording, don't ask follow-up clarification questions to
-  cosmetically tighten the answer.
+- Default to sharing the update. If the partner's reply gives a usable
+  answer to the question we asked, call share_update immediately — don't
+  demand a more precise wording, don't ask follow-up clarification just
+  to cosmetically tighten the answer.
+- share_update can be called MORE THAN ONCE on the same task. A vendor
+  often replies in stages or corrects what they said earlier ("actually
+  only 5 in stock, not 10", "delivery slipped to Friday"). Whenever new
+  info arrives that the customer should know, call share_update again
+  with the latest customer_context — the system records every update and
+  forwards each one. Recently-resolved tasks remain in this manifest
+  precisely so you can amend them.
 - Only ask a follow-up when a missing field is genuinely needed to ACT
   on the customer's question.
 - A vague non-answer (no commitment, no concrete information) is the one
   case where pushing for specifics is warranted — and only on the field
   that matters.
-- If {contact_name} declines or cannot help, still close the task with
+- If {contact_name} declines or cannot help, still call share_update with
   customer_context describing the outcome.
 - If the manifest summary isn't enough to know what a task was about,
   call get_task_details(task_key) to see the full dispatch prompt.
 
-WHEN THERE ARE NO OPEN TASKS
+WHEN THE MANIFEST IS EMPTY
 - {contact_name} has reached out without a pending request from us. Be
   brief and helpful and reply naturally.
 
-ON CLOSE — for each ResolveItem, fill at least one of customer_context
+ON UPDATE — for each UpdateItem, fill at least one of customer_context
 or system_context:
 - customer_context: customer-safe summary with concrete answers. No
-  hedging, no deferring.
+  hedging, no deferring. Restate the full latest state, don't write a
+  diff — the customer sees each update on its own.
 - system_context: internal notes for back-office actions. Omit if
   nothing system-side needs to happen.
 
@@ -204,13 +214,17 @@ RESPONSE FORMAT
 
 def _format_manifest(tasks: list[OutboundTaskSummary]) -> str:
     if not tasks:
-        return "(none — they reached out unprompted, or every prior task is already closed)"
+        return "(none — they reached out unprompted, or every prior task is past the grace window)"
     lines = []
     for t in tasks:
+        if t.state == "succeeded" and t.resolved_at is not None:
+            status = f"already shared an update {t.resolved_at:%Y-%m-%d %H:%M} — amend if they're correcting"
+        else:
+            status = "awaiting their reply"
         lines.append(
             f"- task_key={t.task_key} | role={t.contact_role} | "
             f"dispatched={t.dispatched_at:%Y-%m-%d %H:%M} | "
-            f"summary: {t.summary}"
+            f"status: {status} | summary: {t.summary}"
         )
     return "\n".join(lines)
 
@@ -218,8 +232,19 @@ def _format_manifest(tasks: list[OutboundTaskSummary]) -> str:
 _hooks: Hooks[OutboundDeps] = Hooks()
 
 
-@_hooks.on.after_tool_execute(tools=["resolve_tasks"])
-async def _on_resolve_tasks(
+def _content_hash(customer_context: str | None, system_context: str | None) -> str:
+    """Stable fingerprint of one share_update payload.
+
+    Used both as the (task_key, content_hash) UNIQUE key in
+    outbound_task_updates and as the customer-inbox dedup_id, so an agent
+    that emits the same content twice fans out exactly once.
+    """
+    payload = f"{customer_context or ''}\x1f{system_context or ''}".encode()
+    return hashlib.sha256(payload).hexdigest()[:16]
+
+
+@_hooks.on.after_tool_execute(tools=["share_update"])
+async def _on_share_update(
     ctx: RunContext[OutboundDeps],
     /,
     *,
@@ -228,9 +253,14 @@ async def _on_resolve_tasks(
     args: dict[str, Any],
     result: Any,
 ) -> Any:
-    """Push a system_event into the customer inbox per resolved task.
+    """Append each accepted update to the history table and push the
+    customer-side system_event for any item with customer_context.
 
-    Lazy imports break the outbound.py <-> conversations.registry cycle.
+    The dedup_id is keyed on the content hash, so a second share_update
+    with the same payload is suppressed at the customer inbox while a
+    correction (different payload) flows through. The history-table insert
+    is `ON CONFLICT DO NOTHING` on the same hash for the same reason.
+
     Each ingest is independent — a per-task error is logged and skipped so
     other tasks still wake their customer.
     """
@@ -239,32 +269,45 @@ async def _on_resolve_tasks(
     from backend.chatbot.conversations.inbox import PartyKey
     from backend.chatbot.conversations.registry import customer_conversation
 
-    acknowledged = result.get("acknowledged", []) if isinstance(result, dict) else []
-    if not acknowledged:
+    accepted = result.get("accepted", []) if isinstance(result, dict) else []
+    if not accepted:
         return result
-    for task_key in acknowledged:
+    for entry in accepted:
+        task_key = entry["task_key"]
+        cust_ctx = entry.get("customer_context")
+        sys_ctx = entry.get("system_context")
+        content_hash = entry["content_hash"]
         try:
+            inserted = await outbound_ledger.insert_task_update(
+                task_key, cust_ctx, sys_ctx, content_hash
+            )
+            if not inserted:
+                # Same payload already recorded — don't re-fan to customer.
+                continue
+            if not cust_ctx:
+                continue
             task = await outbound_ledger.get_by_key(task_key)
-            if task is None or not task.customer_context:
+            if task is None:
                 continue
             biz = str(task.business_id)
             cust = str(task.customer_id)
             convo = customer_conversation(biz, cust)
+            dedup = f"share:{task_key}:{content_hash}"
             conv_inbox.ingest(
                 PartyKey.customer(biz, cust),
                 conv_inbox.make_system_event_item(
-                    summary=task.customer_context,
+                    summary=cust_ctx,
                     source="outbound_reply",
                     contact_name=task.contact_name,
                     contact_role=task.contact_role,
                     task_key=task.task_key,
-                    dedup_id=f"resolve:{task_key}",
+                    dedup_id=dedup,
                 ),
-                dedup_id=f"resolve:{task_key}",
+                dedup_id=dedup,
                 runner=convo.drain,
             )
         except Exception:
-            logger.exception("resolve hook ingest failed task=%s", task_key)
+            logger.exception("share_update hook ingest failed task=%s", task_key)
     return result
 
 
@@ -287,21 +330,25 @@ def _build_instructions(ctx: RunContext[OutboundDeps]) -> str:
 
 
 @outbound_agent.tool
-async def resolve_tasks(
+async def share_update(
     ctx: RunContext[OutboundDeps],
-    items: list[ResolveItem],
-) -> dict[str, list[str]]:
-    """Resolve one or more tasks at once.
+    items: list[UpdateItem],
+) -> dict[str, list[Any]]:
+    """Share one or more updates from the vendor with the customer / system.
 
-    Pass an item per task the partner's reply genuinely resolves. Each item
-    must have at least one of customer_context or system_context. Items
-    that target tasks no longer in `running` state (already cancelled /
-    timed out / closed elsewhere) are silently skipped — the ledger
-    UPDATE only fires on running rows.
+    Call this any time the partner conveys information the customer should
+    know — including corrections or amendments to something they said
+    earlier. The same task_key may appear across multiple share_update
+    calls within the manifest grace window; each new payload is recorded
+    and forwarded once.
+
+    Each item must have at least one of customer_context or system_context.
+    Items targeting tasks in a non-amendable terminal state (failed,
+    timed_out, cancelled, escalated) are reported under `skipped`.
     """
     if not items:
-        return {"acknowledged": [], "skipped": []}
-    acknowledged: list[str] = []
+        return {"accepted": [], "skipped": []}
+    accepted: list[dict[str, Any]] = []
     skipped: list[str] = []
     for item in items:
         if not (item.customer_context or item.system_context):
@@ -310,11 +357,20 @@ async def resolve_tasks(
         ok = await outbound_ledger.mark_completed(
             item.task_key, item.customer_context, item.system_context
         )
-        if ok:
-            acknowledged.append(item.task_key)
-        else:
+        if not ok:
             skipped.append(item.task_key)
-    return {"acknowledged": acknowledged, "skipped": skipped}
+            continue
+        accepted.append(
+            {
+                "task_key": item.task_key,
+                "customer_context": item.customer_context,
+                "system_context": item.system_context,
+                "content_hash": _content_hash(
+                    item.customer_context, item.system_context
+                ),
+            }
+        )
+    return {"accepted": accepted, "skipped": skipped}
 
 
 @outbound_agent.tool
@@ -678,8 +734,8 @@ async def dispatch(
                 await chat_storage.append_contact_history(
                     business_id, contact.id, result.new_messages()
                 )
-                # Opening run shouldn't normally call resolve_tasks — but if
-                # it does, the resolution router already routed everything.
+                # Opening run shouldn't normally call share_update — but if
+                # it does, the share_update hook already routed everything.
                 # Still send the agent's text to the party so they get the
                 # outreach.
                 send_status = await _send_to_party(
@@ -754,7 +810,7 @@ async def deliver_contact_reply(
         await chat_storage.append_contact_history(biz, cid, result.new_messages())
 
         # The agent's plain-text output is the reply to the partner. If
-        # resolve_tasks was called during the run, _on_resolve_tasks already
+        # share_update was called during the run, _on_share_update already
         # fanned out customer-side notifications — the partner just needs
         # the agent's natural reply (no canned ack, no [Ref:] tag since
         # this run might span multiple tasks or none).

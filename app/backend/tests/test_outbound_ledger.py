@@ -122,7 +122,9 @@ async def test_mark_completed_round_trip_returns_true(conn):
     assert result is True
     sql, *params = conn.execute.call_args.args
     assert "state = 'succeeded'" in sql
-    assert "WHERE task_key = $1 AND state = 'running'" in _normalize(sql)
+    # Both running (first resolution) AND succeeded (vendor amendment within
+    # the grace window) rows are amendable.
+    assert "WHERE task_key = $1 AND state IN ('running', 'succeeded')" in _normalize(sql)
     assert params == ["tk-1", "hello", None]
 
 
@@ -277,14 +279,23 @@ async def test_list_open_tasks_by_contact_returns_empty_when_none(conn):
     assert result == []
     sql, *params = conn.fetch.call_args.args
     norm = _normalize(sql)
-    # Projection columns only — not the full _COLUMNS tuple.
-    assert "SELECT task_key, contact_role, summary, dispatched_at, customer_id" in norm
+    # Projection columns now include state + resolved_at so the agent can
+    # tell awaiting-reply from already-resolved-but-amendable rows.
+    assert (
+        "SELECT task_key, contact_role, summary, dispatched_at, customer_id, "
+        "state, resolved_at"
+    ) in norm
     assert "FROM outbound_tasks" in norm
     assert "WHERE business_id = $1" in norm
     assert "AND contact_id = $2" in norm
-    assert "AND state = 'running'" in norm
+    # Running OR recently-resolved within the grace window.
+    assert "state = 'running'" in norm
+    assert "state = 'succeeded'" in norm
+    assert (
+        f"resolved_at > NOW() - INTERVAL '{outbound_ledger.RESOLVED_GRACE_MINUTES} minutes'"
+        in norm
+    )
     assert "ORDER BY dispatched_at DESC" in norm
-    # NOT a get_by_key — should not be limited to 1.
     assert "LIMIT" not in norm
     assert params == [business_id, contact_id]
 
@@ -303,6 +314,8 @@ async def test_list_open_tasks_by_contact_returns_summaries_in_order(conn):
             "summary": "ask about ankara stock",
             "dispatched_at": now,
             "customer_id": customer_id_a,
+            "state": "running",
+            "resolved_at": None,
         },
         {
             "task_key": "tk-older",
@@ -310,6 +323,8 @@ async def test_list_open_tasks_by_contact_returns_summaries_in_order(conn):
             "summary": "confirm shipping window",
             "dispatched_at": earlier,
             "customer_id": customer_id_b,
+            "state": "succeeded",
+            "resolved_at": now - timedelta(minutes=5),
         },
     ]
 
@@ -318,8 +333,35 @@ async def test_list_open_tasks_by_contact_returns_summaries_in_order(conn):
     assert len(rows) == 2
     assert all(isinstance(r, outbound_ledger.OutboundTaskSummary) for r in rows)
     assert rows[0].task_key == "tk-newer"
-    assert rows[0].summary == "ask about ankara stock"
+    assert rows[0].state == "running"
+    assert rows[0].resolved_at is None
     assert rows[1].task_key == "tk-older"
+    assert rows[1].state == "succeeded"
+    assert rows[1].resolved_at is not None
+
+
+@pytest.mark.asyncio
+async def test_insert_task_update_returns_true_on_first_insert(conn):
+    conn.execute.return_value = "INSERT 0 1"
+    inserted = await outbound_ledger.insert_task_update(
+        "tk-1", "answer", None, "hash-a"
+    )
+    assert inserted is True
+    sql, *params = conn.execute.call_args.args
+    norm = _normalize(sql)
+    assert "INSERT INTO outbound_task_updates" in norm
+    assert "ON CONFLICT (task_key, content_hash) DO NOTHING" in norm
+    assert params == ["tk-1", "answer", None, "hash-a"]
+
+
+@pytest.mark.asyncio
+async def test_insert_task_update_returns_false_on_duplicate(conn):
+    # ON CONFLICT DO NOTHING produces "INSERT 0 0".
+    conn.execute.return_value = "INSERT 0 0"
+    inserted = await outbound_ledger.insert_task_update(
+        "tk-1", "answer", None, "hash-a"
+    )
+    assert inserted is False
 
 
 @pytest.mark.asyncio
