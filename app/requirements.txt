@@ -55,3 +55,6 @@ logfire~=4.31
 
 # Auth
 pyjwt[crypto]~=2.9
+
+# Object storage (Cloudflare R2 / S3-compatible)
+boto3~=1.35

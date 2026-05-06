@@ -49,6 +49,17 @@ TIER_FREE = "free"
 TIER_GOLD = "gold"
 TIER_PLATINUM = "platinum"
 
+# Cloudflare R2 / S3-compatible object storage (inbound media uploads).
+# Set R2_PUBLIC_BASE_URL when the bucket is fronted by a public custom domain
+# (e.g. https://media.example.com); otherwise the uploader falls back to a
+# presigned URL valid for R2_PRESIGN_TTL seconds.
+R2_ENDPOINT_URL = os.getenv("R2_ENDPOINT_URL", "")
+R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID", "")
+R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "")
+R2_BUCKET = os.getenv("R2_BUCKET", "")
+R2_PUBLIC_BASE_URL = os.getenv("R2_PUBLIC_BASE_URL", "")
+R2_PRESIGN_TTL = int(os.getenv("R2_PRESIGN_TTL", "3600"))
+
 # Logging
 LOG_FILE = os.getenv("LOG_FILE", "app.log")
 
