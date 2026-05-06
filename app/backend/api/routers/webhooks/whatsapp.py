@@ -36,6 +36,7 @@ from backend.chatbot.conversations.registry import (
     customer_conversation,
     vendor_conversation,
 )
+from backend.chatbot.utils import object_storage
 from backend.db import channel_identities
 
 logger = logging.getLogger(__name__)
@@ -43,16 +44,26 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 
+_R2_MEDIA_EXT = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "application/pdf": ".pdf",
+}
+
+
 async def _materialize_media(
     attachments: list[MediaAttachment],
+    business_id: str,
+    party_id: str,
 ) -> list[dict]:
-    """Pull each attachment's bytes from Meta and stash them inline.
+    """Pull each attachment's bytes from Meta and rehost for the agent.
 
-    Returns inbox-shaped media dicts carrying base64 `data` so the renderer
-    can build pydantic_ai BinaryContent without round-tripping through the
-    filesystem (the prod container's CWD isn't writable) or relying on
-    Meta's auth-gated media URLs being reachable by the model. Skips
-    audio/video (chat agents can't consume them inline today) and any
+    Preferred path: upload to R2 (S3-compatible) and return a fetchable URL,
+    so the renderer hands the agent an `ImageUrl` / `DocumentUrl`. Fallback
+    path (R2 not configured, or upload failed): base64-inline the bytes for
+    the renderer to wrap in `BinaryContent`. Skips audio/video and any
     attachment we fail to download.
     """
     out: list[dict] = []
@@ -67,13 +78,22 @@ async def _materialize_media(
         if downloaded is None:
             continue
         data, mime = downloaded
-        out.append(
-            {
-                "kind": att.kind,
-                "data": base64.b64encode(data).decode("ascii"),
-                "mime_type": mime,
-            }
-        )
+
+        url: str | None = None
+        if object_storage.is_configured():
+            ext = _R2_MEDIA_EXT.get(mime, "")
+            key = f"inbound/whatsapp/{business_id}/{party_id}/{att.media_id}{ext}"
+            url = await asyncio.to_thread(
+                object_storage.upload_bytes, data, key, mime
+            )
+
+        entry: dict = {"kind": att.kind, "mime_type": mime}
+        if url:
+            entry["url"] = url
+        else:
+            # Inline fallback so dev and tests work without R2.
+            entry["data"] = base64.b64encode(data).decode("ascii")
+        out.append(entry)
     return out
 
 
@@ -142,7 +162,7 @@ async def whatsapp_webhook(request: Request) -> dict:
             biz = str(sender.business_id)
             cid = str(sender.contact_id)
             text = msg.text or ""
-            media = await _materialize_media(msg.media)
+            media = await _materialize_media(msg.media, biz, cid)
             if not text and not media:
                 # Empty interactive / unsupported media kind — nothing to feed
                 # the agent. 200 so Meta stops retrying.
@@ -183,7 +203,7 @@ async def whatsapp_webhook(request: Request) -> dict:
                 )
             )
             wamid = _wamid(msg)
-            media = await _materialize_media(msg.media)
+            media = await _materialize_media(msg.media, biz, cust)
             convo = customer_conversation(biz, cust)
             inbox.ingest(
                 PartyKey.customer(biz, cust),
