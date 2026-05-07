@@ -903,26 +903,6 @@ async def deliver_contact_reply(
     if not joined:
         return "empty inbound — nothing to run agent on"
 
-    # Log each inbound message to the multiparty event ledger BEFORE the
-    # agent runs, so search calls during the run see the new turn. customer_id
-    # is unknown here — the agent's search resolves it during reasoning.
-    for raw in messages:
-        text = raw.strip()
-        if not text:
-            continue
-        try:
-            await events.insert_event(
-                business_id=biz,
-                actor="contact",
-                direction="in",
-                thread_id=f"contact:{cid}",
-                content=text,
-                contact_id=cid,
-            )
-        except Exception:
-            logger.exception("events log failed (vendor inbound) contact=%s", cid)
-    events_search.bump_tenant(biz)
-
     with _maybe_span(
         "outbound.deliver_contact_reply",
         contact_id=str(cid),

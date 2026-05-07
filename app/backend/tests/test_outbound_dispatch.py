@@ -1032,14 +1032,22 @@ async def test_send_to_party_writes_to_event_ledger(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_deliver_contact_reply_logs_inbound_to_ledger(
-    patch_ledger, patch_chat_storage, patch_contacts, monkeypatch
-):
-    """Vendor inbound text logged to events BEFORE agent run, so a
-    find_customer_context call inside the run can see it."""
+async def test_conversation_drain_logs_inbound_and_outbound_to_ledger(monkeypatch):
+    """The live multiparty drain path (Conversation.drain) must log every
+    inbound user_message to the ledger before agent.run, and the agent's
+    outbound text after a successful send. system_event items are NOT
+    logged (they're already journaled at their fan-out site).
+
+    This is the path the unified vendor inbox actually uses; the older
+    `deliver_contact_reply` helper is no longer the live entry.
+    """
+    from backend.chatbot.conversations import conversation as conv_mod
+    from backend.chatbot.conversations.conversation import Conversation
+    from backend.chatbot.conversations.inbox import PartyKey
+
     biz = uuid4()
-    contact = _make_contact(business_id=biz)
-    patch_contacts.get_by_id = AsyncMock(return_value=contact)
+    contact_id = uuid4()
+    party = PartyKey.vendor(str(biz), str(contact_id))
 
     inserted: list[dict[str, Any]] = []
 
@@ -1047,29 +1055,131 @@ async def test_deliver_contact_reply_logs_inbound_to_ledger(
         inserted.append(kwargs)
         return len(inserted)
 
-    monkeypatch.setattr(outbound.events, "insert_event", _capture)
-    monkeypatch.setattr(outbound.events_search, "bump_tenant", lambda biz: None)
+    monkeypatch.setattr(conv_mod.events_db, "insert_event", _capture)
+    monkeypatch.setattr(conv_mod.events_search, "bump_tenant", lambda biz: None)
 
-    monkeypatch.setattr(
-        outbound.outbound_agent,
-        "run",
-        AsyncMock(return_value=SimpleNamespace(output="ack", new_messages=lambda: [])),
+    fake_identity = SimpleNamespace(channel="console")
+
+    async def _resolve(_):
+        return fake_identity
+
+    async def _load_history(_):
+        return []
+
+    async def _append_history(_p, _msgs):
+        return None
+
+    async def _build_deps(_):
+        return SimpleNamespace()
+
+    sent: list[tuple[Any, str]] = []
+
+    async def _send(identity, text):
+        sent.append((identity, text))
+
+    fake_agent = SimpleNamespace(
+        run=AsyncMock(
+            return_value=SimpleNamespace(
+                output="ack vendor", new_messages=lambda: []
+            )
+        )
     )
-    monkeypatch.setattr(outbound, "_send_to_party", AsyncMock(return_value=None))
 
-    await outbound.deliver_contact_reply(
-        biz, contact.id, ["address noted", "delivery going out today"]
+    convo = Conversation(
+        party=party,
+        agent=fake_agent,  # type: ignore[arg-type]
+        load_history=_load_history,
+        append_history=_append_history,
+        resolve_identity=_resolve,
+        render_prompt=lambda items: "rendered",
+        build_deps=_build_deps,
+        send=_send,
     )
 
-    # Both inbound messages logged with actor=contact, direction=in.
-    inbound_only = [r for r in inserted if r["actor"] == "contact" and r["direction"] == "in"]
-    assert len(inbound_only) == 2
-    contents = [r["content"] for r in inbound_only]
-    assert "address noted" in contents
-    assert "delivery going out today" in contents
-    # customer_id is NULL on inbound (agent resolves via search).
-    assert all(r.get("customer_id") is None for r in inbound_only)
-    assert all(r["thread_id"] == f"contact:{contact.id}" for r in inbound_only)
+    items = [
+        {"type": "user_message", "payload": {"text": "address noted"}},
+        {"type": "user_message", "payload": {"text": "delivery going out today"}},
+        # system_event item must NOT be logged here — it's already journaled
+        # at the share_update / surface_to_customer fanout site.
+        {"type": "system_event", "payload": {"summary": "internal note"}},
+    ]
+
+    await convo.drain(party, items)
+
+    inbound = [r for r in inserted if r["direction"] == "in"]
+    outbound_rows = [r for r in inserted if r["direction"] == "out"]
+
+    assert [r["content"] for r in inbound] == ["address noted", "delivery going out today"]
+    assert all(r["actor"] == "contact" for r in inbound)
+    assert all(r.get("customer_id") is None for r in inbound)
+    assert all(r["thread_id"] == f"contact:{contact_id}" for r in inbound)
+
+    # Outbound reply logged once with the agent's text.
+    assert len(outbound_rows) == 1
+    assert outbound_rows[0]["content"] == "ack vendor"
+    assert outbound_rows[0]["actor"] == "business"
+    assert sent == [(fake_identity, "ack vendor")]
+
+
+@pytest.mark.asyncio
+async def test_conversation_drain_customer_side_logs_with_customer_id(monkeypatch):
+    """For a customer party, inbound is actor='customer' and customer_id
+    is known at write time (party_id IS the customer)."""
+    from backend.chatbot.conversations import conversation as conv_mod
+    from backend.chatbot.conversations.conversation import Conversation
+    from backend.chatbot.conversations.inbox import PartyKey
+
+    biz = uuid4()
+    customer_id = uuid4()
+    party = PartyKey.customer(str(biz), str(customer_id))
+
+    inserted: list[dict[str, Any]] = []
+
+    async def _capture(**kwargs):
+        inserted.append(kwargs)
+        return len(inserted)
+
+    monkeypatch.setattr(conv_mod.events_db, "insert_event", _capture)
+    monkeypatch.setattr(conv_mod.events_search, "bump_tenant", lambda biz: None)
+
+    fake_identity = SimpleNamespace(channel="console")
+    fake_agent = SimpleNamespace(
+        run=AsyncMock(
+            return_value=SimpleNamespace(
+                output="hi! looking into your order.", new_messages=lambda: []
+            )
+        )
+    )
+
+    convo = Conversation(
+        party=party,
+        agent=fake_agent,  # type: ignore[arg-type]
+        load_history=AsyncMock(return_value=[]),
+        append_history=AsyncMock(),
+        resolve_identity=AsyncMock(return_value=fake_identity),
+        render_prompt=lambda items: "rendered",
+        build_deps=AsyncMock(return_value=SimpleNamespace()),
+        send=AsyncMock(),
+    )
+
+    await convo.drain(
+        party,
+        [{"type": "user_message", "payload": {"text": "where's my Oxford order?"}}],
+    )
+
+    assert any(
+        r["actor"] == "customer"
+        and r["direction"] == "in"
+        and r["customer_id"] == customer_id
+        and r["thread_id"] == f"customer:{customer_id}"
+        for r in inserted
+    )
+    assert any(
+        r["actor"] == "business"
+        and r["direction"] == "out"
+        and r["customer_id"] == customer_id
+        for r in inserted
+    )
 
 
 # ---------------------------------------------------------------------------
