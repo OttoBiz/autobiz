@@ -28,6 +28,11 @@ from backend.chatbot.agents import outbound
 from backend.db.contacts import Contact
 from backend.db.outbound_ledger import OutboundTaskRow, OutboundTaskSummary
 
+# Captured at import time so tests that need to exercise the real
+# `_send_to_party` (e.g. event-ledger write coverage) can restore it past
+# the autouse `patch_transport` fixture's AsyncMock.
+_REAL_SEND_TO_PARTY = outbound._send_to_party
+
 
 def _make_contact(business_id: UUID | None = None) -> Contact:
     now = datetime.now(timezone.utc)
@@ -109,6 +114,14 @@ def patch_ledger(monkeypatch):
     )
     monkeypatch.setattr(outbound, "outbound_ledger", fake)
     return fake
+
+
+@pytest.fixture(autouse=True)
+def patch_events(monkeypatch):
+    """Default: no-op events log + bump_tenant. Tests that exercise the
+    multiparty ledger flow swap these with real fakes."""
+    monkeypatch.setattr(outbound.events, "insert_event", AsyncMock(return_value=1))
+    monkeypatch.setattr(outbound.events_search, "bump_tenant", lambda biz: None)
 
 
 @pytest.fixture(autouse=True)
@@ -815,6 +828,248 @@ async def test_deliver_contact_reply_handles_empty_messages_list(
     assert "empty inbound" in result_blank
 
     run_mock.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# find_customer_context — agent's search-driven disambiguation tool.
+# Exercises the full ledger write → bm25 search → cluster expansion path
+# through the real events_search module (no stubs at the search layer).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_find_customer_context_disambiguates_two_customers_via_ledger(
+    monkeypatch,
+):
+    """Multi-customer vendor scenario from the screenshot.
+
+    A vendor handles orders for two customers. We seed the ledger with
+    distinct events per customer, then call find_customer_context with a
+    phrase only one customer's events match. The tool must return that
+    customer first with their recent events expanded.
+    """
+    from backend.db import events as events_db
+    from backend.db import events_search
+
+    biz = uuid4()
+    customer_oxford = uuid4()
+    customer_ankara = uuid4()
+    contact_id = uuid4()
+
+    # Seed the in-memory event store the search reads from.
+    seeded: list[events_db.EventRow] = []
+
+    def _seed(
+        customer_id: UUID | None,
+        content: str,
+        actor: str = "contact",
+        direction: str = "in",
+        age_minutes: int = 5,
+    ) -> None:
+        seeded.append(
+            events_db.EventRow(
+                id=len(seeded) + 1,
+                business_id=biz,
+                customer_id=customer_id,
+                contact_id=contact_id,
+                task_key=None,
+                thread_id=f"contact:{contact_id}",
+                actor=actor,  # type: ignore[arg-type]
+                direction=direction,  # type: ignore[arg-type]
+                content=content,
+                provider_message_id=None,
+                created_at=datetime.now(timezone.utc) - timedelta(minutes=age_minutes),
+            )
+        )
+
+    _seed(
+        customer_oxford,
+        "customer asked about Oxford shoes size 15 for 1 Justice Coker Estate",
+        actor="customer",
+        age_minutes=20,
+    )
+    _seed(
+        customer_oxford,
+        "dispatched Oxford shoes order to vendor",
+        actor="business",
+        direction="out",
+        age_minutes=18,
+    )
+    _seed(
+        customer_ankara,
+        "customer asked about ankara fabric purple 6 yards",
+        actor="customer",
+        age_minutes=15,
+    )
+
+    async def fake_list(business_id, *, limit=5000):
+        return [r for r in seeded if r.business_id == business_id]
+
+    async def fake_list_for_customer(business_id, customer_id, *, limit=20):
+        return [
+            r
+            for r in seeded
+            if r.business_id == business_id and r.customer_id == customer_id
+        ][:limit]
+
+    monkeypatch.setattr(events_db, "list_recent_for_business", fake_list)
+    monkeypatch.setattr(events_db, "list_recent_for_customer", fake_list_for_customer)
+
+    # Stub the per-cluster expansion lookups.
+    from backend.db import db_utils, outbound_ledger
+
+    async def fake_user(uid):
+        if uid == str(customer_oxford):
+            return {"id": uid, "name": "Alice (Oxford order)"}
+        if uid == str(customer_ankara):
+            return {"id": uid, "name": "Bola (Ankara order)"}
+        return None
+
+    monkeypatch.setattr(db_utils, "get_user_by_id", fake_user)
+    monkeypatch.setattr(
+        outbound_ledger, "get_pending_for_customer", AsyncMock(return_value=[])
+    )
+
+    # Reset search caches so this test is hermetic.
+    events_search._versions.clear()
+    events_search._indexes.clear()
+    events_search.bump_tenant(biz)
+
+    deps = outbound.OutboundDeps(
+        business_id=biz,
+        contact_id=contact_id,
+        contact_name="Vendor X",
+        contact_role="vendor",
+    )
+    ctx = SimpleNamespace(deps=deps)
+
+    # Vendor reply was: "address noted, delivery going out for the size 15".
+    # Agent searches with the distinguishing phrase.
+    results = await outbound.find_customer_context(
+        ctx, "size 15 1 Justice Coker delivery", limit=3
+    )
+
+    assert results, "search must return at least one cluster"
+    top = results[0]
+    assert top["customer_id"] == str(customer_oxford), (
+        f"Oxford customer must rank first; got {top['customer_id']}"
+    )
+    assert top["customer_name"] == "Alice (Oxford order)"
+    # Recent events for the matched customer are surfaced for context.
+    contents = [e["content"] for e in top["recent_events"]]
+    assert any("Oxford" in c for c in contents)
+    # The unrelated customer's events must NOT bleed into the top cluster.
+    assert not any("ankara" in c.lower() for c in contents)
+
+
+@pytest.mark.asyncio
+async def test_send_to_party_writes_to_event_ledger(monkeypatch):
+    """Outbound vendor send must append a 'business→contact' event row."""
+    # Restore the real _send_to_party past the autouse `patch_transport`
+    # mock, so this test exercises the actual ledger-write code path.
+    monkeypatch.setattr(outbound, "_send_to_party", _REAL_SEND_TO_PARTY)
+
+    inserted: list[dict[str, Any]] = []
+
+    async def _capture(**kwargs):
+        inserted.append(kwargs)
+        return 1
+
+    monkeypatch.setattr(outbound.events, "insert_event", _capture)
+    bumps: list[UUID] = []
+    monkeypatch.setattr(
+        outbound.events_search, "bump_tenant", lambda biz: bumps.append(biz)
+    )
+
+    biz = uuid4()
+    contact_id = uuid4()
+    customer_id = uuid4()
+
+    monkeypatch.setattr(
+        outbound,
+        "_contact_identity",
+        AsyncMock(
+            return_value=outbound.ChannelIdentity(
+                business_id=str(biz),
+                customer_id=str(contact_id),
+                channel="console",
+                channel_user_id="vendor-wa-1",
+                last_inbound_at=None,
+                channel_business_id=None,
+            )
+        ),
+    )
+
+    # Stub channel send + dispatcher so transport doesn't actually fire.
+    fake_channel = SimpleNamespace(send=AsyncMock(return_value=None))
+    monkeypatch.setattr(outbound.registry, "get", lambda channel_name: fake_channel)
+    monkeypatch.setattr(
+        outbound.messaging_dispatcher,
+        "dispatch_to_party",
+        AsyncMock(return_value=None),
+    )
+
+    status = await outbound._send_to_party(
+        business_id=biz,
+        contact_id=contact_id,
+        text="hi vendor please confirm size",
+        task_key="tk-XYZ",
+        customer_id=customer_id,
+    )
+
+    assert status is None
+    assert len(inserted) == 1
+    row = inserted[0]
+    assert row["business_id"] == biz
+    assert row["actor"] == "business"
+    assert row["direction"] == "out"
+    assert row["thread_id"] == f"contact:{contact_id}"
+    assert row["content"] == "hi vendor please confirm size"
+    assert row["customer_id"] == customer_id
+    assert row["contact_id"] == contact_id
+    assert row["task_key"] == "tk-XYZ"
+    assert bumps == [biz], "tenant cache must be bumped after a send"
+
+
+@pytest.mark.asyncio
+async def test_deliver_contact_reply_logs_inbound_to_ledger(
+    patch_ledger, patch_chat_storage, patch_contacts, monkeypatch
+):
+    """Vendor inbound text logged to events BEFORE agent run, so a
+    find_customer_context call inside the run can see it."""
+    biz = uuid4()
+    contact = _make_contact(business_id=biz)
+    patch_contacts.get_by_id = AsyncMock(return_value=contact)
+
+    inserted: list[dict[str, Any]] = []
+
+    async def _capture(**kwargs):
+        inserted.append(kwargs)
+        return len(inserted)
+
+    monkeypatch.setattr(outbound.events, "insert_event", _capture)
+    monkeypatch.setattr(outbound.events_search, "bump_tenant", lambda biz: None)
+
+    monkeypatch.setattr(
+        outbound.outbound_agent,
+        "run",
+        AsyncMock(return_value=SimpleNamespace(output="ack", new_messages=lambda: [])),
+    )
+    monkeypatch.setattr(outbound, "_send_to_party", AsyncMock(return_value=None))
+
+    await outbound.deliver_contact_reply(
+        biz, contact.id, ["address noted", "delivery going out today"]
+    )
+
+    # Both inbound messages logged with actor=contact, direction=in.
+    inbound_only = [r for r in inserted if r["actor"] == "contact" and r["direction"] == "in"]
+    assert len(inbound_only) == 2
+    contents = [r["content"] for r in inbound_only]
+    assert "address noted" in contents
+    assert "delivery going out today" in contents
+    # customer_id is NULL on inbound (agent resolves via search).
+    assert all(r.get("customer_id") is None for r in inbound_only)
+    assert all(r["thread_id"] == f"contact:{contact.id}" for r in inbound_only)
 
 
 # ---------------------------------------------------------------------------

@@ -44,6 +44,9 @@ textual~=8.2
 # Utilities
 tiktoken~=0.8
 
+# Lexical retrieval over the multiparty event ledger
+bm25s~=0.3
+
 # File Processing
 PyPDF2~=3.0
 pdfplumber~=0.10

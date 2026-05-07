@@ -49,7 +49,7 @@ from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity
 from backend.chatbot.messaging import dispatcher as messaging_dispatcher
 from backend.config import MODEL_NAME
-from backend.db import chat_storage, contacts, db_utils, outbound_ledger
+from backend.db import chat_storage, contacts, db_utils, events, events_search, outbound_ledger
 from backend.db.outbound_ledger import OutboundTaskSummary
 
 logger = logging.getLogger(__name__)
@@ -170,6 +170,21 @@ WHEN THE MANIFEST HAS TASKS
 WHEN THE MANIFEST IS EMPTY
 - {contact_name} has reached out without a pending request from us. Be
   brief and helpful and reply naturally.
+
+DISAMBIGUATING WHO A REPLY IS ABOUT
+- A vendor often handles many of our customers. When their reply could
+  belong to more than one customer — or when the manifest doesn't carry
+  enough customer context (e.g. you need a name, an order detail, or
+  any prior turn) — call find_customer_context with the most distinctive
+  phrase from their message (an address, an order id, a product, a
+  customer name they mentioned). It returns candidate customers grouped
+  with their recent turns and open tasks.
+- Pick the customer whose recent events match. If two are plausible,
+  ask the vendor a tight clarifying question grounded in the retrieved
+  context ("the order for 1 Justice Coker Estate, size 15 — yes?"),
+  then act on their next reply.
+- Once you've picked a customer, pass that customer_id to surface_to_customer
+  when relaying news that isn't already covered by a share_update payload.
 
 ON UPDATE — for each UpdateItem, fill at least one of customer_context
 or system_context:
@@ -306,6 +321,22 @@ async def _on_share_update(
                 dedup_id=dedup,
                 runner=convo.drain,
             )
+            try:
+                await events.insert_event(
+                    business_id=task.business_id,
+                    actor="business",
+                    direction="out",
+                    thread_id=f"customer:{cust}",
+                    content=cust_ctx,
+                    customer_id=task.customer_id,
+                    contact_id=task.contact_id,
+                    task_key=task.task_key,
+                )
+                events_search.bump_tenant(task.business_id)
+            except Exception:
+                logger.exception(
+                    "events log failed (share_update fanout) task=%s", task_key
+                )
         except Exception:
             logger.exception("share_update hook ingest failed task=%s", task_key)
     return result
@@ -371,6 +402,39 @@ async def share_update(
             }
         )
     return {"accepted": accepted, "skipped": skipped}
+
+
+@outbound_agent.tool
+async def find_customer_context(
+    ctx: RunContext[OutboundDeps], query: str, limit: int = 5
+) -> list[dict[str, Any]]:
+    """Search the multiparty event ledger for customers matching `query`.
+
+    Use this whenever the partner's reply could plausibly belong to more
+    than one customer, or whenever an instruction says "this customer"
+    without naming who. Returns up to `limit` candidate customers, each
+    with their recent multiparty turns (vendor side + customer side) and
+    any open outbound task summaries — the minimum useful set for picking
+    or asking the partner to confirm.
+
+    Results are clustered by customer_id; an entry with customer_id=None
+    is unattributed traffic (e.g. a vendor's unprompted message that
+    hasn't been tied to a customer yet) — read those as candidates to
+    attribute by content.
+    """
+    clusters = await events_search.find_customer_clusters(
+        ctx.deps.business_id, query, limit=limit
+    )
+    return [
+        {
+            "customer_id": str(c.customer_id) if c.customer_id else None,
+            "customer_name": c.customer_name,
+            "score": c.score,
+            "recent_events": c.recent_events,
+            "open_task_summaries": c.open_task_summaries,
+        }
+        for c in clusters
+    ]
 
 
 @outbound_agent.tool
@@ -532,14 +596,21 @@ async def escalate_to_operator(
 
 @outbound_agent.tool
 async def surface_to_customer(
-    ctx: RunContext[OutboundDeps], summary: str
+    ctx: RunContext[OutboundDeps],
+    summary: str,
+    customer_id: UUID | None = None,
 ) -> dict[str, Any]:
     """Push a system_event into the customer inbox for central_agent to phrase.
 
-    Use only when the customer needs to know something NOT already covered
-    by a resolved task's customer_context — duplication would surface twice.
+    Pass `customer_id` explicitly when the run isn't bound to a customer
+    (vendor-initiated thread, or one vendor handling multiple customers).
+    The agent typically gets this id from `find_customer_context`. When
+    omitted, falls back to the run's bound `customer_id`; if neither is
+    available, returns `no_customer_context` so the agent can search and
+    retry.
     """
-    if ctx.deps.customer_id is None:
+    target_customer_id = customer_id or ctx.deps.customer_id
+    if target_customer_id is None:
         return {"ok": False, "reason": "no_customer_context"}
     # Lazy import — conversations.registry imports from this module.
     from backend.chatbot.conversations import inbox as conv_inbox
@@ -547,7 +618,7 @@ async def surface_to_customer(
     from backend.chatbot.conversations.registry import customer_conversation
 
     biz = str(ctx.deps.business_id)
-    cust = str(ctx.deps.customer_id)
+    cust = str(target_customer_id)
     convo = customer_conversation(biz, cust)
     dedup = f"surface:{uuid4().hex}"
     conv_inbox.ingest(
@@ -560,6 +631,19 @@ async def surface_to_customer(
         dedup_id=dedup,
         runner=convo.drain,
     )
+    try:
+        await events.insert_event(
+            business_id=ctx.deps.business_id,
+            actor="business",
+            direction="out",
+            thread_id=f"customer:{cust}",
+            content=summary,
+            customer_id=target_customer_id,
+            contact_id=ctx.deps.contact_id,
+        )
+        events_search.bump_tenant(ctx.deps.business_id)
+    except Exception:
+        logger.exception("events log failed (surface_to_customer)")
     return {"ok": True}
 
 
@@ -602,7 +686,12 @@ async def _contact_identity(contact_id: UUID) -> ChannelIdentity | None:
 
 
 async def _send_to_party(
-    *, contact_id: UUID, text: str, task_key: str | None = None
+    *,
+    business_id: UUID,
+    contact_id: UUID,
+    text: str,
+    task_key: str | None = None,
+    customer_id: UUID | None = None,
 ) -> str | None:
     """Send `text` to the contact. Returns None on success, status on failure.
 
@@ -610,6 +699,11 @@ async def _send_to_party(
     used on opening runs so the partner can disambiguate which thread their
     reply is for. On reply runs we have no single task_key (the run could
     have closed several at once or none), so we omit the ref.
+
+    On successful send the message is appended to the multiparty event
+    ledger (`events`) so subsequent retrieval can find it. Logging failures
+    are swallowed (best-effort): the agent already sent the message, the
+    ledger is observability and will heal on the next dispatch.
     """
     party_identity = await _contact_identity(contact_id)
     if party_identity is None:
@@ -636,6 +730,21 @@ async def _send_to_party(
         except Exception as exc:
             logger.exception("send_to_party failed contact=%s", contact_id)
             return f"dispatch failed: {exc}"
+
+    try:
+        await events.insert_event(
+            business_id=business_id,
+            actor="business",
+            direction="out",
+            thread_id=f"contact:{contact_id}",
+            content=text,
+            customer_id=customer_id,
+            contact_id=contact_id,
+            task_key=task_key,
+        )
+        events_search.bump_tenant(business_id)
+    except Exception:
+        logger.exception("events log failed (vendor send) contact=%s", contact_id)
     return None
 
 
@@ -739,7 +848,11 @@ async def dispatch(
                 # Still send the agent's text to the party so they get the
                 # outreach.
                 send_status = await _send_to_party(
-                    contact_id=contact.id, text=result.output, task_key=task_key
+                    business_id=business_id,
+                    contact_id=contact.id,
+                    text=result.output,
+                    task_key=task_key,
+                    customer_id=customer_id,
                 )
                 if send_status is not None:
                     logger.warning(
@@ -790,6 +903,26 @@ async def deliver_contact_reply(
     if not joined:
         return "empty inbound — nothing to run agent on"
 
+    # Log each inbound message to the multiparty event ledger BEFORE the
+    # agent runs, so search calls during the run see the new turn. customer_id
+    # is unknown here — the agent's search resolves it during reasoning.
+    for raw in messages:
+        text = raw.strip()
+        if not text:
+            continue
+        try:
+            await events.insert_event(
+                business_id=biz,
+                actor="contact",
+                direction="in",
+                thread_id=f"contact:{cid}",
+                content=text,
+                contact_id=cid,
+            )
+        except Exception:
+            logger.exception("events log failed (vendor inbound) contact=%s", cid)
+    events_search.bump_tenant(biz)
+
     with _maybe_span(
         "outbound.deliver_contact_reply",
         contact_id=str(cid),
@@ -814,7 +947,9 @@ async def deliver_contact_reply(
         # fanned out customer-side notifications — the partner just needs
         # the agent's natural reply (no canned ack, no [Ref:] tag since
         # this run might span multiple tasks or none).
-        send_status = await _send_to_party(contact_id=cid, text=result.output)
+        send_status = await _send_to_party(
+            business_id=biz, contact_id=cid, text=result.output
+        )
         if send_status is not None:
             logger.warning(
                 "contact reply send failed contact=%s status=%s", cid, send_status
