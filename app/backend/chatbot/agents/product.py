@@ -6,7 +6,7 @@ from pydantic_ai import Agent, RunContext
 
 from backend.chatbot.agents.deps import AgentDeps
 from backend.config import MODEL_NAME
-from backend.db.db_utils import get_business_info, get_products
+from backend.db.db_utils import get_products
 
 product_agent = Agent(
     model=MODEL_NAME,
@@ -45,12 +45,6 @@ SCOPE:
   `currency` field (e.g. "12,000 NGN"). Never assume a currency the
   tool didn't return.
 
-PURCHASE FLOW:
-- When the customer wants to purchase, call get_business_payment_info
-  ONCE for bank details and share them. If the response says payment
-  isn't configured, tell the customer payment isn't set up yet — do
-  not retry.
-
 UPSELLING:
 - When a requested product is unavailable, suggest up to two
   complementary or alternative products from what the tool returned.
@@ -79,36 +73,3 @@ async def get_product_info(
         return [{"error": f"Could not fetch products: {e}"}]
 
 
-@product_agent.tool
-async def get_business_payment_info(
-    ctx: RunContext[AgentDeps],
-) -> Dict[str, Any]:
-    """Get the vendor's bank/payment details so the customer can pay.
-
-    Returns a dict with `configured: True` and bank fields when set up, or
-    `configured: False` with a `message` when the vendor hasn't entered
-    payment details yet — call ONCE per turn; the response is final.
-    """
-    business = await get_business_info(str(ctx.deps.business_id))
-    if not business:
-        return {
-            "configured": False,
-            "message": "Business record not found.",
-        }
-
-    bank_name = business.get("bank_name") or ""
-    account_number = business.get("bank_account_number") or ""
-    account_name = business.get("bank_account_name") or ""
-
-    if not (bank_name and account_number):
-        return {
-            "configured": False,
-            "message": "The vendor hasn't set up bank payment details yet.",
-        }
-
-    return {
-        "configured": True,
-        "bank_name": bank_name,
-        "bank_account_number": account_number,
-        "bank_account_name": account_name,
-    }

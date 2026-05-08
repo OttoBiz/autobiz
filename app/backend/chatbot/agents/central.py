@@ -8,6 +8,7 @@ from pydantic_ai import Agent, RunContext
 from backend.chatbot.agents.deps import AgentDeps
 from backend.config import MODEL_NAME
 from backend.db import contacts
+from backend.db.db_utils import get_business_info
 
 SUBAGENT_TIMEOUT_SECONDS = 30
 
@@ -83,7 +84,6 @@ async def _handle_outbound(
     contact_id: UUID | None = None,
 ) -> dict[str, Any]:
     from backend.chatbot.agents.outbound import dispatch
-    from backend.db.db_utils import get_business_info
 
     if contact_id is None:
         return {
@@ -222,6 +222,12 @@ Standing rules:
   phases the customer has already implicitly committed to. Their intent
   to buy is in force from the moment they ask about a product — they
   shouldn't re-authorize each step.
+- Pay phase entry. When the customer commits to a purchase (says "I
+  want to buy X", confirms quantity, asks for account details), call
+  `get_business_payment_info` same-turn. If `configured: true`, share
+  the bank fields. If `configured: false`, dispatch outbound to the
+  vendor for the details same-turn — never relay the gap to the
+  customer.
 - Partial vendor reply → re-dispatch same-turn for the gap. If the
   vendor answered part of a question and a known field is still blank
   (delivery free but no timeline; payment received but no pickup info),
@@ -245,6 +251,35 @@ Standing rules:
 - State you carry, not phrases you parse. Decide the next dispatch from
   the order's current phase and open items, not from the literal
   wording of the customer's last message.
+
+DON'T REPORT PROBLEMS — act on them.
+The customer doesn't care about missing config, verification limits,
+or vendor-side gaps. Reporting those is a churn driver. If something
+is blocked on our side, you act on it; you don't narrate it.
+- Missing config → dispatch, don't disclose. If a tool returns "not
+  configured / not set up / not available" for something the customer
+  needs (payment details, delivery options, stock metadata), dispatch
+  outbound to the vendor in the SAME TURN to fill it. Tell the
+  customer what's happening ("getting payment details from the vendor
+  now"), never what's missing ("payment isn't set up on the vendor
+  side").
+- Asks for info from the customer go in as direct next steps, not as
+  workarounds for a limitation. Don't preface with "I can't…", "from
+  our side…", or "without X I can't…" — drop the problem framing.
+  "Send me the receipt and I'll verify it" beats "I can't verify
+  without a receipt".
+- Conflicts → context + path forward, not "double-check." When the
+  vendor and customer disagree (vendor says payment not received,
+  customer says they paid), name the likely cause (banking transfers
+  can take 5-15 min to settle), request a receipt to trace it, and
+  re-dispatch a status check to the vendor. Move the situation
+  forward; don't bounce it back.
+- Never forward subagent prose verbatim. Internal status fields
+  ("Status: Not confirmed / Reason: …"), system rules ("Per
+  verification rules…"), or orchestrator vocabulary ("escalate /
+  orchestrator / vendor side / our side") get rewritten in customer
+  voice. Read the subagent result for the facts; write your own
+  reply.
 
 DON'T ASK FOR DATA WE ALREADY HAVE:
 - The customer's identity (customer_id, name, prior orders, contact
@@ -380,6 +415,36 @@ async def find_tasks(
         }
         for r in rows
     ]
+
+
+@agent.tool
+async def get_business_payment_info(
+    ctx: RunContext[AgentDeps],
+) -> dict[str, Any]:
+    """Fetch the vendor's payment details so the customer can pay.
+
+    Call when the customer commits to a purchase ("I want to buy X",
+    confirms quantity, asks for account details). Returns either:
+      - {"configured": true, "bank_name", "bank_account_number",
+         "bank_account_name"} — share these with the customer.
+      - {"configured": false, "next_action": "dispatch_outbound"} —
+         do NOT mention this to the customer. Dispatch outbound to
+         the vendor for payment details same-turn.
+    """
+    business = await get_business_info(str(ctx.deps.business_id))
+    bank_name = (business or {}).get("bank_name") or ""
+    account_number = (business or {}).get("bank_account_number") or ""
+    account_name = (business or {}).get("bank_account_name") or ""
+
+    if not (bank_name and account_number):
+        return {"configured": False, "next_action": "dispatch_outbound"}
+
+    return {
+        "configured": True,
+        "bank_name": bank_name,
+        "bank_account_number": account_number,
+        "bank_account_name": account_name,
+    }
 
 
 async def _dispatch_task(deps: AgentDeps, task: Task) -> dict[str, Any]:
