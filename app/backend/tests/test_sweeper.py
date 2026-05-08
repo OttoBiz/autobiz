@@ -1,47 +1,75 @@
 """Outbound timeout sweeper tests."""
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 
 from backend.chatbot import sweeper
 
 
+def _row(*, customer_id=None, contact_name="Vendor X", task_key="tk-1"):
+    return {
+        "task_key": task_key,
+        "business_id": uuid4(),
+        "customer_id": customer_id or uuid4(),
+        "contact_id": uuid4(),
+        "contact_name": contact_name,
+        "contact_role": "vendor",
+    }
+
+
 @pytest.mark.asyncio
-async def test_sweep_once_alerts_per_timed_out_key(monkeypatch):
+async def test_sweep_once_notifies_each_timed_out_customer(monkeypatch):
+    rows = [_row(task_key="tk-a"), _row(task_key="tk-b")]
     monkeypatch.setattr(
         sweeper.outbound_ledger,
         "sweep_timeouts",
-        AsyncMock(return_value=["k1", "k2"]),
+        AsyncMock(return_value=rows),
     )
-    alert = AsyncMock()
-    monkeypatch.setattr(sweeper, "alert_operator", alert)
+    notify = AsyncMock()
+    monkeypatch.setattr(sweeper, "_notify_customer_of_timeout", notify)
 
     result = await sweeper.sweep_once()
 
-    assert result == ["k1", "k2"]
-    assert alert.await_count == 2
-    assert alert.await_args_list[0].args == ("k1",)
-    assert alert.await_args_list[0].kwargs == {"reason": "timeout"}
-    assert alert.await_args_list[1].args == ("k2",)
-    assert alert.await_args_list[1].kwargs == {"reason": "timeout"}
+    assert result == rows
+    assert notify.await_count == 2
 
 
 @pytest.mark.asyncio
-async def test_sweep_once_no_timeouts_no_alerts(monkeypatch):
+async def test_sweep_once_isolates_per_row_failures(monkeypatch):
+    """A failed customer notification on one row must not skip the rest."""
+    rows = [_row(task_key="tk-a"), _row(task_key="tk-b")]
+    monkeypatch.setattr(
+        sweeper.outbound_ledger,
+        "sweep_timeouts",
+        AsyncMock(return_value=rows),
+    )
+    side_effects = [RuntimeError("inbox down"), None]
+    notify = AsyncMock(side_effect=side_effects)
+    monkeypatch.setattr(sweeper, "_notify_customer_of_timeout", notify)
+
+    result = await sweeper.sweep_once()
+
+    assert result == rows
+    assert notify.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_sweep_once_no_timeouts_no_notifications(monkeypatch):
     monkeypatch.setattr(
         sweeper.outbound_ledger,
         "sweep_timeouts",
         AsyncMock(return_value=[]),
     )
-    alert = AsyncMock()
-    monkeypatch.setattr(sweeper, "alert_operator", alert)
+    notify = AsyncMock()
+    monkeypatch.setattr(sweeper, "_notify_customer_of_timeout", notify)
 
     result = await sweeper.sweep_once()
 
     assert result == []
-    alert.assert_not_awaited()
+    notify.assert_not_awaited()
 
 
 @pytest.mark.asyncio

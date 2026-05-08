@@ -1,6 +1,6 @@
 """Tests for the outbound agent + dispatch helper.
 
-The outbound module is the contact-side counterpart of central. The unit of
+Outbound module is the contact-side counterpart of central. The unit of
 conversation is a contact; tasks are tags inside that conversation. Tests
 mock the ledger, contacts, chat_storage, agent runs, transport, and the
 contact_inbox lock — verifying the wiring without touching DB/Redis/LLM.
@@ -26,11 +26,14 @@ import pytest
 
 from backend.chatbot.agents import outbound
 from backend.db.contacts import Contact
-from backend.db.outbound_ledger import OutboundTaskRow, OutboundTaskSummary
+from backend.db.outbound_ledger import (
+    LogWriteError,
+    OutboundTaskRow,
+    OutboundTaskSummary,
+)
 
-# Captured at import time so tests that need to exercise the real
-# `_send_to_party` (e.g. event-ledger write coverage) can restore it past
-# the autouse `patch_transport` fixture's AsyncMock.
+# Captured at import time so tests that need the real `_send_to_party`
+# can restore it past the autouse `patch_transport` fixture's AsyncMock.
 _REAL_SEND_TO_PARTY = outbound._send_to_party
 
 
@@ -52,8 +55,8 @@ def _make_contact(business_id: UUID | None = None) -> Contact:
 
 def _make_task_row(
     task_key: str = "tk-1",
-    state: str = "running",
-    summary: str = "ask vendor for stock",
+    log: str = "## Dispatched\nBrief: ask vendor for stock",
+    closed_at: datetime | None = None,
 ) -> OutboundTaskRow:
     now = datetime.now(timezone.utc)
     return OutboundTaskRow(
@@ -64,30 +67,27 @@ def _make_task_row(
         contact_name="Vendor 1",
         contact_role="vendor",
         initiated_by="customer",
-        dispatch_prompt="ask vendor for stock",
-        summary=summary,
-        state=state,  # type: ignore[arg-type]
-        customer_context=None,
-        system_context=None,
+        log=log,
         dispatched_at=now,
-        resolved_at=None,
         timeout_at=now + timedelta(minutes=5),
+        closed_at=closed_at,
     )
 
 
-def _make_summary(task_key: str = "tk-1", summary: str = "ask vendor") -> OutboundTaskSummary:
+def _make_summary(
+    task_key: str = "tk-1", log_excerpt: str = "## Dispatched\nBrief: ask vendor"
+) -> OutboundTaskSummary:
     return OutboundTaskSummary(
         task_key=task_key,
         contact_role="vendor",
-        summary=summary,
+        log_excerpt=log_excerpt,
         dispatched_at=datetime.now(timezone.utc),
         customer_id=uuid4(),
     )
 
 
 # ---------------------------------------------------------------------------
-# Shared fixtures — every test needs a stubbed ledger, contacts, chat_storage,
-# inbox lock, and transport. The agent.run is patched per-test.
+# Fixtures
 # ---------------------------------------------------------------------------
 
 
@@ -104,24 +104,17 @@ def patch_contacts(monkeypatch):
 def patch_ledger(monkeypatch):
     fake = SimpleNamespace(
         insert_task=AsyncMock(return_value=None),
-        mark_running=AsyncMock(return_value=True),
-        mark_completed=AsyncMock(return_value=True),
-        mark_failed=AsyncMock(return_value=True),
-        get_state=AsyncMock(return_value="running"),
+        close_task=AsyncMock(return_value=True),
         get_by_key=AsyncMock(return_value=None),
         list_open_tasks_by_contact=AsyncMock(return_value=[]),
-        insert_task_update=AsyncMock(return_value=True),
+        append_to_log=AsyncMock(return_value="updated log"),
+        replace_in_log=AsyncMock(return_value="updated log"),
+        remove_from_log=AsyncMock(return_value="updated log"),
+        append_if_open_and_not_recent_dup=AsyncMock(return_value=(True, None)),
+        find_tasks=AsyncMock(return_value=[]),
     )
     monkeypatch.setattr(outbound, "outbound_ledger", fake)
     return fake
-
-
-@pytest.fixture(autouse=True)
-def patch_events(monkeypatch):
-    """Default: no-op events log + bump_tenant. Tests that exercise the
-    multiparty ledger flow swap these with real fakes."""
-    monkeypatch.setattr(outbound.events, "insert_event", AsyncMock(return_value=1))
-    monkeypatch.setattr(outbound.events_search, "bump_tenant", lambda biz: None)
 
 
 @pytest.fixture(autouse=True)
@@ -136,11 +129,6 @@ def patch_chat_storage(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def patch_redis_queue(monkeypatch):
-    """Stub the per-contact mutex so dispatch's _run() proceeds immediately.
-
-    The vendor-side lock now lives in `_redis_queue.acquire_lock` /
-    `release_lock`; the unified inbox uses the same primitives.
-    """
     monkeypatch.setattr(
         outbound._redis_queue, "acquire_lock", lambda key, owner, ttl_seconds: True
     )
@@ -151,8 +139,8 @@ def patch_redis_queue(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def patch_transport(monkeypatch):
-    """Default the transport to no-op success — tests that care about the
-    send path swap this with their own AsyncMock."""
+    """Default transport to no-op success — tests that need to exercise the
+    real send path swap with `_REAL_SEND_TO_PARTY`."""
     monkeypatch.setattr(outbound, "_send_to_party", AsyncMock(return_value=None))
 
 
@@ -168,20 +156,16 @@ def _ctx(deps: outbound.OutboundDeps | None = None) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# dispatch — opening run.
+# dispatch — opening run
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_dispatch_inserts_ledger_row_and_returns_task_key(
-    patch_ledger, patch_contacts, monkeypatch
-):
+async def test_dispatch_inserts_task_with_seeded_log(patch_ledger, patch_contacts, monkeypatch):
     monkeypatch.setattr(
         outbound.outbound_agent,
         "run",
-        AsyncMock(
-            return_value=SimpleNamespace(output="ok", new_messages=lambda: [])
-        ),
+        AsyncMock(return_value=SimpleNamespace(output="ok", new_messages=lambda: [])),
     )
 
     business_id = uuid4()
@@ -195,122 +179,26 @@ async def test_dispatch_inserts_ledger_row_and_returns_task_key(
         contact_id=contact.id,
         initiated_by="customer",
         dispatch_prompt="ask vendor for stock",
-        business_name="Acme",
     )
 
     assert isinstance(task_key, str)
     assert len(task_key) == 32
     UUID(hex=task_key)
-
     patch_ledger.insert_task.assert_awaited_once()
     kwargs = patch_ledger.insert_task.await_args.kwargs
     assert kwargs["task_key"] == task_key
     assert kwargs["business_id"] == business_id
     assert kwargs["customer_id"] == customer_id
-    assert kwargs["contact_id"] == contact.id
-    assert kwargs["contact_name"] == contact.name
-    assert kwargs["contact_role"] == contact.role
-    assert kwargs["initiated_by"] == "customer"
     assert kwargs["dispatch_prompt"] == "ask vendor for stock"
-    assert "summary" in kwargs
-    assert "timeout_at" in kwargs
+    # No `summary` kwarg in the new signature.
+    assert "summary" not in kwargs
 
     for _ in range(5):
         await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio
-async def test_dispatch_uses_provided_summary(patch_ledger, monkeypatch):
-    monkeypatch.setattr(
-        outbound.outbound_agent,
-        "run",
-        AsyncMock(
-            return_value=SimpleNamespace(output="ok", new_messages=lambda: [])
-        ),
-    )
-
-    await outbound.dispatch(
-        business_id=uuid4(),
-        customer_id=uuid4(),
-        contact_id=uuid4(),
-        initiated_by="customer",
-        dispatch_prompt="ask vendor for stock — full long prompt body",
-        summary="my custom headline",
-    )
-
-    kwargs = patch_ledger.insert_task.await_args.kwargs
-    assert kwargs["summary"] == "my custom headline"
-
-    for _ in range(5):
-        await asyncio.sleep(0)
-
-
-@pytest.mark.asyncio
-async def test_dispatch_derives_summary_when_omitted(patch_ledger, monkeypatch):
-    monkeypatch.setattr(
-        outbound.outbound_agent,
-        "run",
-        AsyncMock(
-            return_value=SimpleNamespace(output="ok", new_messages=lambda: [])
-        ),
-    )
-
-    long_prompt = (
-        "Please reach out to the vendor and find out whether they have the "
-        "newest ankara collection in stock and what the wholesale price is."
-    )
-
-    await outbound.dispatch(
-        business_id=uuid4(),
-        customer_id=uuid4(),
-        contact_id=uuid4(),
-        initiated_by="customer",
-        dispatch_prompt=long_prompt,
-    )
-
-    # No summary was passed — the harness uses the dispatch_prompt verbatim.
-    # No synthetic truncation; the agent is responsible for shorter summaries
-    # via the explicit `summary` kwarg when readability matters.
-    summary = patch_ledger.insert_task.await_args.kwargs["summary"]
-    assert summary == long_prompt
-
-    for _ in range(5):
-        await asyncio.sleep(0)
-
-
-@pytest.mark.asyncio
-async def test_dispatch_spawns_run_that_marks_running_then_runs_agent(
-    patch_ledger, monkeypatch
-):
-    order: list[str] = []
-
-    async def _mark_running(task_key: str) -> bool:
-        order.append("mark_running")
-        return True
-
-    async def _run(prompt, deps, message_history=None):
-        order.append("agent.run")
-        return SimpleNamespace(output="hi vendor", new_messages=lambda: [])
-
-    patch_ledger.mark_running = AsyncMock(side_effect=_mark_running)
-    monkeypatch.setattr(outbound.outbound_agent, "run", AsyncMock(side_effect=_run))
-
-    await outbound.dispatch(
-        business_id=uuid4(),
-        customer_id=uuid4(),
-        contact_id=uuid4(),
-        initiated_by="customer",
-        dispatch_prompt="hi",
-    )
-
-    for _ in range(5):
-        await asyncio.sleep(0)
-
-    assert order == ["mark_running", "agent.run"]
-
-
-@pytest.mark.asyncio
-async def test_dispatch_marks_failed_on_agent_exception(patch_ledger, monkeypatch):
+async def test_dispatch_closes_task_on_agent_exception(patch_ledger, monkeypatch):
     async def _boom(prompt, deps, message_history=None):
         raise RuntimeError("model exploded")
 
@@ -327,9 +215,10 @@ async def test_dispatch_marks_failed_on_agent_exception(patch_ledger, monkeypatc
     for _ in range(5):
         await asyncio.sleep(0)
 
-    patch_ledger.mark_failed.assert_awaited_once()
-    kwargs = patch_ledger.mark_failed.await_args.kwargs
-    assert kwargs["system_context"] == "model exploded"
+    patch_ledger.close_task.assert_awaited_once()
+    kwargs = patch_ledger.close_task.await_args.kwargs
+    assert kwargs["reason"] == "dispatch_failed"
+    assert "model exploded" in kwargs["final_log_entry"]
 
 
 @pytest.mark.asyncio
@@ -363,110 +252,94 @@ async def test_dispatch_rejects_at_max_depth(patch_ledger, monkeypatch):
         )
 
 
+# ---------------------------------------------------------------------------
+# share_update — log append + customer fan-out wrapper
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_dispatch_passes_current_depth_to_deps(patch_ledger, monkeypatch):
-    captured: dict[str, Any] = {}
+async def test_share_update_accepts_open_task_with_relay(patch_ledger):
+    patch_ledger.append_if_open_and_not_recent_dup = AsyncMock(return_value=(True, None))
+    items = [
+        outbound.UpdateItem(task_key="tk-1", relay_to_customer="vendor confirmed size 15"),
+    ]
+    result = await outbound.share_update(_ctx(), items)
 
-    async def _capture(prompt, deps, message_history=None):
-        captured["deps"] = deps
-        return SimpleNamespace(output="ok", new_messages=lambda: [])
+    assert result["skipped"] == []
+    assert len(result["accepted"]) == 1
+    accepted = result["accepted"][0]
+    assert accepted["task_key"] == "tk-1"
+    assert accepted["relay_to_customer"] == "vendor confirmed size 15"
+    assert accepted["content_hash"] == outbound._content_hash("vendor confirmed size 15")
 
-    monkeypatch.setattr(outbound.outbound_agent, "run", AsyncMock(side_effect=_capture))
+    # Wrapper called the ledger primitive with a section that includes the relay text.
+    section = patch_ledger.append_if_open_and_not_recent_dup.await_args.args[1]
+    assert "## Relayed to customer" in section
+    assert "vendor confirmed size 15" in section
 
-    await outbound.dispatch(
-        business_id=uuid4(),
-        customer_id=uuid4(),
-        contact_id=uuid4(),
-        initiated_by="customer",
-        dispatch_prompt="hi",
-        parent_depth=1,
+
+@pytest.mark.asyncio
+async def test_share_update_skips_closed_task(patch_ledger):
+    patch_ledger.append_if_open_and_not_recent_dup = AsyncMock(return_value=(False, "task_closed"))
+    items = [outbound.UpdateItem(task_key="tk-closed", relay_to_customer="late update")]
+    result = await outbound.share_update(_ctx(), items)
+    assert result["accepted"] == []
+    assert result["skipped"] == [{"task_key": "tk-closed", "reason": "task_closed"}]
+
+
+@pytest.mark.asyncio
+async def test_share_update_skips_duplicate_relay(patch_ledger):
+    patch_ledger.append_if_open_and_not_recent_dup = AsyncMock(
+        return_value=(False, "duplicate_recent_relay")
     )
-
-    for _ in range(5):
-        await asyncio.sleep(0)
-
-    assert captured["deps"].current_depth == 2
-
-
-# ---------------------------------------------------------------------------
-# share_update tool.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_share_update_accepts_only_amendable_rows(patch_ledger):
-    # Two items: first ledger update succeeds, second fails (terminal state).
-    patch_ledger.mark_completed = AsyncMock(side_effect=[True, False])
-
-    items = [
-        outbound.UpdateItem(task_key="tk-1", customer_context="answer 1"),
-        outbound.UpdateItem(task_key="tk-2", customer_context="answer 2"),
-    ]
-
+    items = [outbound.UpdateItem(task_key="tk-1", relay_to_customer="same as before")]
     result = await outbound.share_update(_ctx(), items)
-
-    assert result["skipped"] == ["tk-2"]
-    assert [a["task_key"] for a in result["accepted"]] == ["tk-1"]
-    assert result["accepted"][0]["customer_context"] == "answer 1"
-    assert result["accepted"][0]["content_hash"] == outbound._content_hash("answer 1", None)
-    assert patch_ledger.mark_completed.await_count == 2
+    assert result["skipped"] == [{"task_key": "tk-1", "reason": "duplicate_recent_relay"}]
 
 
 @pytest.mark.asyncio
-async def test_share_update_skips_items_with_no_context(patch_ledger):
-    patch_ledger.mark_completed = AsyncMock(return_value=True)
-
-    items = [
-        outbound.UpdateItem(task_key="tk-empty", customer_context=None, system_context=None),
-        outbound.UpdateItem(task_key="tk-keep", customer_context="ok"),
-    ]
-
+async def test_share_update_skips_empty_payload(patch_ledger):
+    items = [outbound.UpdateItem(task_key="tk-1", relay_to_customer=None, system_note=None)]
     result = await outbound.share_update(_ctx(), items)
-
-    assert result["skipped"] == ["tk-empty"]
-    assert [a["task_key"] for a in result["accepted"]] == ["tk-keep"]
-    patch_ledger.mark_completed.assert_awaited_once_with("tk-keep", "ok", None)
+    assert result["skipped"] == [{"task_key": "tk-1", "reason": "empty_payload"}]
+    patch_ledger.append_if_open_and_not_recent_dup.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_share_update_empty_input_returns_empty(patch_ledger):
-    result = await outbound.share_update(_ctx(), [])
-    assert result == {"accepted": [], "skipped": []}
-    patch_ledger.mark_completed.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_share_update_can_be_called_multiple_times_per_task(patch_ledger):
-    """A vendor amendment fires share_update again with the same task_key.
-    Both calls land on `accepted` with distinct content_hashes."""
-    patch_ledger.mark_completed = AsyncMock(return_value=True)
+async def test_share_update_can_fire_twice_on_same_task(patch_ledger):
+    """Vendor amends the same task — second share_update goes through with
+    a different content hash + a new ledger append."""
+    patch_ledger.append_if_open_and_not_recent_dup = AsyncMock(return_value=(True, None))
 
     first = await outbound.share_update(
-        _ctx(), [outbound.UpdateItem(task_key="tk-1", customer_context="10 in stock")]
+        _ctx(),
+        [outbound.UpdateItem(task_key="tk-1", relay_to_customer="10 in stock")],
     )
     second = await outbound.share_update(
-        _ctx(), [outbound.UpdateItem(task_key="tk-1", customer_context="actually 5 in stock")]
+        _ctx(),
+        [outbound.UpdateItem(task_key="tk-1", relay_to_customer="actually only 5 in stock")],
     )
 
     assert first["accepted"][0]["task_key"] == "tk-1"
     assert second["accepted"][0]["task_key"] == "tk-1"
     assert (
-        first["accepted"][0]["content_hash"] != second["accepted"][0]["content_hash"]
-    ), "different payloads should hash differently"
+        first["accepted"][0]["content_hash"]
+        != second["accepted"][0]["content_hash"]
+    ), "different relay text → different hash"
+    assert patch_ledger.append_if_open_and_not_recent_dup.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# _on_share_update hook — customer fan-out
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_on_share_update_hook_appends_history_and_ingests(monkeypatch, patch_ledger):
-    """The hook records each accepted update in outbound_task_updates and
-    pushes a system_event to the customer inbox keyed on content_hash."""
+async def test_on_share_update_hook_fans_out_to_customer(monkeypatch, patch_ledger):
     from backend.chatbot.conversations import inbox as conv_inbox
 
-    task_a = _make_task_row(task_key="tk-a")
-    task_b = _make_task_row(task_key="tk-b")
-    by_key = {"tk-a": task_a, "tk-b": task_b}
-    patch_ledger.get_by_key = AsyncMock(side_effect=lambda k: by_key.get(k))
-    insert_history = AsyncMock(return_value=True)
-    patch_ledger.insert_task_update = insert_history
+    task = _make_task_row(task_key="tk-a")
+    patch_ledger.get_by_key = AsyncMock(return_value=task)
 
     ingest_mock = MagicMock(return_value=True)
     monkeypatch.setattr(conv_inbox, "ingest", ingest_mock)
@@ -474,49 +347,28 @@ async def test_on_share_update_hook_appends_history_and_ingests(monkeypatch, pat
     accepted = [
         {
             "task_key": "tk-a",
-            "customer_context": "answer-a",
-            "system_context": None,
+            "relay_to_customer": "answer-a",
+            "system_note": None,
             "content_hash": "hash-a",
         },
-        {
-            "task_key": "tk-b",
-            "customer_context": "answer-b",
-            "system_context": None,
-            "content_hash": "hash-b",
-        },
     ]
-
     result = await outbound._on_share_update(
-        _ctx(),
-        call=None,
-        tool_def=None,
-        args={"items": []},
-        result={"accepted": accepted, "skipped": []},
+        _ctx(), call=None, tool_def=None, args={}, result={"accepted": accepted, "skipped": []}
     )
-
-    assert result["accepted"] == accepted
-    assert insert_history.await_count == 2
-    assert ingest_mock.call_count == 2
-    summaries = sorted(
-        call.args[1]["payload"]["summary"] for call in ingest_mock.call_args_list
-    )
-    assert summaries == ["answer-a", "answer-b"]
-    # Dedup id includes task_key + content_hash so successive distinct
-    # updates aren't squashed at the inbox.
-    dedup_ids = sorted(call.kwargs["dedup_id"] for call in ingest_mock.call_args_list)
-    assert dedup_ids == ["share:tk-a:hash-a", "share:tk-b:hash-b"]
+    assert result == {"accepted": accepted, "skipped": []}
+    assert ingest_mock.call_count == 1
+    summary = ingest_mock.call_args.args[1]["payload"]["summary"]
+    assert summary == "answer-a"
+    dedup = ingest_mock.call_args.kwargs["dedup_id"]
+    assert dedup == "share:tk-a:hash-a"
 
 
 @pytest.mark.asyncio
-async def test_on_share_update_hook_skips_when_history_dedups(monkeypatch, patch_ledger):
-    """When insert_task_update returns False (UNIQUE conflict), the hook
-    must NOT re-push the customer event — the same payload was already
-    forwarded once."""
+async def test_on_share_update_hook_skips_items_without_relay(monkeypatch, patch_ledger):
+    """system_note-only items don't fan out (the log already captured them)."""
     from backend.chatbot.conversations import inbox as conv_inbox
 
-    patch_ledger.get_by_key = AsyncMock(return_value=_make_task_row("tk-dup"))
-    patch_ledger.insert_task_update = AsyncMock(return_value=False)
-
+    patch_ledger.get_by_key = AsyncMock(return_value=_make_task_row("tk-sys"))
     ingest_mock = MagicMock(return_value=True)
     monkeypatch.setattr(conv_inbox, "ingest", ingest_mock)
 
@@ -524,57 +376,19 @@ async def test_on_share_update_hook_skips_when_history_dedups(monkeypatch, patch
         _ctx(),
         call=None,
         tool_def=None,
-        args={"items": []},
+        args={},
         result={
             "accepted": [
                 {
-                    "task_key": "tk-dup",
-                    "customer_context": "same payload",
-                    "system_context": None,
+                    "task_key": "tk-sys",
+                    "relay_to_customer": None,
+                    "system_note": "internal note",
                     "content_hash": "h",
                 }
             ],
             "skipped": [],
         },
     )
-
-    ingest_mock.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_on_share_update_hook_skips_items_with_no_customer_context(
-    monkeypatch, patch_ledger
-):
-    """Accepted updates with system_context only must record history but
-    NOT enqueue a customer-side event."""
-    from backend.chatbot.conversations import inbox as conv_inbox
-
-    patch_ledger.get_by_key = AsyncMock(return_value=_make_task_row("tk-sysonly"))
-    insert_history = AsyncMock(return_value=True)
-    patch_ledger.insert_task_update = insert_history
-
-    ingest_mock = MagicMock(return_value=True)
-    monkeypatch.setattr(conv_inbox, "ingest", ingest_mock)
-
-    await outbound._on_share_update(
-        _ctx(),
-        call=None,
-        tool_def=None,
-        args={"items": []},
-        result={
-            "accepted": [
-                {
-                    "task_key": "tk-sysonly",
-                    "customer_context": None,
-                    "system_context": "internal",
-                    "content_hash": "h",
-                }
-            ],
-            "skipped": [],
-        },
-    )
-
-    insert_history.assert_awaited_once()
     ingest_mock.assert_not_called()
 
 
@@ -584,37 +398,129 @@ async def test_on_share_update_hook_noop_when_nothing_accepted(monkeypatch):
 
     ingest_mock = MagicMock()
     monkeypatch.setattr(conv_inbox, "ingest", ingest_mock)
-
     result = await outbound._on_share_update(
-        _ctx(),
-        call=None,
-        tool_def=None,
-        args={"items": []},
-        result={"accepted": [], "skipped": ["tk-x"]},
+        _ctx(), call=None, tool_def=None, args={}, result={"accepted": [], "skipped": []}
     )
-
-    assert result == {"accepted": [], "skipped": ["tk-x"]}
+    assert result == {"accepted": [], "skipped": []}
     ingest_mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
-# get_task_details tool.
+# update_task_log — Hermes-style CRUD wrapper
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_get_task_details_returns_dispatch_prompt(patch_ledger):
-    task = _make_task_row(task_key="tk-detail", summary="summary line")
+async def test_update_task_log_add_calls_append(patch_ledger):
+    result = await outbound.update_task_log(_ctx(), "tk-1", "add", "## new\nentry")
+    assert result["ok"] is True
+    patch_ledger.append_to_log.assert_awaited_once_with("tk-1", "## new\nentry")
+
+
+@pytest.mark.asyncio
+async def test_update_task_log_replace_requires_old_text(patch_ledger):
+    result = await outbound.update_task_log(_ctx(), "tk-1", "replace", "new", old_text=None)
+    assert result["ok"] is False
+    assert result["reason"] == "old_text_required"
+
+
+@pytest.mark.asyncio
+async def test_update_task_log_replace_calls_replace(patch_ledger):
+    await outbound.update_task_log(_ctx(), "tk-1", "replace", "new", old_text="old")
+    patch_ledger.replace_in_log.assert_awaited_once_with("tk-1", "old", "new")
+
+
+@pytest.mark.asyncio
+async def test_update_task_log_remove_uses_old_text_or_content(patch_ledger):
+    await outbound.update_task_log(_ctx(), "tk-1", "remove", "", old_text="target")
+    patch_ledger.remove_from_log.assert_awaited_once_with("tk-1", "target")
+
+
+@pytest.mark.asyncio
+async def test_update_task_log_returns_reason_on_log_write_error(patch_ledger):
+    patch_ledger.append_to_log = AsyncMock(side_effect=LogWriteError("log_cap_exceeded"))
+    result = await outbound.update_task_log(_ctx(), "tk-1", "add", "stuff")
+    assert result["ok"] is False
+    assert "log_cap_exceeded" in result["reason"]
+
+
+# ---------------------------------------------------------------------------
+# close_task
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_close_task_calls_ledger(patch_ledger):
+    result = await outbound.close_task(_ctx(), "tk-1", reason="delivered")
+    assert result == {"ok": True}
+    patch_ledger.close_task.assert_awaited_once_with(
+        "tk-1", reason="delivered", final_log_entry=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_close_task_returns_reason_on_already_closed(patch_ledger):
+    patch_ledger.close_task = AsyncMock(return_value=False)
+    result = await outbound.close_task(_ctx(), "tk-1", reason="x")
+    assert result == {"ok": False, "reason": "already_closed_or_unknown"}
+
+
+# ---------------------------------------------------------------------------
+# find_tasks
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_find_tasks_returns_serialized_rows(patch_ledger):
+    biz = uuid4()
+    cust = uuid4()
+    contact = uuid4()
+    row = OutboundTaskRow(
+        task_key="tk-find",
+        business_id=biz,
+        customer_id=cust,
+        contact_id=contact,
+        contact_name="Vendor X",
+        contact_role="vendor",
+        initiated_by="customer",
+        log="## Dispatched\nBrief: oxford 15",
+        dispatched_at=datetime.now(timezone.utc),
+        timeout_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        closed_at=None,
+    )
+    patch_ledger.find_tasks = AsyncMock(return_value=[row])
+
+    deps = outbound.OutboundDeps(
+        business_id=biz,
+        contact_id=contact,
+        contact_name="Vendor X",
+        contact_role="vendor",
+    )
+    result = await outbound.find_tasks(_ctx(deps), "oxford size 15")
+    assert len(result) == 1
+    assert result[0]["task_key"] == "tk-find"
+    assert result[0]["customer_id"] == str(cust)
+    assert result[0]["log"].startswith("## Dispatched")
+    assert result[0]["closed_at"] is None
+    patch_ledger.find_tasks.assert_awaited_once_with(
+        biz, "oxford size 15", customer_id=None, contact_id=None, limit=5
+    )
+
+
+# ---------------------------------------------------------------------------
+# get_task_details
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_task_details_returns_full_log(patch_ledger):
+    task = _make_task_row(task_key="tk-detail", log="## Dispatched\nBrief: detail check")
     patch_ledger.get_by_key = AsyncMock(return_value=task)
-
     result = await outbound.get_task_details(_ctx(), "tk-detail")
-
     assert result is not None
     assert result["task_key"] == "tk-detail"
-    assert result["dispatch_prompt"] == task.dispatch_prompt
-    assert result["summary"] == "summary line"
-    assert result["state"] == task.state
-    assert "dispatched_at" in result
+    assert result["log"] == "## Dispatched\nBrief: detail check"
+    assert result["closed_at"] is None
 
 
 @pytest.mark.asyncio
@@ -624,109 +530,51 @@ async def test_get_task_details_returns_none_when_missing(patch_ledger):
 
 
 # ---------------------------------------------------------------------------
-# Regression: vendor amendment after initial resolution must still reach the
-# customer. Before this change, mark_completed gated on state='running' so
-# the second share_update silently no-op'd, and the customer-inbox dedup_id
-# was task-only so even bypassing the gate would have squashed the second
-# event. This test exercises share_update + the after-tool hook end-to-end
-# with an in-memory ledger to make sure both paths now flow through.
+# surface_to_customer
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_vendor_amendment_after_resolution_reaches_customer(
-    monkeypatch, patch_ledger
-):
+async def test_surface_to_customer_uses_explicit_customer_id(monkeypatch):
     from backend.chatbot.conversations import inbox as conv_inbox
 
-    # In-memory ledger: one task that starts in 'running'.
-    state = {"state": "running", "customer_context": None, "system_context": None}
-    history: list[tuple[str, str | None, str | None, str]] = []
-
-    async def _mark_completed(task_key, customer_context, system_context):
-        if state["state"] in ("running", "succeeded"):
-            state["state"] = "succeeded"
-            state["customer_context"] = customer_context
-            state["system_context"] = system_context
-            return True
-        return False
-
-    async def _insert_task_update(task_key, customer_context, system_context, content_hash):
-        if any(h[3] == content_hash for h in history):
-            return False
-        history.append((task_key, customer_context, system_context, content_hash))
-        return True
-
-    task_row = _make_task_row(task_key="tk-amend")
-    patch_ledger.mark_completed = AsyncMock(side_effect=_mark_completed)
-    patch_ledger.insert_task_update = AsyncMock(side_effect=_insert_task_update)
-    patch_ledger.get_by_key = AsyncMock(return_value=task_row)
-
+    explicit = uuid4()
+    deps = outbound.OutboundDeps(
+        business_id=uuid4(),
+        contact_id=uuid4(),
+        contact_name="Vendor X",
+        contact_role="vendor",
+        customer_id=None,  # no deps binding
+    )
     ingest_mock = MagicMock(return_value=True)
     monkeypatch.setattr(conv_inbox, "ingest", ingest_mock)
 
-    # First reply: vendor says "10 in stock". share_update + hook.
-    first = await outbound.share_update(
-        _ctx(),
-        [outbound.UpdateItem(task_key="tk-amend", customer_context="10 in stock")],
-    )
-    assert state["state"] == "succeeded"
-    await outbound._on_share_update(
-        _ctx(),
-        call=None,
-        tool_def=None,
-        args={},
-        result=first,
-    )
+    result = await outbound.surface_to_customer(_ctx(deps), "follow-up note", customer_id=explicit)
+    assert result == {"ok": True}
+    party = ingest_mock.call_args.args[0]
+    assert party.kind == "customer"
+    assert party.party_id == str(explicit)
 
-    # Second reply: vendor amends — "actually only 5". The state is already
-    # 'succeeded', but mark_completed must still accept and the hook must
-    # still fire a fresh customer event with a different dedup_id.
-    second = await outbound.share_update(
-        _ctx(),
-        [outbound.UpdateItem(task_key="tk-amend", customer_context="actually only 5")],
-    )
-    assert second["accepted"], "amendment must be accepted, not skipped"
-    await outbound._on_share_update(
-        _ctx(),
-        call=None,
-        tool_def=None,
-        args={},
-        result=second,
-    )
 
-    # Both updates landed in history with distinct hashes.
-    assert len(history) == 2
-    assert {h[1] for h in history} == {"10 in stock", "actually only 5"}
-    assert history[0][3] != history[1][3]
-
-    # Customer inbox received TWO distinct system_events.
-    assert ingest_mock.call_count == 2
-    summaries = [c.args[1]["payload"]["summary"] for c in ingest_mock.call_args_list]
-    assert summaries == ["10 in stock", "actually only 5"]
-    dedups = [c.kwargs["dedup_id"] for c in ingest_mock.call_args_list]
-    assert dedups[0] != dedups[1]
-
-    # Repeating the SAME amendment a third time must dedup at history and
-    # NOT push a third customer event.
-    third = await outbound.share_update(
-        _ctx(),
-        [outbound.UpdateItem(task_key="tk-amend", customer_context="actually only 5")],
+@pytest.mark.asyncio
+async def test_surface_to_customer_returns_no_customer_when_unbound():
+    deps = outbound.OutboundDeps(
+        business_id=uuid4(),
+        contact_id=uuid4(),
+        contact_name="Vendor X",
+        contact_role="vendor",
     )
-    await outbound._on_share_update(
-        _ctx(), call=None, tool_def=None, args={}, result=third
-    )
-    assert len(history) == 2
-    assert ingest_mock.call_count == 2
+    result = await outbound.surface_to_customer(_ctx(deps), "msg")
+    assert result == {"ok": False, "reason": "no_customer_context"}
 
 
 # ---------------------------------------------------------------------------
-# deliver_contact_reply — drain runner entry point.
+# deliver_contact_reply — reply-run entry point
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_deliver_contact_reply_runs_agent_with_manifest_and_history(
+async def test_deliver_contact_reply_runs_agent_with_manifest(
     patch_ledger, patch_chat_storage, patch_contacts, monkeypatch
 ):
     biz = uuid4()
@@ -735,7 +583,6 @@ async def test_deliver_contact_reply_runs_agent_with_manifest_and_history(
 
     summaries = [_make_summary(task_key="tk-A"), _make_summary(task_key="tk-B")]
     patch_ledger.list_open_tasks_by_contact = AsyncMock(return_value=summaries)
-
     patch_chat_storage.load_contact_history = AsyncMock(return_value=["prior"])
 
     captured: dict[str, Any] = {}
@@ -743,35 +590,17 @@ async def test_deliver_contact_reply_runs_agent_with_manifest_and_history(
     async def _run(prompt, deps, message_history=None):
         captured["prompt"] = prompt
         captured["deps"] = deps
-        captured["history"] = message_history
-        return SimpleNamespace(
-            output="thanks, will let the customer know",
-            new_messages=lambda: ["m1", "m2"],
-        )
+        return SimpleNamespace(output="thanks vendor", new_messages=lambda: [])
 
     monkeypatch.setattr(outbound.outbound_agent, "run", AsyncMock(side_effect=_run))
-
     send_mock = AsyncMock(return_value=None)
     monkeypatch.setattr(outbound, "_send_to_party", send_mock)
 
-    result = await outbound.deliver_contact_reply(
-        biz, contact.id, ["hello", "5 in stock"]
-    )
-
+    result = await outbound.deliver_contact_reply(biz, contact.id, ["got it", "5 in stock"])
     assert result is None
-    assert captured["prompt"] == "hello\n5 in stock"
-    assert captured["history"] == ["prior"]
+    assert captured["prompt"] == "got it\n5 in stock"
     assert captured["deps"].open_tasks == summaries
-    assert captured["deps"].business_id == biz
-    assert captured["deps"].contact_id == contact.id
-
-    patch_chat_storage.append_contact_history.assert_awaited_once_with(
-        biz, contact.id, ["m1", "m2"]
-    )
     send_mock.assert_awaited_once()
-    send_kwargs = send_mock.await_args.kwargs
-    assert send_kwargs["contact_id"] == contact.id
-    assert send_kwargs["text"] == "thanks, will let the customer know"
 
 
 @pytest.mark.asyncio
@@ -781,405 +610,72 @@ async def test_deliver_contact_reply_returns_status_on_unknown_contact(
     patch_contacts.get_by_id = AsyncMock(return_value=None)
     run_mock = AsyncMock()
     monkeypatch.setattr(outbound.outbound_agent, "run", run_mock)
-
     result = await outbound.deliver_contact_reply(uuid4(), uuid4(), ["hi"])
-
     assert isinstance(result, str)
     assert "not found" in result
     run_mock.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_deliver_contact_reply_returns_status_on_cross_tenant_contact(
-    patch_contacts, monkeypatch
-):
-    # Contact belongs to a different business than the one supplied.
-    contact = _make_contact(business_id=uuid4())
-    patch_contacts.get_by_id = AsyncMock(return_value=contact)
-    run_mock = AsyncMock()
-    monkeypatch.setattr(outbound.outbound_agent, "run", run_mock)
-
-    result = await outbound.deliver_contact_reply(uuid4(), contact.id, ["hi"])
-
-    assert isinstance(result, str)
-    assert "doesn't belong" in result
-    run_mock.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_deliver_contact_reply_handles_empty_messages_list(
-    patch_contacts, monkeypatch
-):
-    biz = uuid4()
-    contact = _make_contact(business_id=biz)
-    patch_contacts.get_by_id = AsyncMock(return_value=contact)
-
-    run_mock = AsyncMock()
-    monkeypatch.setattr(outbound.outbound_agent, "run", run_mock)
-
-    # Both empty list and list of empty strings should return a status without
-    # running the agent.
-    result_empty = await outbound.deliver_contact_reply(biz, contact.id, [])
-    assert isinstance(result_empty, str)
-    assert "empty inbound" in result_empty
-
-    result_blank = await outbound.deliver_contact_reply(biz, contact.id, ["", "   "])
-    assert isinstance(result_blank, str)
-    assert "empty inbound" in result_blank
-
-    run_mock.assert_not_awaited()
-
-
 # ---------------------------------------------------------------------------
-# find_customer_context — agent's search-driven disambiguation tool.
-# Exercises the full ledger write → bm25 search → cluster expansion path
-# through the real events_search module (no stubs at the search layer).
+# Regression: vendor amendment flow — log + dedup + customer fan-out
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_find_customer_context_disambiguates_two_customers_via_ledger(
-    monkeypatch,
-):
-    """Multi-customer vendor scenario from the screenshot.
+async def test_regression_vendor_amendment_then_relay_dedup(monkeypatch, patch_ledger):
+    """Vendor sends initial reply → share_update fires; then sends an
+    amendment → share_update fires again (different hash); same payload
+    fired a third time → ledger dedup blocks the log + customer fan-out."""
+    from backend.chatbot.conversations import inbox as conv_inbox
 
-    A vendor handles orders for two customers. We seed the ledger with
-    distinct events per customer, then call find_customer_context with a
-    phrase only one customer's events match. The tool must return that
-    customer first with their recent events expanded.
-    """
-    from backend.db import events as events_db
-    from backend.db import events_search
+    appended_state: list[str] = []
 
-    biz = uuid4()
-    customer_oxford = uuid4()
-    customer_ankara = uuid4()
-    contact_id = uuid4()
+    async def fake_append_if_open(task_key, section):
+        body = "\n".join(section.split("\n")[1:]).strip()
+        if any(body in s for s in appended_state):
+            return False, "duplicate_recent_relay"
+        appended_state.append(section)
+        return True, None
 
-    # Seed the in-memory event store the search reads from.
-    seeded: list[events_db.EventRow] = []
+    patch_ledger.append_if_open_and_not_recent_dup = AsyncMock(side_effect=fake_append_if_open)
+    patch_ledger.get_by_key = AsyncMock(return_value=_make_task_row("tk-A"))
 
-    def _seed(
-        customer_id: UUID | None,
-        content: str,
-        actor: str = "contact",
-        direction: str = "in",
-        age_minutes: int = 5,
-    ) -> None:
-        seeded.append(
-            events_db.EventRow(
-                id=len(seeded) + 1,
-                business_id=biz,
-                customer_id=customer_id,
-                contact_id=contact_id,
-                task_key=None,
-                thread_id=f"contact:{contact_id}",
-                actor=actor,  # type: ignore[arg-type]
-                direction=direction,  # type: ignore[arg-type]
-                content=content,
-                provider_message_id=None,
-                created_at=datetime.now(timezone.utc) - timedelta(minutes=age_minutes),
-            )
-        )
+    ingest_mock = MagicMock(return_value=True)
+    monkeypatch.setattr(conv_inbox, "ingest", ingest_mock)
 
-    _seed(
-        customer_oxford,
-        "customer asked about Oxford shoes size 15 for 1 Justice Coker Estate",
-        actor="customer",
-        age_minutes=20,
+    # First reply.
+    first = await outbound.share_update(
+        _ctx(), [outbound.UpdateItem(task_key="tk-A", relay_to_customer="10 in stock")]
     )
-    _seed(
-        customer_oxford,
-        "dispatched Oxford shoes order to vendor",
-        actor="business",
-        direction="out",
-        age_minutes=18,
-    )
-    _seed(
-        customer_ankara,
-        "customer asked about ankara fabric purple 6 yards",
-        actor="customer",
-        age_minutes=15,
+    await outbound._on_share_update(
+        _ctx(), call=None, tool_def=None, args={}, result=first
     )
 
-    async def fake_list(business_id, *, limit=5000):
-        return [r for r in seeded if r.business_id == business_id]
-
-    async def fake_list_for_customer(business_id, customer_id, *, limit=20):
-        return [
-            r
-            for r in seeded
-            if r.business_id == business_id and r.customer_id == customer_id
-        ][:limit]
-
-    monkeypatch.setattr(events_db, "list_recent_for_business", fake_list)
-    monkeypatch.setattr(events_db, "list_recent_for_customer", fake_list_for_customer)
-
-    # Stub the per-cluster expansion lookups.
-    from backend.db import db_utils, outbound_ledger
-
-    async def fake_user(uid):
-        if uid == str(customer_oxford):
-            return {"id": uid, "name": "Alice (Oxford order)"}
-        if uid == str(customer_ankara):
-            return {"id": uid, "name": "Bola (Ankara order)"}
-        return None
-
-    monkeypatch.setattr(db_utils, "get_user_by_id", fake_user)
-    monkeypatch.setattr(
-        outbound_ledger, "get_pending_for_customer", AsyncMock(return_value=[])
+    # Amendment.
+    second = await outbound.share_update(
+        _ctx(), [outbound.UpdateItem(task_key="tk-A", relay_to_customer="actually only 5")]
+    )
+    await outbound._on_share_update(
+        _ctx(), call=None, tool_def=None, args={}, result=second
     )
 
-    # Reset search caches so this test is hermetic.
-    events_search._versions.clear()
-    events_search._indexes.clear()
-    events_search.bump_tenant(biz)
-
-    deps = outbound.OutboundDeps(
-        business_id=biz,
-        contact_id=contact_id,
-        contact_name="Vendor X",
-        contact_role="vendor",
+    # Repeat the amendment — must dedup.
+    third = await outbound.share_update(
+        _ctx(), [outbound.UpdateItem(task_key="tk-A", relay_to_customer="actually only 5")]
     )
-    ctx = SimpleNamespace(deps=deps)
-
-    # Vendor reply was: "address noted, delivery going out for the size 15".
-    # Agent searches with the distinguishing phrase.
-    results = await outbound.find_customer_context(
-        ctx, "size 15 1 Justice Coker delivery", limit=3
+    await outbound._on_share_update(
+        _ctx(), call=None, tool_def=None, args={}, result=third
     )
 
-    assert results, "search must return at least one cluster"
-    top = results[0]
-    assert top["customer_id"] == str(customer_oxford), (
-        f"Oxford customer must rank first; got {top['customer_id']}"
-    )
-    assert top["customer_name"] == "Alice (Oxford order)"
-    # Recent events for the matched customer are surfaced for context.
-    contents = [e["content"] for e in top["recent_events"]]
-    assert any("Oxford" in c for c in contents)
-    # The unrelated customer's events must NOT bleed into the top cluster.
-    assert not any("ankara" in c.lower() for c in contents)
+    assert len(first["accepted"]) == 1
+    assert len(second["accepted"]) == 1
+    assert third["accepted"] == []
+    assert third["skipped"][0]["reason"] == "duplicate_recent_relay"
 
-
-@pytest.mark.asyncio
-async def test_send_to_party_writes_to_event_ledger(monkeypatch):
-    """Outbound vendor send must append a 'business→contact' event row."""
-    # Restore the real _send_to_party past the autouse `patch_transport`
-    # mock, so this test exercises the actual ledger-write code path.
-    monkeypatch.setattr(outbound, "_send_to_party", _REAL_SEND_TO_PARTY)
-
-    inserted: list[dict[str, Any]] = []
-
-    async def _capture(**kwargs):
-        inserted.append(kwargs)
-        return 1
-
-    monkeypatch.setattr(outbound.events, "insert_event", _capture)
-    bumps: list[UUID] = []
-    monkeypatch.setattr(
-        outbound.events_search, "bump_tenant", lambda biz: bumps.append(biz)
-    )
-
-    biz = uuid4()
-    contact_id = uuid4()
-    customer_id = uuid4()
-
-    monkeypatch.setattr(
-        outbound,
-        "_contact_identity",
-        AsyncMock(
-            return_value=outbound.ChannelIdentity(
-                business_id=str(biz),
-                customer_id=str(contact_id),
-                channel="console",
-                channel_user_id="vendor-wa-1",
-                last_inbound_at=None,
-                channel_business_id=None,
-            )
-        ),
-    )
-
-    # Stub channel send + dispatcher so transport doesn't actually fire.
-    fake_channel = SimpleNamespace(send=AsyncMock(return_value=None))
-    monkeypatch.setattr(outbound.registry, "get", lambda channel_name: fake_channel)
-    monkeypatch.setattr(
-        outbound.messaging_dispatcher,
-        "dispatch_to_party",
-        AsyncMock(return_value=None),
-    )
-
-    status = await outbound._send_to_party(
-        business_id=biz,
-        contact_id=contact_id,
-        text="hi vendor please confirm size",
-        task_key="tk-XYZ",
-        customer_id=customer_id,
-    )
-
-    assert status is None
-    assert len(inserted) == 1
-    row = inserted[0]
-    assert row["business_id"] == biz
-    assert row["actor"] == "business"
-    assert row["direction"] == "out"
-    assert row["thread_id"] == f"contact:{contact_id}"
-    assert row["content"] == "hi vendor please confirm size"
-    assert row["customer_id"] == customer_id
-    assert row["contact_id"] == contact_id
-    assert row["task_key"] == "tk-XYZ"
-    assert bumps == [biz], "tenant cache must be bumped after a send"
-
-
-@pytest.mark.asyncio
-async def test_conversation_drain_logs_inbound_and_outbound_to_ledger(monkeypatch):
-    """The live multiparty drain path (Conversation.drain) must log every
-    inbound user_message to the ledger before agent.run, and the agent's
-    outbound text after a successful send. system_event items are NOT
-    logged (they're already journaled at their fan-out site).
-
-    This is the path the unified vendor inbox actually uses; the older
-    `deliver_contact_reply` helper is no longer the live entry.
-    """
-    from backend.chatbot.conversations import conversation as conv_mod
-    from backend.chatbot.conversations.conversation import Conversation
-    from backend.chatbot.conversations.inbox import PartyKey
-
-    biz = uuid4()
-    contact_id = uuid4()
-    party = PartyKey.vendor(str(biz), str(contact_id))
-
-    inserted: list[dict[str, Any]] = []
-
-    async def _capture(**kwargs):
-        inserted.append(kwargs)
-        return len(inserted)
-
-    monkeypatch.setattr(conv_mod.events_db, "insert_event", _capture)
-    monkeypatch.setattr(conv_mod.events_search, "bump_tenant", lambda biz: None)
-
-    fake_identity = SimpleNamespace(channel="console")
-
-    async def _resolve(_):
-        return fake_identity
-
-    async def _load_history(_):
-        return []
-
-    async def _append_history(_p, _msgs):
-        return None
-
-    async def _build_deps(_):
-        return SimpleNamespace()
-
-    sent: list[tuple[Any, str]] = []
-
-    async def _send(identity, text):
-        sent.append((identity, text))
-
-    fake_agent = SimpleNamespace(
-        run=AsyncMock(
-            return_value=SimpleNamespace(
-                output="ack vendor", new_messages=lambda: []
-            )
-        )
-    )
-
-    convo = Conversation(
-        party=party,
-        agent=fake_agent,  # type: ignore[arg-type]
-        load_history=_load_history,
-        append_history=_append_history,
-        resolve_identity=_resolve,
-        render_prompt=lambda items: "rendered",
-        build_deps=_build_deps,
-        send=_send,
-    )
-
-    items = [
-        {"type": "user_message", "payload": {"text": "address noted"}},
-        {"type": "user_message", "payload": {"text": "delivery going out today"}},
-        # system_event item must NOT be logged here — it's already journaled
-        # at the share_update / surface_to_customer fanout site.
-        {"type": "system_event", "payload": {"summary": "internal note"}},
-    ]
-
-    await convo.drain(party, items)
-
-    inbound = [r for r in inserted if r["direction"] == "in"]
-    outbound_rows = [r for r in inserted if r["direction"] == "out"]
-
-    assert [r["content"] for r in inbound] == ["address noted", "delivery going out today"]
-    assert all(r["actor"] == "contact" for r in inbound)
-    assert all(r.get("customer_id") is None for r in inbound)
-    assert all(r["thread_id"] == f"contact:{contact_id}" for r in inbound)
-
-    # Outbound reply logged once with the agent's text.
-    assert len(outbound_rows) == 1
-    assert outbound_rows[0]["content"] == "ack vendor"
-    assert outbound_rows[0]["actor"] == "business"
-    assert sent == [(fake_identity, "ack vendor")]
-
-
-@pytest.mark.asyncio
-async def test_conversation_drain_customer_side_logs_with_customer_id(monkeypatch):
-    """For a customer party, inbound is actor='customer' and customer_id
-    is known at write time (party_id IS the customer)."""
-    from backend.chatbot.conversations import conversation as conv_mod
-    from backend.chatbot.conversations.conversation import Conversation
-    from backend.chatbot.conversations.inbox import PartyKey
-
-    biz = uuid4()
-    customer_id = uuid4()
-    party = PartyKey.customer(str(biz), str(customer_id))
-
-    inserted: list[dict[str, Any]] = []
-
-    async def _capture(**kwargs):
-        inserted.append(kwargs)
-        return len(inserted)
-
-    monkeypatch.setattr(conv_mod.events_db, "insert_event", _capture)
-    monkeypatch.setattr(conv_mod.events_search, "bump_tenant", lambda biz: None)
-
-    fake_identity = SimpleNamespace(channel="console")
-    fake_agent = SimpleNamespace(
-        run=AsyncMock(
-            return_value=SimpleNamespace(
-                output="hi! looking into your order.", new_messages=lambda: []
-            )
-        )
-    )
-
-    convo = Conversation(
-        party=party,
-        agent=fake_agent,  # type: ignore[arg-type]
-        load_history=AsyncMock(return_value=[]),
-        append_history=AsyncMock(),
-        resolve_identity=AsyncMock(return_value=fake_identity),
-        render_prompt=lambda items: "rendered",
-        build_deps=AsyncMock(return_value=SimpleNamespace()),
-        send=AsyncMock(),
-    )
-
-    await convo.drain(
-        party,
-        [{"type": "user_message", "payload": {"text": "where's my Oxford order?"}}],
-    )
-
-    assert any(
-        r["actor"] == "customer"
-        and r["direction"] == "in"
-        and r["customer_id"] == customer_id
-        and r["thread_id"] == f"customer:{customer_id}"
-        for r in inserted
-    )
-    assert any(
-        r["actor"] == "business"
-        and r["direction"] == "out"
-        and r["customer_id"] == customer_id
-        for r in inserted
-    )
+    # Customer received exactly two distinct system_events.
+    assert ingest_mock.call_count == 2
+    summaries = [c.args[1]["payload"]["summary"] for c in ingest_mock.call_args_list]
+    assert summaries == ["10 in stock", "actually only 5"]
 
 
 # ---------------------------------------------------------------------------

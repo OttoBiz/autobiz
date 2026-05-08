@@ -16,116 +16,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
-from uuid import UUID
 
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
 
 from backend.chatbot.channels.base import ChannelIdentity
 from backend.chatbot.conversations.inbox import PartyKey
-from backend.db import events as events_db
-from backend.db import events_search
 
 logger = logging.getLogger(__name__)
-
-
-def _actor_for(party: PartyKey) -> str:
-    """The 'actor' label for the OTHER side of this conversation.
-
-    Customer-side conversations: the inbound items came from the customer.
-    Vendor-side conversations: the inbound items came from the contact.
-    Outbound text is always actor='business' regardless of party kind.
-    """
-    return "customer" if party.kind == "customer" else "contact"
-
-
-async def _log_inbound_items(party: PartyKey, items: list[dict]) -> None:
-    """Append every inbound user_message in `items` to the events ledger.
-
-    System events (system_event items) are NOT logged — those are internal
-    fan-outs from share_update / surface_to_customer that already get
-    logged at their own write site, and re-logging here would double-count.
-
-    Best-effort: a logging failure must never break the agent run.
-    """
-    biz_uuid = UUID(party.business_id)
-    actor = _actor_for(party)
-    direction = "in"
-
-    customer_id: UUID | None = None
-    contact_id: UUID | None = None
-    thread_id: str
-    if party.kind == "customer":
-        customer_id = UUID(party.party_id)
-        thread_id = f"customer:{party.party_id}"
-    else:
-        contact_id = UUID(party.party_id)
-        thread_id = f"contact:{party.party_id}"
-
-    bumped = False
-    for it in items:
-        if it.get("type") != "user_message":
-            continue
-        text = (it.get("payload", {}).get("text") or "").strip()
-        if not text:
-            continue
-        try:
-            await events_db.insert_event(
-                business_id=biz_uuid,
-                actor=actor,  # type: ignore[arg-type]
-                direction=direction,
-                thread_id=thread_id,
-                content=text,
-                customer_id=customer_id,
-                contact_id=contact_id,
-            )
-            bumped = True
-        except Exception:
-            logger.exception(
-                "events log failed (inbound) party=%s/%s",
-                party.kind,
-                party.party_id,
-            )
-    if bumped:
-        events_search.bump_tenant(biz_uuid)
-
-
-async def _log_outbound_reply(party: PartyKey, text: str) -> None:
-    """Append the agent's reply (going TO the party) to the events ledger.
-
-    customer_id is unknown here for vendor-side replies — the agent resolves
-    it via find_customer_context during reasoning, not at send time. That's
-    fine: the search index ranks by content regardless.
-    """
-    text = (text or "").strip()
-    if not text:
-        return
-    biz_uuid = UUID(party.business_id)
-    customer_id: UUID | None = None
-    contact_id: UUID | None = None
-    if party.kind == "customer":
-        customer_id = UUID(party.party_id)
-        thread_id = f"customer:{party.party_id}"
-    else:
-        contact_id = UUID(party.party_id)
-        thread_id = f"contact:{party.party_id}"
-    try:
-        await events_db.insert_event(
-            business_id=biz_uuid,
-            actor="business",
-            direction="out",
-            thread_id=thread_id,
-            content=text,
-            customer_id=customer_id,
-            contact_id=contact_id,
-        )
-        events_search.bump_tenant(biz_uuid)
-    except Exception:
-        logger.exception(
-            "events log failed (outbound reply) party=%s/%s",
-            party.kind,
-            party.party_id,
-        )
 
 
 @dataclass(frozen=True)
@@ -167,11 +65,6 @@ class Conversation:
             # available.
             raise RuntimeError(f"no_identity_for_{party.kind}")
 
-        # Log inbound user_messages to the multiparty events ledger BEFORE
-        # the agent runs, so any find_customer_context call inside the run
-        # sees this turn's text.
-        await _log_inbound_items(party, items)
-
         prompt = self.render_prompt(items)
         history = await self.load_history(party)
         deps = await self.build_deps(party)
@@ -185,6 +78,3 @@ class Conversation:
         # Persist only on successful send. If send raised, history stays as-is
         # and the items are NOT drained (we re-raise above).
         await self.append_history(party, result.new_messages())
-        # Log the outbound reply post-send so the ledger reflects what the
-        # other party actually saw (failed sends don't pollute the index).
-        await _log_outbound_reply(party, result.output)

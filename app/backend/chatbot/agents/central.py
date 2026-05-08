@@ -30,15 +30,6 @@ class Task(BaseModel):
             "ignored otherwise."
         ),
     )
-    summary: str | None = Field(
-        default=None,
-        description=(
-            "For agent_name='outbound' only: one-line headline (≤80 chars) "
-            "for the manifest the contact agent reads. Examples: "
-            "'red ankara stock + price', 'reschedule pickup to Tue'. Optional — "
-            "auto-derived from the prompt if omitted."
-        ),
-    )
 
 
 class SubagentDef(NamedTuple):
@@ -90,7 +81,6 @@ async def _handle_outbound(
     deps: AgentDeps,
     prompt: str,
     contact_id: UUID | None = None,
-    summary: str | None = None,
 ) -> dict[str, Any]:
     from backend.chatbot.agents.outbound import dispatch
     from backend.db.db_utils import get_business_info
@@ -125,7 +115,6 @@ async def _handle_outbound(
         contact_id=contact.id,
         initiated_by="customer",
         dispatch_prompt=prompt,
-        summary=summary,
         business_name=business_name,
         parent_depth=deps.current_depth,
     )
@@ -318,10 +307,49 @@ async def list_contacts(
     ]
 
 
+@agent.tool
+async def find_tasks(
+    ctx: RunContext[AgentDeps],
+    query: str,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    """Search this customer's outbound task history by content.
+
+    Returns matched tasks with full markdown logs. Use when the customer
+    references past work that isn't fresh in conversation — "any update on
+    my Oxford order?", "did you ever hear back about the refund?", or when
+    you need to follow up on something the customer mentioned earlier and
+    you want the canonical record of what was said + done.
+
+    Scoped to this customer: only their tasks compete for ranking. Returns
+    open and closed tasks (closed within the last 180 days). Read-only —
+    central agent doesn't write to task logs; outbound agent does.
+    """
+    from backend.db import outbound_ledger
+
+    rows = await outbound_ledger.find_tasks(
+        ctx.deps.business_id,
+        query,
+        customer_id=ctx.deps.customer_id,
+        limit=limit,
+    )
+    return [
+        {
+            "task_key": r.task_key,
+            "contact_name": r.contact_name,
+            "contact_role": r.contact_role,
+            "log": r.log,
+            "dispatched_at": r.dispatched_at.isoformat(),
+            "closed_at": r.closed_at.isoformat() if r.closed_at else None,
+        }
+        for r in rows
+    ]
+
+
 async def _dispatch_task(deps: AgentDeps, task: Task) -> dict[str, Any]:
     handler = _get_subagents()[task.agent_name].handler
     if task.agent_name == "outbound":
-        return await handler(deps, task.prompt, task.contact_id, task.summary)
+        return await handler(deps, task.prompt, task.contact_id)
     return await handler(deps, task.prompt)
 
 

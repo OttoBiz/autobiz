@@ -1,31 +1,30 @@
 """Outbound agent — one ongoing conversation per contact.
 
-This is the contact-side counterpart of the customer-facing central agent.
-The unit of conversation is a contact (a row in the address book), not a
-task. Tasks (rows in `outbound_tasks`) are tags inside that conversation:
-the agent sees a manifest of every open task for the contact and can close
-zero, one, or many of them in a single run depending on what the partner's
-reply addresses.
+Contact-side counterpart to the customer-facing central agent. The unit of
+conversation is a contact (a row in the address book), not a task. Tasks
+(rows in `outbound_tasks`) are tags inside that conversation: the agent
+sees a manifest of every OPEN task for the contact (`closed_at IS NULL`)
+and decides which (if any) the partner's reply addresses.
+
+Each task owns a markdown `log` column that the agent edits via:
+  - `share_update` — append a "relayed to customer" section + fan out to
+    the customer inbox. Does NOT close the task.
+  - `update_task_log` — Hermes-style add/replace/remove for ad-hoc edits.
+    No customer fan-out, no state change.
+  - `close_task` — mark the task closed (stops appearing in the manifest).
 
 Two entry points:
+  - `dispatch(...)` — opens a new outbound thread on behalf of a customer.
+  - `deliver_contact_reply(business_id, contact_id, messages)` — continues
+    when the partner replies; runs the agent against the inbound text.
 
-- `dispatch(...)`: opens a NEW outbound thread on behalf of a customer.
-  Inserts the ledger row, runs the agent with the opening prompt, sends
-  the outreach. Called by central / coordinator.
-- `deliver_contact_reply(business_id, contact_id, messages)`: continues
-  an existing thread when the partner replies. Loads the manifest + chat
-  history, runs the agent once with the (debounced + coalesced) inbound
-  text, sends the agent's reply.
-
-Per-contact mutex is held across both — so an opening run and an inbound
-drain can't race on the same contact. The lock key matches the unified
-vendor-inbox lock so dispatch and the conversation drain share it.
+Per-contact mutex serializes both — an opening run and an inbound drain
+can't race on the same contact.
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import os
 from contextlib import contextmanager
@@ -49,8 +48,12 @@ from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity
 from backend.chatbot.messaging import dispatcher as messaging_dispatcher
 from backend.config import MODEL_NAME
-from backend.db import chat_storage, contacts, db_utils, events, events_search, outbound_ledger
-from backend.db.outbound_ledger import OutboundTaskSummary
+from backend.db import chat_storage, contacts, db_utils, outbound_ledger
+from backend.db.outbound_ledger import (
+    LogWriteError,
+    OutboundTaskRow,
+    OutboundTaskSummary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +82,7 @@ class OutboundDeps(BaseModel):
 
     Bound to a contact, NOT a task. The agent reads `open_tasks` to see
     what's currently in flight with this partner and decides which (if any)
-    the inbound message resolves.
+    the inbound message addresses.
     """
 
     business_id: UUID
@@ -89,39 +92,49 @@ class OutboundDeps(BaseModel):
     business_name: str | None = None
     # Customer this outbound thread is on behalf of. Populated by the vendor
     # conversation factory from the latest open task; passed in by dispatch
-    # at opening time. None when the contact reaches out unprompted with no
-    # open tasks — back-office tools that need a customer return a
-    # `no_customer_context` error in that case.
+    # at opening time. Often None when one vendor handles many customers —
+    # the agent uses `find_tasks` to resolve which customer a given reply
+    # belongs to, then passes the customer_id explicitly to surface_to_customer.
     customer_id: UUID | None = None
-    # Manifest visible at run start. Opening run: the freshly-inserted task
-    # plus any others already running. Reply run: every running task for
-    # this contact. Empty list = vendor-initiated message with no open
-    # work — the agent runs in journal-and-reply mode.
+    # Manifest visible at run start: every OPEN task for this contact
+    # (closed_at IS NULL). Empty list = vendor-initiated message with no
+    # open work; agent runs in journal-and-reply mode.
     open_tasks: list[OutboundTaskSummary] = Field(default_factory=list)
     max_depth: int = 3
     current_depth: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Tool input shapes
+# ---------------------------------------------------------------------------
 
 
 class UpdateItem(BaseModel):
     """One task update in a batch share_update call."""
 
     task_key: str = Field(description="The task this update belongs to.")
-    customer_context: str | None = Field(
+    relay_to_customer: str | None = Field(
         default=None,
         description=(
             "Customer-safe summary with concrete answers. Set whenever "
-            "there's something to tell the customer; omit when nothing "
-            "customer-facing comes out of this update."
+            "there's something to tell the customer; the system records "
+            "it in the task log AND fans it out to the customer inbox. "
+            "Omit when nothing customer-facing comes out of this update."
         ),
     )
-    system_context: str | None = Field(
+    system_note: str | None = Field(
         default=None,
         description=(
-            "Internal back-office notes (DB updates, restocking, follow-ups). "
-            "Triggers downstream system actions. Omit when no system-side "
-            "action is needed."
+            "Internal back-office note (DB updates, restocking, follow-ups). "
+            "Recorded in the task log only — no customer fan-out. Omit "
+            "when no system-side action is needed."
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Prompt
+# ---------------------------------------------------------------------------
 
 
 _INSTRUCTIONS = """\
@@ -134,11 +147,11 @@ YOUR INPUT EACH RUN
   ask {contact_name} — write a single clear, polite outreach in your own
   voice. Don't echo internal phrasing. Don't call share_update on this
   run; you haven't heard back yet.
-- Every later run is triggered by {contact_name}'s reply (possibly several
-  messages they sent in quick succession, joined together). Read the task
-  manifest below — it lists both tasks still awaiting an answer AND tasks
-  you recently resolved (the partner may be amending or correcting one of
-  those). Decide which (if any) their reply maps to.
+- Every later run is triggered by {contact_name}'s reply (one or more
+  messages joined together). Read the task manifest below — it lists
+  every OPEN task with this contact, with a tail of each task's log so
+  you have the recent narrative inline. Decide which (if any) tasks the
+  reply addresses.
 
 TASK MANIFEST WITH {contact_name}
 {open_tasks_block}
@@ -146,56 +159,61 @@ TASK MANIFEST WITH {contact_name}
 WHEN THE MANIFEST HAS TASKS
 - Match the partner's reply to one or more tasks above. A single message
   can answer multiple tasks at once.
-- Default to sharing the update. If the partner's reply gives a usable
-  answer to the question we asked, call share_update immediately — don't
-  demand a more precise wording, don't ask follow-up clarification just
-  to cosmetically tighten the answer.
-- share_update can be called MORE THAN ONCE on the same task. A vendor
-  often replies in stages or corrects what they said earlier ("actually
-  only 5 in stock, not 10", "delivery slipped to Friday"). Whenever new
-  info arrives that the customer should know, call share_update again
-  with the latest customer_context — the system records every update and
-  forwards each one. Recently-resolved tasks remain in this manifest
-  precisely so you can amend them.
-- Only ask a follow-up when a missing field is genuinely needed to ACT
-  on the customer's question.
-- A vague non-answer (no commitment, no concrete information) is the one
-  case where pushing for specifics is warranted — and only on the field
-  that matters.
-- If {contact_name} declines or cannot help, still call share_update with
-  customer_context describing the outcome.
-- If the manifest summary isn't enough to know what a task was about,
-  call get_task_details(task_key) to see the full dispatch prompt.
+- Default to relaying. If the partner's reply gives a usable answer to
+  the question we asked, call share_update immediately — don't demand a
+  more precise wording, don't ask follow-up clarification just to
+  cosmetically tighten the answer.
+- share_update appends a "## Relayed to customer" section to the task's
+  log AND pushes a system_event to the customer's inbox. It does NOT
+  close the task — vendor amendments later in the day will land on the
+  same task and you'll call share_update again with the new info.
+- A vague non-answer (no commitment, no concrete information) is the
+  one case where pushing for specifics is warranted — and only on the
+  field that matters.
+- If {contact_name} declines or cannot help, still call share_update
+  with relay_to_customer describing the outcome.
+- The manifest carries log_excerpt (last ~400 chars). When you need the
+  full log, call get_task_details(task_key).
 
 WHEN THE MANIFEST IS EMPTY
 - {contact_name} has reached out without a pending request from us. Be
-  brief and helpful and reply naturally.
+  brief and helpful and reply naturally. If their message references a
+  past order or interaction, call find_tasks with a distinctive phrase
+  to find the closed task and act on it — typically by calling
+  surface_to_customer to relay any new info.
 
 DISAMBIGUATING WHO A REPLY IS ABOUT
-- A vendor often handles many of our customers. When their reply could
-  belong to more than one customer — or when the manifest doesn't carry
-  enough customer context (e.g. you need a name, an order detail, or
-  any prior turn) — call find_customer_context with the most distinctive
-  phrase from their message (an address, an order id, a product, a
-  customer name they mentioned). It returns candidate customers grouped
-  with their recent turns and open tasks.
-- Pick the customer whose recent events match. If two are plausible,
-  ask the vendor a tight clarifying question grounded in the retrieved
-  context ("the order for 1 Justice Coker Estate, size 15 — yes?"),
-  then act on their next reply.
-- Once you've picked a customer, pass that customer_id to surface_to_customer
-  when relaying news that isn't already covered by a share_update payload.
+- A vendor often handles multiple of our customers concurrently. When
+  their reply could belong to more than one customer in the manifest:
+  1. Call find_tasks(query=..., contact_id=<their id>) with the most
+     distinctive phrase from their message (an address, an order id,
+     a product, a customer name). It returns ranked task rows with
+     full logs.
+  2. Pick the task whose log matches. If two are plausible, ask the
+     vendor a tight clarifying question grounded in the retrieved
+     context ("the order for 1 Justice Coker Estate, size 15 — yes?")
+     and stop. Their next reply disambiguates; you act then.
+  3. Once you've picked, share_update on that task. surface_to_customer
+     accepts an explicit customer_id from the find_tasks result for
+     vendor-initiated relays that aren't covered by share_update.
 
-ON UPDATE — for each UpdateItem, fill at least one of customer_context
-or system_context:
-- customer_context: customer-safe summary with concrete answers. No
-  hedging, no deferring. Restate the full latest state, don't write a
-  diff — the customer sees each update on its own.
-- system_context: internal notes for back-office actions. Omit if
-  nothing system-side needs to happen.
+CLOSING TASKS
+- Call close_task(task_key, reason, final_log_entry?) when work is done
+  (paid + delivered, vendor declined, customer cancelled, etc). Closed
+  tasks drop from the manifest but stay searchable via find_tasks.
+- The sweeper auto-closes tasks past their timeout. You don't need to
+  watch the clock.
+
+EDITING THE LOG WITHOUT FAN-OUT
+- Use update_task_log for ad-hoc edits to a task's log that don't
+  warrant a customer relay — fixing a typo in your own earlier section,
+  appending an internal observation, compacting older sections when the
+  log nears its size cap.
+- Actions: add (append a new section), replace (substring replace; the
+  old_text must be unique within the log), remove (substring delete).
 
 BACK-OFFICE TOOLS
-You also play the back-office store manager. After resolving a task — or
+You also play the back-office store manager. After acting on a task — or
 during a vendor conversation that warrants it — keep the business state
 consistent:
 - update_inventory(sku, delta): adjust stock by delta (positive or negative).
@@ -204,14 +222,14 @@ consistent:
 - record_note(subject, content): journal a back-office event.
 - list_contacts(role=None): read the address book; pick a contact_id before
   dispatch_outbound.
-- dispatch_outbound(contact_id, prompt, summary=None, timeout_seconds=3600):
-  cascade outreach — e.g. switch to a backup vendor mid-conversation. Depth-
+- dispatch_outbound(contact_id, prompt, timeout_seconds=3600): cascade
+  outreach — e.g. switch to a backup vendor mid-conversation. Depth-
   limited.
 - escalate_to_operator(reason, options=None): hand off to a human when
   automation can't proceed.
-- surface_to_customer(summary): tell the customer something that is NOT
-  already covered by a resolved task's customer_context (avoid duplicates).
-  Returns no_customer_context when no customer is bound to this thread.
+- surface_to_customer(summary, customer_id=None): tell the customer
+  something not already covered by a share_update relay. Pass an explicit
+  customer_id from find_tasks when the run isn't bound to a customer.
 
 Be decisive. Use these tools as part of the same run that resolves tasks;
 don't wait for a separate trigger. Stop when the back-office is consistent.
@@ -229,33 +247,24 @@ RESPONSE FORMAT
 
 def _format_manifest(tasks: list[OutboundTaskSummary]) -> str:
     if not tasks:
-        return "(none — they reached out unprompted, or every prior task is past the grace window)"
+        return "(none — they reached out unprompted, or every prior task is closed)"
     lines = []
     for t in tasks:
-        if t.state == "succeeded" and t.resolved_at is not None:
-            status = f"already shared an update {t.resolved_at:%Y-%m-%d %H:%M} — amend if they're correcting"
-        else:
-            status = "awaiting their reply"
+        excerpt = t.log_excerpt.replace("\n", " ⏎ ")
         lines.append(
             f"- task_key={t.task_key} | role={t.contact_role} | "
-            f"dispatched={t.dispatched_at:%Y-%m-%d %H:%M} | "
-            f"status: {status} | summary: {t.summary}"
+            f"dispatched={t.dispatched_at:%Y-%m-%d %H:%M}\n"
+            f"  log_excerpt: {excerpt}"
         )
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Hooks — fire customer fan-out per accepted share_update item.
+# ---------------------------------------------------------------------------
+
+
 _hooks: Hooks[OutboundDeps] = Hooks()
-
-
-def _content_hash(customer_context: str | None, system_context: str | None) -> str:
-    """Stable fingerprint of one share_update payload.
-
-    Used both as the (task_key, content_hash) UNIQUE key in
-    outbound_task_updates and as the customer-inbox dedup_id, so an agent
-    that emits the same content twice fans out exactly once.
-    """
-    payload = f"{customer_context or ''}\x1f{system_context or ''}".encode()
-    return hashlib.sha256(payload).hexdigest()[:16]
 
 
 @_hooks.on.after_tool_execute(tools=["share_update"])
@@ -268,16 +277,13 @@ async def _on_share_update(
     args: dict[str, Any],
     result: Any,
 ) -> Any:
-    """Append each accepted update to the history table and push the
-    customer-side system_event for any item with customer_context.
+    """Fan a system_event into the customer inbox for each accepted item
+    that carried a relay_to_customer payload.
 
-    The dedup_id is keyed on the content hash, so a second share_update
-    with the same payload is suppressed at the customer inbox while a
-    correction (different payload) flows through. The history-table insert
-    is `ON CONFLICT DO NOTHING` on the same hash for the same reason.
-
-    Each ingest is independent — a per-task error is logged and skipped so
-    other tasks still wake their customer.
+    The wrapper already appended the relay section to the task's log and
+    enforced the not-recently-duplicated guard. Here we just push the
+    customer-side event. Per-task errors are isolated so siblings still
+    fan out.
     """
     # Lazy imports — conversations.registry imports from this module.
     from backend.chatbot.conversations import inbox as conv_inbox
@@ -287,31 +293,27 @@ async def _on_share_update(
     accepted = result.get("accepted", []) if isinstance(result, dict) else []
     if not accepted:
         return result
+
     for entry in accepted:
         task_key = entry["task_key"]
-        cust_ctx = entry.get("customer_context")
-        sys_ctx = entry.get("system_context")
-        content_hash = entry["content_hash"]
+        relay = entry.get("relay_to_customer")
+        if not relay:
+            continue
         try:
-            inserted = await outbound_ledger.insert_task_update(
-                task_key, cust_ctx, sys_ctx, content_hash
-            )
-            if not inserted:
-                # Same payload already recorded — don't re-fan to customer.
-                continue
-            if not cust_ctx:
-                continue
             task = await outbound_ledger.get_by_key(task_key)
             if task is None:
                 continue
             biz = str(task.business_id)
             cust = str(task.customer_id)
             convo = customer_conversation(biz, cust)
-            dedup = f"share:{task_key}:{content_hash}"
+            # Hash-keyed dedup at the inbox so identical content within the
+            # TTL window can't double-fan-out (independent of the log dup
+            # guard, which protects past TTL expiry).
+            dedup = f"share:{task_key}:{entry['content_hash']}"
             conv_inbox.ingest(
                 PartyKey.customer(biz, cust),
                 conv_inbox.make_system_event_item(
-                    summary=cust_ctx,
+                    summary=relay,
                     source="outbound_reply",
                     contact_name=task.contact_name,
                     contact_role=task.contact_role,
@@ -321,25 +323,14 @@ async def _on_share_update(
                 dedup_id=dedup,
                 runner=convo.drain,
             )
-            try:
-                await events.insert_event(
-                    business_id=task.business_id,
-                    actor="business",
-                    direction="out",
-                    thread_id=f"customer:{cust}",
-                    content=cust_ctx,
-                    customer_id=task.customer_id,
-                    contact_id=task.contact_id,
-                    task_key=task.task_key,
-                )
-                events_search.bump_tenant(task.business_id)
-            except Exception:
-                logger.exception(
-                    "events log failed (share_update fanout) task=%s", task_key
-                )
         except Exception:
             logger.exception("share_update hook ingest failed task=%s", task_key)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Agent + tools
+# ---------------------------------------------------------------------------
 
 
 outbound_agent: Agent[OutboundDeps, str] = Agent(
@@ -360,108 +351,190 @@ def _build_instructions(ctx: RunContext[OutboundDeps]) -> str:
     )
 
 
+def _content_hash(text: str) -> str:
+    """Short hash of a relay payload — used as the inbox dedup_id suffix.
+
+    Borrowed from the previous design (no longer keyed in a sidecar table;
+    just a stable id for inbox dedup within its TTL window).
+    """
+    import hashlib
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _build_relay_section(item: UpdateItem) -> str:
+    """Markdown section appended to the task's log for one share_update item."""
+    when = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    lines: list[str] = []
+    if item.relay_to_customer:
+        lines.append(f"## Relayed to customer {when}")
+        lines.append(item.relay_to_customer)
+    if item.system_note:
+        if lines:
+            lines.append("")
+        lines.append(f"## System note {when}")
+        lines.append(item.system_note)
+    return "\n".join(lines)
+
+
 @outbound_agent.tool
 async def share_update(
     ctx: RunContext[OutboundDeps],
     items: list[UpdateItem],
 ) -> dict[str, list[Any]]:
-    """Share one or more updates from the vendor with the customer / system.
+    """Append a relay/note section to each task's log + fan out to the
+    customer inbox for any item with relay_to_customer.
 
-    Call this any time the partner conveys information the customer should
-    know — including corrections or amendments to something they said
-    earlier. The same task_key may appear across multiple share_update
-    calls within the manifest grace window; each new payload is recorded
-    and forwarded once.
-
-    Each item must have at least one of customer_context or system_context.
-    Items targeting tasks in a non-amendable terminal state (failed,
-    timed_out, cancelled, escalated) are reported under `skipped`.
+    Does NOT close the task. Vendor amendments later land on the same task
+    via another share_update call. Items targeting closed tasks land in
+    `skipped` with reason='task_closed'. Items whose payload duplicates
+    the same task's recent log content are skipped with
+    reason='duplicate_recent_relay'.
     """
     if not items:
         return {"accepted": [], "skipped": []}
     accepted: list[dict[str, Any]] = []
-    skipped: list[str] = []
+    skipped: list[dict[str, str]] = []
     for item in items:
-        if not (item.customer_context or item.system_context):
-            skipped.append(item.task_key)
+        if not (item.relay_to_customer or item.system_note):
+            skipped.append({"task_key": item.task_key, "reason": "empty_payload"})
             continue
-        ok = await outbound_ledger.mark_completed(
-            item.task_key, item.customer_context, item.system_context
+        section = _build_relay_section(item)
+        appended, skip_reason = await outbound_ledger.append_if_open_and_not_recent_dup(
+            item.task_key, section
         )
-        if not ok:
-            skipped.append(item.task_key)
+        if not appended:
+            skipped.append({"task_key": item.task_key, "reason": skip_reason or "skipped"})
             continue
         accepted.append(
             {
                 "task_key": item.task_key,
-                "customer_context": item.customer_context,
-                "system_context": item.system_context,
-                "content_hash": _content_hash(
-                    item.customer_context, item.system_context
-                ),
+                "relay_to_customer": item.relay_to_customer,
+                "system_note": item.system_note,
+                "content_hash": _content_hash(item.relay_to_customer or item.system_note or ""),
             }
         )
     return {"accepted": accepted, "skipped": skipped}
 
 
 @outbound_agent.tool
-async def find_customer_context(
-    ctx: RunContext[OutboundDeps], query: str, limit: int = 5
-) -> list[dict[str, Any]]:
-    """Search the multiparty event ledger for customers matching `query`.
+async def update_task_log(
+    ctx: RunContext[OutboundDeps],
+    task_key: str,
+    action: Literal["add", "replace", "remove"],
+    content: str,
+    old_text: str | None = None,
+) -> dict[str, Any]:
+    """Edit a task's log without firing a customer fan-out.
 
-    Use this whenever the partner's reply could plausibly belong to more
-    than one customer, or whenever an instruction says "this customer"
-    without naming who. Returns up to `limit` candidate customers, each
-    with their recent multiparty turns (vendor side + customer side) and
-    any open outbound task summaries — the minimum useful set for picking
-    or asking the partner to confirm.
-
-    Results are clustered by customer_id; an entry with customer_id=None
-    is unattributed traffic (e.g. a vendor's unprompted message that
-    hasn't been tied to a customer yet) — read those as candidates to
-    attribute by content.
+    - action='add': append `content` as a new markdown section.
+    - action='replace': substitute exactly one occurrence of `old_text`
+      with `content`. Errors when `old_text` is missing or ambiguous.
+    - action='remove': delete exactly one occurrence of `old_text`
+      (`content` must be empty or omitted).
     """
-    clusters = await events_search.find_customer_clusters(
-        ctx.deps.business_id, query, limit=limit
+    try:
+        if action == "add":
+            new_log = await outbound_ledger.append_to_log(task_key, content)
+        elif action == "replace":
+            if old_text is None:
+                return {"ok": False, "reason": "old_text_required"}
+            new_log = await outbound_ledger.replace_in_log(
+                task_key, old_text, content
+            )
+        elif action == "remove":
+            target = old_text if old_text is not None else content
+            new_log = await outbound_ledger.remove_from_log(task_key, target)
+        else:
+            return {"ok": False, "reason": f"unknown_action: {action}"}
+    except LogWriteError as exc:
+        return {"ok": False, "reason": str(exc)}
+    return {"ok": True, "log": new_log, "log_bytes": len(new_log.encode("utf-8"))}
+
+
+@outbound_agent.tool
+async def close_task(
+    ctx: RunContext[OutboundDeps],
+    task_key: str,
+    reason: str,
+    final_log_entry: str | None = None,
+) -> dict[str, Any]:
+    """Mark a task closed. Drops it from the manifest; remains searchable.
+
+    `reason` is a short label ("delivered", "vendor declined", "cancelled").
+    `final_log_entry` is optional free-form markdown appended along with
+    the closure marker.
+    """
+    closed = await outbound_ledger.close_task(
+        task_key, reason=reason, final_log_entry=final_log_entry
     )
-    return [
-        {
-            "customer_id": str(c.customer_id) if c.customer_id else None,
-            "customer_name": c.customer_name,
-            "score": c.score,
-            "recent_events": c.recent_events,
-            "open_task_summaries": c.open_task_summaries,
-        }
-        for c in clusters
-    ]
+    if not closed:
+        return {"ok": False, "reason": "already_closed_or_unknown"}
+    return {"ok": True}
+
+
+@outbound_agent.tool
+async def find_tasks(
+    ctx: RunContext[OutboundDeps],
+    query: str,
+    customer_id: UUID | None = None,
+    contact_id: UUID | None = None,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    """bm25 search across this tenant's tasks (open + closed within 180d).
+
+    Use when:
+    - a vendor's reply could belong to multiple customers and the manifest
+      doesn't disambiguate
+    - an instruction references past work that isn't in the manifest
+      (closed tasks)
+    - the agent needs to reference a prior task by content
+
+    Filters: `customer_id` narrows to one customer's history, `contact_id`
+    to one vendor's. Recency-decayed and score-floored — irrelevant or
+    very old hits are dropped, not returned weakly.
+    """
+    rows = await outbound_ledger.find_tasks(
+        ctx.deps.business_id,
+        query,
+        customer_id=customer_id,
+        contact_id=contact_id,
+        limit=limit,
+    )
+    return [_task_row_to_tool_dict(r) for r in rows]
+
+
+def _task_row_to_tool_dict(row: OutboundTaskRow) -> dict[str, Any]:
+    return {
+        "task_key": row.task_key,
+        "customer_id": str(row.customer_id),
+        "contact_id": str(row.contact_id) if row.contact_id else None,
+        "contact_name": row.contact_name,
+        "contact_role": row.contact_role,
+        "log": row.log,
+        "dispatched_at": row.dispatched_at.isoformat(),
+        "closed_at": row.closed_at.isoformat() if row.closed_at else None,
+    }
 
 
 @outbound_agent.tool
 async def get_task_details(
     ctx: RunContext[OutboundDeps], task_key: str
 ) -> dict[str, Any] | None:
-    """Fetch the full dispatch_prompt + state for a task in the manifest.
+    """Fetch the full row + full log for a task in the manifest.
 
-    Use when the manifest summary isn't enough to know what the task is
-    about — e.g. the partner's reply is ambiguous and you need the
-    original brief to disambiguate.
+    Use when the manifest's log_excerpt isn't enough — e.g. you need the
+    original dispatch brief or earlier sections that scrolled past the
+    excerpt window.
     """
     task = await outbound_ledger.get_by_key(task_key)
     if task is None:
         return None
-    return {
-        "task_key": task.task_key,
-        "dispatch_prompt": task.dispatch_prompt,
-        "summary": task.summary,
-        "state": task.state,
-        "dispatched_at": task.dispatched_at.isoformat(),
-        "customer_context": task.customer_context,
-    }
+    return _task_row_to_tool_dict(task)
 
 
 # ---------------------------------------------------------------------------
-# Back-office tools — merged from the former coordinator agent.
+# Back-office tools — preserved as-is from prior design.
 # ---------------------------------------------------------------------------
 
 
@@ -522,7 +595,6 @@ async def record_note(
     ctx: RunContext[OutboundDeps], subject: str, content: str
 ) -> dict[str, Any]:
     """Append a back-office journal entry."""
-    # TODO: replace with a `coordinator_notes` table when persistence is needed.
     logger.info(
         "outbound_note | business_id=%s customer_id=%s subject=%s content=%s",
         ctx.deps.business_id,
@@ -550,14 +622,12 @@ async def dispatch_outbound(
     ctx: RunContext[OutboundDeps],
     contact_id: UUID,
     prompt: str,
-    summary: str | None = None,
     timeout_seconds: int = 3600,
 ) -> dict[str, Any] | str:
     """Open a new system-initiated outbound thread. Returns the new task_key.
 
-    `summary` is a short ≤80-char headline shown in the contact agent's
-    manifest. Returns `no_customer_context` when the current run has no
-    customer bound — the agent should resolve a task first or escalate.
+    Returns `no_customer_context` when the current run has no customer
+    bound — the agent should resolve via find_tasks first.
     """
     if ctx.deps.customer_id is None:
         return {
@@ -570,7 +640,6 @@ async def dispatch_outbound(
         contact_id=contact_id,
         initiated_by="system",
         dispatch_prompt=prompt,
-        summary=summary,
         timeout_seconds=timeout_seconds,
         parent_depth=ctx.deps.current_depth,
     )
@@ -583,7 +652,6 @@ async def escalate_to_operator(
     options: list[str] | None = None,
 ) -> dict[str, Any]:
     """Hand off to a human operator when automation cannot proceed."""
-    # TODO: wire to operator dashboard / Slack / email alerting once it exists.
     logger.warning(
         "outbound_escalation | business_id=%s customer_id=%s reason=%s options=%s",
         ctx.deps.business_id,
@@ -600,19 +668,18 @@ async def surface_to_customer(
     summary: str,
     customer_id: UUID | None = None,
 ) -> dict[str, Any]:
-    """Push a system_event into the customer inbox for central_agent to phrase.
+    """Push a system_event into the customer inbox for the central agent
+    to phrase.
 
     Pass `customer_id` explicitly when the run isn't bound to a customer
-    (vendor-initiated thread, or one vendor handling multiple customers).
-    The agent typically gets this id from `find_customer_context`. When
-    omitted, falls back to the run's bound `customer_id`; if neither is
-    available, returns `no_customer_context` so the agent can search and
-    retry.
+    (vendor-initiated thread, or one vendor handling multiple customers —
+    typically derived from a find_tasks result). When omitted, falls back
+    to the run's bound `customer_id`; if neither is available, returns
+    `no_customer_context`.
     """
     target_customer_id = customer_id or ctx.deps.customer_id
     if target_customer_id is None:
         return {"ok": False, "reason": "no_customer_context"}
-    # Lazy import — conversations.registry imports from this module.
     from backend.chatbot.conversations import inbox as conv_inbox
     from backend.chatbot.conversations.inbox import PartyKey
     from backend.chatbot.conversations.registry import customer_conversation
@@ -631,24 +698,11 @@ async def surface_to_customer(
         dedup_id=dedup,
         runner=convo.drain,
     )
-    try:
-        await events.insert_event(
-            business_id=ctx.deps.business_id,
-            actor="business",
-            direction="out",
-            thread_id=f"customer:{cust}",
-            content=summary,
-            customer_id=target_customer_id,
-            contact_id=ctx.deps.contact_id,
-        )
-        events_search.bump_tenant(ctx.deps.business_id)
-    except Exception:
-        logger.exception("events log failed (surface_to_customer)")
     return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
-# Transport — turn a contact_id into a real ChannelIdentity for sending.
+# Transport
 # ---------------------------------------------------------------------------
 
 
@@ -696,14 +750,9 @@ async def _send_to_party(
     """Send `text` to the contact. Returns None on success, status on failure.
 
     `task_key` is appended as a [Ref:] tag by the dispatcher when set —
-    used on opening runs so the partner can disambiguate which thread their
-    reply is for. On reply runs we have no single task_key (the run could
-    have closed several at once or none), so we omit the ref.
-
-    On successful send the message is appended to the multiparty event
-    ledger (`events`) so subsequent retrieval can find it. Logging failures
-    are swallowed (best-effort): the agent already sent the message, the
-    ledger is observability and will heal on the next dispatch.
+    used on opening runs so the partner can disambiguate which thread
+    their reply is for. On reply runs we have no single task_key (the
+    run could have addressed several tasks or none), so we omit the ref.
     """
     party_identity = await _contact_identity(contact_id)
     if party_identity is None:
@@ -730,26 +779,11 @@ async def _send_to_party(
         except Exception as exc:
             logger.exception("send_to_party failed contact=%s", contact_id)
             return f"dispatch failed: {exc}"
-
-    try:
-        await events.insert_event(
-            business_id=business_id,
-            actor="business",
-            direction="out",
-            thread_id=f"contact:{contact_id}",
-            content=text,
-            customer_id=customer_id,
-            contact_id=contact_id,
-            task_key=task_key,
-        )
-        events_search.bump_tenant(business_id)
-    except Exception:
-        logger.exception("events log failed (vendor send) contact=%s", contact_id)
     return None
 
 
 # ---------------------------------------------------------------------------
-# Entry points: dispatch (opening run) + deliver_contact_reply (drain runner).
+# Entry points
 # ---------------------------------------------------------------------------
 
 
@@ -760,7 +794,6 @@ async def dispatch(
     contact_id: UUID,
     initiated_by: Literal["customer", "system"],
     dispatch_prompt: str,
-    summary: str | None = None,
     business_name: str | None = None,
     timeout_seconds: int = 3600,
     parent_depth: int = 0,
@@ -781,10 +814,6 @@ async def dispatch(
 
     task_key = uuid4().hex
     timeout_at = datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)
-    # When the caller doesn't pass a summary, use the dispatch_prompt verbatim.
-    # Manifest readability is the agent's job to optimize via the summary kwarg
-    # — the harness shouldn't synthetically truncate.
-    final_summary = (summary or "").strip() or dispatch_prompt
     await outbound_ledger.insert_task(
         task_key=task_key,
         business_id=business_id,
@@ -795,7 +824,6 @@ async def dispatch(
         contact_id=contact.id,
         contact_name=contact.name,
         contact_role=contact.role,
-        summary=final_summary,
     )
 
     async def _run() -> None:
@@ -807,7 +835,6 @@ async def dispatch(
         while not _redis_queue.acquire_lock(lock_key, owner, ttl_seconds=60):
             await asyncio.sleep(0.5)
         try:
-            await outbound_ledger.mark_running(task_key)
             open_tasks = await outbound_ledger.list_open_tasks_by_contact(
                 business_id, contact.id
             )
@@ -838,15 +865,16 @@ async def dispatch(
                         opening_input, deps=deps, message_history=history
                     )
                 except Exception as exc:
-                    await outbound_ledger.mark_failed(task_key, system_context=str(exc))
+                    # Close the task with the error captured in the log.
+                    await outbound_ledger.close_task(
+                        task_key,
+                        reason="dispatch_failed",
+                        final_log_entry=f"Agent error: {exc}",
+                    )
                     return
                 await chat_storage.append_contact_history(
                     business_id, contact.id, result.new_messages()
                 )
-                # Opening run shouldn't normally call share_update — but if
-                # it does, the share_update hook already routed everything.
-                # Still send the agent's text to the party so they get the
-                # outreach.
                 send_status = await _send_to_party(
                     business_id=business_id,
                     contact_id=contact.id,
@@ -922,11 +950,6 @@ async def deliver_contact_reply(
 
         await chat_storage.append_contact_history(biz, cid, result.new_messages())
 
-        # The agent's plain-text output is the reply to the partner. If
-        # share_update was called during the run, _on_share_update already
-        # fanned out customer-side notifications — the partner just needs
-        # the agent's natural reply (no canned ack, no [Ref:] tag since
-        # this run might span multiple tasks or none).
         send_status = await _send_to_party(
             business_id=biz, contact_id=cid, text=result.output
         )
