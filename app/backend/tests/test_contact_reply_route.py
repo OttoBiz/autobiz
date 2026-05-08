@@ -26,7 +26,9 @@ from fastapi.testclient import TestClient  # noqa: E402
 from backend.chatbot.channels.base import ChannelIdentity, InboundMessage  # noqa: E402
 
 
-def _contact_inbound(text: str | None = "vendor reply") -> InboundMessage:
+def _contact_inbound(
+    text: str | None = "vendor reply", wamid: str = "wamid.XYZ"
+) -> InboundMessage:
     return InboundMessage(
         identity=ChannelIdentity(
             business_id="placeholder",
@@ -38,7 +40,7 @@ def _contact_inbound(text: str | None = "vendor reply") -> InboundMessage:
         ),
         text=text,
         media=[],
-        raw={"messages": [{"id": "wamid.XYZ"}]},
+        raw={"messages": [{"id": wamid}]},
         received_at=datetime.now(timezone.utc),
     )
 
@@ -46,6 +48,14 @@ def _contact_inbound(text: str | None = "vendor reply") -> InboundMessage:
 @pytest.fixture
 def app_client(monkeypatch):
     from backend.api.routers.webhooks import whatsapp as whatsapp_webhook
+
+    # Bypass the wamid dedup so prior test runs don't leave stale Redis keys
+    # that cause this run's webhook calls to short-circuit as duplicates.
+    monkeypatch.setattr(
+        whatsapp_webhook._redis_queue,
+        "set_if_absent",
+        lambda key, value, ttl_seconds: True,
+    )
 
     app = FastAPI()
     app.include_router(whatsapp_webhook.router)
@@ -108,7 +118,7 @@ def test_contact_branch_returns_ignored_when_text_is_empty(app_client, monkeypat
     biz_id = uuid4()
     contact_id = uuid4()
 
-    fake_msg = _contact_inbound(None)  # no text — e.g. media-only inbound
+    fake_msg = _contact_inbound(None, wamid="wamid.EMPTY")  # no text — e.g. media-only inbound
     fake_channel = SimpleNamespace(parse_inbound=MagicMock(return_value=fake_msg))
 
     async def fake_resolve(phone_number_id, wa_id):
@@ -130,6 +140,8 @@ def test_contact_branch_returns_ignored_when_text_is_empty(app_client, monkeypat
         json={"entry": [{"changes": [{"value": {"sample": True}}]}]},
     )
 
+    # We ack 200 immediately and detect empty content in the background task,
+    # so the body is just {"ok": True} and ingest is skipped silently.
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "ignored": "contact_no_content"}
+    assert response.json() == {"ok": True}
     ingest_mock.assert_not_called()

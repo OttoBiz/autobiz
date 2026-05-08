@@ -19,10 +19,11 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import PlainTextResponse
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 import backend.chatbot.channels.whatsapp  # noqa: F401  triggers channel registration
+from backend.chatbot import _redis_queue
 from backend.chatbot.channels import registry
 from backend.chatbot.channels.base import ChannelIdentity, MediaAttachment
 from backend.chatbot.channels.whatsapp import NonMessageEvent, _whatsapp_bot
@@ -115,8 +116,95 @@ def whatsapp_verify(request: Request) -> PlainTextResponse:
     return PlainTextResponse(body, status_code=status)
 
 
+_WAMID_DEDUP_TTL = 24 * 60 * 60
+
+
+def _wamid_dedup_key(wamid: str) -> str:
+    return f"webhook:whatsapp:wamid:{wamid}"
+
+
+async def _process_inbound(msg) -> None:
+    """Resolve sender, materialize media, and ingest. Runs after we ack 200."""
+    phone_number_id = msg.identity.channel_business_id
+    wa_id = msg.identity.channel_user_id
+    sender = await resolve_inbound_sender(phone_number_id, wa_id)
+    wamid = _wamid(msg)
+
+    match sender.kind:
+        case "unknown_tenant":
+            logger.warning(
+                "dropping inbound for unknown tenant phone_number_id=%s",
+                phone_number_id,
+            )
+            return
+        case "owner":
+            logger.info(
+                "ignoring owner self-message business=%s wa_id=%s",
+                sender.business_id,
+                wa_id,
+            )
+            return
+        case "contact":
+            biz = str(sender.business_id)
+            cid = str(sender.contact_id)
+            text = msg.text or ""
+            media = await _materialize_media(msg.media, biz, cid)
+            if not text and not media:
+                logger.info(
+                    "contact inbound has no usable content contact=%s name=%s",
+                    sender.contact_id,
+                    sender.contact_name,
+                )
+                return
+            convo = vendor_conversation(biz, cid)
+            inbox.ingest(
+                PartyKey.vendor(biz, cid),
+                inbox.make_user_message_item(
+                    text=text, raw=msg.raw, dedup_id=wamid, media=media
+                ),
+                dedup_id=wamid,
+                runner=convo.drain,
+            )
+        case "customer":
+            customer_uuid = await resolve_or_create_customer_by_phone(wa_id)
+            biz = str(sender.business_id)
+            cust = str(customer_uuid)
+            resolved_identity = ChannelIdentity(
+                business_id=biz,
+                customer_id=cust,
+                channel="whatsapp",
+                channel_user_id=wa_id,
+                channel_business_id=phone_number_id,
+                last_inbound_at=msg.identity.last_inbound_at,
+            )
+            await channel_identities.upsert_identity(
+                resolved_identity.model_copy(
+                    update={"last_inbound_at": datetime.now(timezone.utc)}
+                )
+            )
+            media = await _materialize_media(msg.media, biz, cust)
+            convo = customer_conversation(biz, cust)
+            inbox.ingest(
+                PartyKey.customer(biz, cust),
+                inbox.make_user_message_item(
+                    text=msg.text or "",
+                    raw=msg.raw,
+                    dedup_id=wamid,
+                    media=media,
+                ),
+                dedup_id=wamid,
+                runner=convo.drain,
+            )
+
+
 @router.post("/whatsapp")
-async def whatsapp_webhook(request: Request) -> dict:
+async def whatsapp_webhook(
+    request: Request, background: BackgroundTasks
+) -> JSONResponse:
+    # Meta retries until it sees a 2xx within ~5s. Media download + R2 upload
+    # easily blow past that, so we ack 200 *first* and process in the
+    # background. wamid dedup is claimed before scheduling so that retries
+    # racing the background task are short-circuited at the door.
     raw_body = await request.body()
     signature = request.headers.get("x-hub-signature-256") or request.headers.get(
         "x-hub-signature", ""
@@ -134,86 +222,15 @@ async def whatsapp_webhook(request: Request) -> dict:
         msg = channel.parse_inbound(payload)
     except NonMessageEvent as exc:
         logger.info("ignoring non-message webhook: %s", exc)
-        # 200 so Meta stops retrying — status callbacks (sent/delivered/read)
-        # and template status events legitimately have no user message.
-        return {"ok": True, "ignored": "non_message_event"}
-    # `parse_inbound` stuffs WA-native IDs into the identity; classify them
-    # against businesses+contacts before deciding what to do.
-    phone_number_id = msg.identity.channel_business_id
-    wa_id = msg.identity.channel_user_id
-    sender = await resolve_inbound_sender(phone_number_id, wa_id)
+        return JSONResponse({"ok": True, "ignored": "non_message_event"}, status_code=200)
 
-    match sender.kind:
-        case "unknown_tenant":
-            logger.warning(
-                "dropping inbound for unknown tenant phone_number_id=%s",
-                phone_number_id,
-            )
-            # 200 so Meta stops retrying — we don't own this number.
-            return {"ok": True, "ignored": "unknown_tenant"}
-        case "owner":
-            logger.info(
-                "ignoring owner self-message business=%s wa_id=%s",
-                sender.business_id,
-                wa_id,
-            )
-            return {"ok": True, "ignored": "owner_self_message"}
-        case "contact":
-            biz = str(sender.business_id)
-            cid = str(sender.contact_id)
-            text = msg.text or ""
-            media = await _materialize_media(msg.media, biz, cid)
-            if not text and not media:
-                # Empty interactive / unsupported media kind — nothing to feed
-                # the agent. 200 so Meta stops retrying.
-                logger.info(
-                    "contact inbound has no usable content contact=%s name=%s",
-                    sender.contact_id,
-                    sender.contact_name,
-                )
-                return {"ok": True, "ignored": "contact_no_content"}
-            wamid = _wamid(msg)
-            convo = vendor_conversation(biz, cid)
-            inbox.ingest(
-                PartyKey.vendor(biz, cid),
-                inbox.make_user_message_item(
-                    text=text, raw=msg.raw, dedup_id=wamid, media=media
-                ),
-                dedup_id=wamid,
-                runner=convo.drain,
-            )
-            return {"ok": True}
-        case "customer":
-            customer_uuid = await resolve_or_create_customer_by_phone(wa_id)
-            biz = str(sender.business_id)
-            cust = str(customer_uuid)
-            # Persist identity here (used to live in orchestrator.handle_inbound)
-            # so the customer's drain runner can resolve it on the way out.
-            resolved_identity = ChannelIdentity(
-                business_id=biz,
-                customer_id=cust,
-                channel="whatsapp",
-                channel_user_id=wa_id,
-                channel_business_id=phone_number_id,
-                last_inbound_at=msg.identity.last_inbound_at,
-            )
-            await channel_identities.upsert_identity(
-                resolved_identity.model_copy(
-                    update={"last_inbound_at": datetime.now(timezone.utc)}
-                )
-            )
-            wamid = _wamid(msg)
-            media = await _materialize_media(msg.media, biz, cust)
-            convo = customer_conversation(biz, cust)
-            inbox.ingest(
-                PartyKey.customer(biz, cust),
-                inbox.make_user_message_item(
-                    text=msg.text or "",
-                    raw=msg.raw,
-                    dedup_id=wamid,
-                    media=media,
-                ),
-                dedup_id=wamid,
-                runner=convo.drain,
-            )
-            return {"ok": True}
+    wamid = _wamid(msg)
+    if wamid is not None:
+        if not _redis_queue.set_if_absent(
+            _wamid_dedup_key(wamid), "1", _WAMID_DEDUP_TTL
+        ):
+            logger.info("duplicate whatsapp webhook wamid=%s", wamid)
+            return JSONResponse({"ok": True, "deduped": True}, status_code=200)
+
+    background.add_task(_process_inbound, msg)
+    return JSONResponse({"ok": True}, status_code=200)
