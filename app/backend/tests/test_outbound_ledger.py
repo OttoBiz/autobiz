@@ -471,7 +471,7 @@ async def test_find_tasks_ranks_matching_task_first(monkeypatch, conn):
 
 
 @pytest.mark.asyncio
-async def test_find_tasks_score_floor_drops_irrelevant_hits(monkeypatch, conn):
+async def test_find_tasks_drops_zero_score_hits(monkeypatch, conn):
     biz = uuid4()
     rows = [
         outbound_ledger.OutboundTaskRow(

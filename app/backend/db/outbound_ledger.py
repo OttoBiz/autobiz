@@ -86,7 +86,6 @@ LOG_HARD_CAP_BYTES = 8 * 1024            # ~8KB per task log
 LOG_EXCERPT_TAIL_CHARS = 400             # manifest tail window
 _BM25_INDEX_DOC_LIMIT = 5000
 _RECENCY_HALFLIFE_DAYS = 14.0
-_SCORE_FLOOR = 0.5                       # drop weak hits below this weighted score
 _FIND_TASKS_CUTOFF_DAYS = 180            # closed tasks past this aren't indexed
 _INJECTION_PATTERNS = [
     re.compile(r"ignore (?:all )?previous instructions", re.IGNORECASE),
@@ -599,11 +598,13 @@ async def find_tasks(
     contact_id: UUID | None = None,
     limit: int = 5,
 ) -> list[OutboundTaskRow]:
-    """bm25 over the tenant's task logs. Recency-decayed, score-floored.
+    """bm25 over the tenant's task logs. Recency-decayed.
 
     Optional `customer_id` / `contact_id` filters narrow the result post-
     ranking — corpus is still tenant-wide so a customer's tasks compete on
-    relevance with siblings.
+    relevance with siblings. Stale closed tasks are excluded at index time
+    via the 180-day cutoff, so we don't need a per-result score floor;
+    bm25s already returns a top-K ranked list.
     """
     if not query.strip():
         return []
@@ -625,14 +626,14 @@ async def find_tasks(
         idx = int(doc_idx)
         if idx < 0 or idx >= len(index.rows):
             continue
+        if float(raw) <= 0:
+            continue
         row = index.rows[idx]
         if customer_id is not None and row.customer_id != customer_id:
             continue
         if contact_id is not None and row.contact_id != contact_id:
             continue
         weighted = float(raw) * _recency_weight(row)
-        if weighted < _SCORE_FLOOR:
-            continue
         scored.append((weighted, row))
 
     scored.sort(key=lambda kv: kv[0], reverse=True)
