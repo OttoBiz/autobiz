@@ -69,6 +69,9 @@ async def seed_whatsapp_business(
     self_vendor_name: str = "Self",
     self_vendor_role: str = "vendor",
     self_vendor_notes: str | None = None,
+    bank_name: str | None = None,
+    bank_account_number: str | None = None,
+    bank_account_name: str | None = None,
 ) -> dict:
     """Upsert one WhatsApp-bound business + its products. Returns a summary.
 
@@ -99,19 +102,26 @@ async def seed_whatsapp_business(
                 """
                 INSERT INTO businesses (
                     id, name, business_type, phone_number,
-                    whatsapp_phone_number_id
+                    whatsapp_phone_number_id,
+                    bank_name, bank_account_number, bank_account_name
                 )
-                VALUES ($1, $2, 'vendor', $3, $4)
+                VALUES ($1, $2, 'vendor', $3, $4, $5, $6, $7)
                 ON CONFLICT (id) DO UPDATE SET
                     name = EXCLUDED.name,
                     phone_number = EXCLUDED.phone_number,
                     whatsapp_phone_number_id = EXCLUDED.whatsapp_phone_number_id,
+                    bank_name = COALESCE(EXCLUDED.bank_name, businesses.bank_name),
+                    bank_account_number = COALESCE(EXCLUDED.bank_account_number, businesses.bank_account_number),
+                    bank_account_name = COALESCE(EXCLUDED.bank_account_name, businesses.bank_account_name),
                     updated_at = NOW()
                 """,
                 bid,
                 business_name,
                 normalized_phone,
                 phone_number_id,
+                bank_name,
+                bank_account_number,
+                bank_account_name,
             )
             await conn.execute(
                 "DELETE FROM products WHERE business_id = $1", bid
@@ -221,6 +231,9 @@ async def seed_whatsapp_business_from_env(pool) -> dict | None:
     - SEED_SELF_VENDOR_NAME     (default: "Self")
     - SEED_SELF_VENDOR_ROLE     (default: "vendor")
     - SEED_SELF_VENDOR_NOTES    (default: empty)
+    - SEED_BANK_NAME            (default: "Stanbic IBTC")
+    - SEED_BANK_ACCOUNT_NUMBER  (default: "0032642727")
+    - SEED_BANK_ACCOUNT_NAME    (default: "David Okpare")
 
     Returns the seed summary on success, None when skipped.
     """
@@ -264,6 +277,9 @@ async def seed_whatsapp_business_from_env(pool) -> dict | None:
         self_vendor_name=(os.getenv("SEED_SELF_VENDOR_NAME") or "Self").strip(),
         self_vendor_role=(os.getenv("SEED_SELF_VENDOR_ROLE") or "vendor").strip(),
         self_vendor_notes=(os.getenv("SEED_SELF_VENDOR_NOTES") or "").strip() or None,
+        bank_name=(os.getenv("SEED_BANK_NAME") or "Stanbic IBTC").strip() or None,
+        bank_account_number=(os.getenv("SEED_BANK_ACCOUNT_NUMBER") or "0032642727").strip() or None,
+        bank_account_name=(os.getenv("SEED_BANK_ACCOUNT_NAME") or "David Okpare").strip() or None,
     )
     logger.info(
         "Seeded WhatsApp business id=%s name=%s products=%d phone=%s contacts=%d",
