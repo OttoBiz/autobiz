@@ -44,58 +44,19 @@ os.environ.setdefault(
 )
 
 
-@pytest_asyncio.fixture(scope="module", loop_scope="module")
-async def db_ready():
-    """Apply migrations + seed minimum tenancy. Skip the whole module if
-    Postgres or Redis aren't reachable so the suite is friendly when run
-    outside the smoke environment."""
-    try:
-        from backend.db.connection import get_db, init_db
-        from backend.db.populate import _run_migrations
-    except Exception as exc:
-        pytest.skip(f"app imports unavailable: {exc}")
-
-    try:
-        await init_db()
-        pool = await get_db()
-    except Exception as exc:
-        pytest.skip(f"postgres not reachable: {exc}")
-
-    try:
-        await _run_migrations(pool)
-    except Exception as exc:
-        pytest.skip(f"migrations failed (likely DB perms): {exc}")
-
-    biz_id = uuid4()
-    cust_id = uuid4()
-    contact_id = uuid4()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO businesses (id, name, business_type) VALUES ($1, $2, 'fashion')",
-            biz_id, "Smoke Biz",
-        )
-        await conn.execute(
-            "INSERT INTO users (id, full_name, phone_number) VALUES ($1, $2, $3)",
-            cust_id, "Alice Smoke", f"+234{uuid4().hex[:10]}",
-        )
-        await conn.execute(
-            """
-            INSERT INTO contacts (id, business_id, name, role, channel, channel_user_id)
-            VALUES ($1, $2, $3, $4, 'console', $5)
-            """,
-            contact_id, biz_id, "Vendor X", "vendor", f"vendor-{uuid4().hex[:6]}",
-        )
-
-    yield {"business_id": biz_id, "customer_id": cust_id, "contact_id": contact_id}
-
-    async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM outbound_tasks WHERE business_id = $1", biz_id)
-        await conn.execute("DELETE FROM contacts WHERE id = $1", contact_id)
-        await conn.execute("DELETE FROM users WHERE id = $1", cust_id)
-        await conn.execute("DELETE FROM businesses WHERE id = $1", biz_id)
+@pytest_asyncio.fixture(loop_scope="session")
+async def db_ready(smoke_tenancy):
+    """Backwards-compatible alias for the shared session-scoped fixture
+    in conftest.py. Returns the customer key as `customer_id` (this file
+    uses Alice as the only customer)."""
+    return {
+        "business_id": smoke_tenancy["business_id"],
+        "customer_id": smoke_tenancy["alice_id"],
+        "contact_id": smoke_tenancy["contact_id"],
+    }
 
 
-@pytest.mark.asyncio(loop_scope="module")
+@pytest.mark.asyncio(loop_scope="session")
 async def test_full_log_flow(db_ready, monkeypatch):
     """Walk the canonical lifecycle: dispatch → relay → amendment → close
     → search-finds-closed-task. Every step verified against real DB state.
@@ -212,7 +173,7 @@ async def test_full_log_flow(db_ready, monkeypatch):
     assert post_reason == "task_closed"
 
 
-@pytest.mark.asyncio(loop_scope="module")
+@pytest.mark.asyncio(loop_scope="session")
 async def test_sweeper_closes_expired_and_notifies_customer(db_ready, monkeypatch):
     """Timeout sweeper: sets closed_at, appends auto-close log entry,
     pushes a customer-side system_event so the customer doesn't get ghosted.
@@ -264,7 +225,7 @@ async def test_sweeper_closes_expired_and_notifies_customer(db_ready, monkeypatc
     assert matching[0]["contact_name"] == "Vendor X"
 
 
-@pytest.mark.asyncio(loop_scope="module")
+@pytest.mark.asyncio(loop_scope="session")
 async def test_find_tasks_recency_and_score_floor(db_ready):
     """Two tasks for the same customer; query matches the recent one
     distinctively. Stale + irrelevant tasks don't surface at the floor."""
