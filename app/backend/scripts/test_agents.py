@@ -286,13 +286,11 @@ async def run_all_tests(agent_filter: Optional[str] = None, output_path: str = "
 
     # Fetch a test business + user from DB
     async with pool.acquire() as conn:
-        biz_row = await conn.fetchrow(
-            "SELECT id FROM businesses WHERE business_type = 'vendor' LIMIT 1"
-        )
+        biz_row = await conn.fetchrow("SELECT id FROM businesses LIMIT 1")
         user_row = await conn.fetchrow("SELECT id FROM users LIMIT 1")
 
     if not biz_row or not user_row:
-        print("ERROR: No businesses or users in DB. Run prepopulate_db.py first.")
+        print("ERROR: No businesses or users in DB. Seed via WHATSAPP_PHONE_NUMBER_ID env first.")
         await close_db()
         return
 

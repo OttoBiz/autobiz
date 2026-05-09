@@ -182,12 +182,12 @@ async def get_business_info(business_id: str) -> Optional[Dict[str, Any]]:
     pool = await get_db()
 
     query = """
-        SELECT id, name, business_type, tier, phone_number, email,
+        SELECT id, name, tier, phone_number, email,
                ig_page, facebook_page, twitter_page, tiktok,
                bank_name, bank_account_number, bank_account_name,
                paystack_public_key, paystack_secret_key,
-               human_agent_phone, human_agent_email,
-               product_schema, created_at, updated_at
+               fulfillment_modes, physical_address, physical_city, physical_state,
+               created_at, updated_at
         FROM businesses
         WHERE id = $1::uuid
            OR ig_page ILIKE $2
@@ -223,12 +223,12 @@ async def get_business_by_handle(handle: str) -> Optional[Dict[str, Any]]:
     pool = await get_db()
 
     query = """
-        SELECT id, name, business_type, tier, phone_number, email,
+        SELECT id, name, tier, phone_number, email,
                ig_page, facebook_page, twitter_page, tiktok,
                bank_name, bank_account_number, bank_account_name,
                paystack_public_key, paystack_secret_key,
-               human_agent_phone, human_agent_email,
-               product_schema, created_at, updated_at
+               fulfillment_modes, physical_address, physical_city, physical_state,
+               created_at, updated_at
         FROM businesses
         WHERE ig_page ILIKE $1
            OR facebook_page ILIKE $1
@@ -244,18 +244,6 @@ async def get_business_by_handle(handle: str) -> Optional[Dict[str, Any]]:
         return dict(row) if row else None
 
 
-async def get_logistics_companies(limit: int = 10) -> List[Dict[str, Any]]:
-    """Get logistics companies (business_type='logistics')."""
-    pool = await get_db()
-    query = """
-        SELECT id, name, phone_number, email
-        FROM businesses
-        WHERE business_type = 'logistics'
-        LIMIT $1
-    """
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(query, limit)
-        return [dict(row) for row in rows]
 
 
 ## USER FUNCTIONS
@@ -387,7 +375,7 @@ async def create_order(
             status, metadata
         )
         VALUES ($1, $2::uuid, $3::uuid, $4, $5, $6, $7, 'pending', $8)
-        RETURNING id, order_number, user_id, business_id, logistic_id,
+        RETURNING id, order_number, user_id, business_id,
                   status, total_amount, delivery_address, delivery_city,
                   delivery_state, tracking_number, metadata,
                   created_at, updated_at
@@ -412,16 +400,14 @@ async def update_order_status(
     order_id: str,
     status: str,
     tracking_number: str = "",
-    logistic_id: str = "",
 ) -> Dict[str, Any] | None:
     """
-    Update order status and optionally assign logistics.
+    Update order status.
 
     Args:
         order_id: Order UUID
         status: New status (pending, payment_verified, shipped, delivered, cancelled)
         tracking_number: Optional tracking number
-        logistic_id: Optional logistics company UUID
 
     Returns:
         Updated order dictionary
@@ -432,17 +418,16 @@ async def update_order_status(
         UPDATE orders
         SET status = $2,
             tracking_number = COALESCE($3, tracking_number),
-            logistic_id = COALESCE($4::uuid, logistic_id),
             updated_at = NOW()
         WHERE id = $1::uuid
-        RETURNING id, order_number, user_id, business_id, logistic_id,
+        RETURNING id, order_number, user_id, business_id,
                   status, total_amount, delivery_address, delivery_city,
                   delivery_state, tracking_number, metadata,
                   created_at, updated_at
     """
 
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(query, order_id, status, tracking_number, logistic_id)
+        row = await conn.fetchrow(query, order_id, status, tracking_number)
         return dict(row) if row else None
 
 
@@ -451,7 +436,7 @@ async def get_order_by_id(order_id: str) -> Optional[Dict[str, Any]]:
     pool = await get_db()
 
     query = """
-        SELECT id, order_number, user_id, business_id, logistic_id,
+        SELECT id, order_number, user_id, business_id,
                status, total_amount, delivery_address, delivery_city,
                delivery_state, tracking_number, metadata,
                created_at, updated_at
@@ -469,7 +454,7 @@ async def get_order_by_number(order_number: str) -> Optional[Dict[str, Any]]:
     pool = await get_db()
 
     query = """
-        SELECT id, order_number, user_id, business_id, logistic_id,
+        SELECT id, order_number, user_id, business_id,
                status, total_amount, delivery_address, delivery_city,
                delivery_state, tracking_number, metadata,
                created_at, updated_at
@@ -487,7 +472,7 @@ async def get_orders_by_user(user_id: str, limit: int = 10) -> List[Dict[str, An
     pool = await get_db()
 
     query = """
-        SELECT id, order_number, user_id, business_id, logistic_id,
+        SELECT id, order_number, user_id, business_id,
                status, total_amount, delivery_address, delivery_city,
                delivery_state, tracking_number, metadata,
                created_at, updated_at
@@ -509,7 +494,7 @@ async def get_orders_by_business(
     pool = await get_db()
 
     query = """
-        SELECT id, order_number, user_id, business_id, logistic_id,
+        SELECT id, order_number, user_id, business_id,
                status, total_amount, delivery_address, delivery_city,
                delivery_state, tracking_number, metadata,
                created_at, updated_at

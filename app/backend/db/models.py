@@ -8,7 +8,7 @@ use SQLAlchemy ORM - we use asyncpg with raw SQL instead.
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import UUID4, BaseModel, Field
 
@@ -20,13 +20,6 @@ class BusinessTier(str, Enum):
     FREE = "free"
     GOLD = "gold"
     PLATINUM = "platinum"
-
-
-class BusinessType(str, Enum):
-    """Type of business"""
-
-    VENDOR = "vendor"
-    LOGISTICS = "logistics"
 
 
 class PaymentStatus(str, Enum):
@@ -88,7 +81,6 @@ class BusinessBase(BaseModel):
     """Base business schema"""
 
     name: str = Field(..., max_length=100)
-    business_type: BusinessType = BusinessType.VENDOR
     tier: BusinessTier = BusinessTier.FREE
     phone_number: Optional[str] = Field(None, max_length=20)
     email: Optional[str] = Field(None, max_length=100)
@@ -106,12 +98,13 @@ class BusinessBase(BaseModel):
     paystack_public_key: Optional[str] = None
     paystack_secret_key: Optional[str] = None
 
-    # Human escalation
-    human_agent_phone: Optional[str] = None
-    human_agent_email: Optional[str] = None
-
-    # Flexible schema for products
-    product_schema: Optional[Dict[str, Any]] = None
+    # Fulfillment: subset of {'delivery','pickup'}, at least one. Pickup
+    # tenants must populate physical_* at the app layer (not enforced in SQL
+    # so a tenant can be created before the operator fills them in).
+    fulfillment_modes: List[str] = Field(default_factory=lambda: ["delivery"])
+    physical_address: Optional[str] = None
+    physical_city: Optional[str] = None
+    physical_state: Optional[str] = None
 
 
 class BusinessCreate(BusinessBase):
@@ -212,7 +205,6 @@ class OrderUpdate(BaseModel):
 
     status: Optional[OrderStatus] = None
     tracking_number: Optional[str] = None
-    logistic_id: Optional[UUID4] = None
 
 
 class Order(OrderBase):
@@ -222,7 +214,6 @@ class Order(OrderBase):
     order_number: str
     user_id: UUID4
     business_id: UUID4
-    logistic_id: Optional[UUID4] = None
     status: OrderStatus
     tracking_number: Optional[str] = None
     created_at: datetime
@@ -279,7 +270,6 @@ class OrderWithDetails(Order):
 
     user: Optional[User] = None
     business: Optional[Business] = None
-    logistics: Optional[Business] = None
 
 
 class TransactionWithDetails(Transaction):

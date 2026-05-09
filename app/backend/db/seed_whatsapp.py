@@ -101,10 +101,10 @@ async def seed_whatsapp_business(
             await conn.execute(
                 """
                 INSERT INTO businesses (
-                    id, name, business_type, phone_number,
+                    id, name, phone_number,
                     bank_name, bank_account_number, bank_account_name
                 )
-                VALUES ($1, $2, 'vendor', $3, $4, $5, $6)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 ON CONFLICT (id) DO UPDATE SET
                     name = EXCLUDED.name,
                     phone_number = EXCLUDED.phone_number,

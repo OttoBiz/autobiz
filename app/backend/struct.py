@@ -61,7 +61,6 @@ class UserRequest(BaseModel):
 class AgentRequest(BaseModel):
     user_id: str
     vendor_id: Optional[str] = None
-    logistic_id: Optional[str] = None
     agent: str
     message: str
     agent_input: Optional[
