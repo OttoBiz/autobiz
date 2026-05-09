@@ -42,12 +42,14 @@ async def resolve_inbound_sender(
               c.id            AS contact_id,
               c.name          AS contact_name,
               c.role          AS contact_role
-            FROM businesses b
+            FROM channel_credentials cc
+            JOIN businesses b ON b.id = cc.business_id
             LEFT JOIN contacts c
               ON c.business_id     = b.id
              AND c.channel         = 'whatsapp'
              AND c.channel_user_id = $2
-            WHERE b.whatsapp_phone_number_id = $1
+            WHERE cc.channel = 'whatsapp'
+              AND cc.channel_business_id = $1
             LIMIT 1
             """,
             phone_number_id,

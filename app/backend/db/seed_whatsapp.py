@@ -102,14 +102,12 @@ async def seed_whatsapp_business(
                 """
                 INSERT INTO businesses (
                     id, name, business_type, phone_number,
-                    whatsapp_phone_number_id,
                     bank_name, bank_account_number, bank_account_name
                 )
-                VALUES ($1, $2, 'vendor', $3, $4, $5, $6, $7)
+                VALUES ($1, $2, 'vendor', $3, $4, $5, $6)
                 ON CONFLICT (id) DO UPDATE SET
                     name = EXCLUDED.name,
                     phone_number = EXCLUDED.phone_number,
-                    whatsapp_phone_number_id = EXCLUDED.whatsapp_phone_number_id,
                     bank_name = COALESCE(EXCLUDED.bank_name, businesses.bank_name),
                     bank_account_number = COALESCE(EXCLUDED.bank_account_number, businesses.bank_account_number),
                     bank_account_name = COALESCE(EXCLUDED.bank_account_name, businesses.bank_account_name),
@@ -118,10 +116,24 @@ async def seed_whatsapp_business(
                 bid,
                 business_name,
                 normalized_phone,
-                phone_number_id,
                 bank_name,
                 bank_account_number,
                 bank_account_name,
+            )
+            # Channel sender ID lives in channel_credentials. Same transaction
+            # so a half-seeded tenant (business with no sender) is impossible.
+            await conn.execute(
+                """
+                INSERT INTO channel_credentials (
+                    business_id, channel, channel_business_id
+                )
+                VALUES ($1::uuid, 'whatsapp', $2)
+                ON CONFLICT (business_id, channel) DO UPDATE SET
+                    channel_business_id = EXCLUDED.channel_business_id,
+                    updated_at = NOW()
+                """,
+                bid,
+                phone_number_id,
             )
             await conn.execute(
                 "DELETE FROM products WHERE business_id = $1", bid

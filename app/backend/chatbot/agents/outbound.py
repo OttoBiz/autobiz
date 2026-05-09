@@ -719,15 +719,11 @@ async def _contact_identity(contact_id: UUID) -> ChannelIdentity | None:
 
     sender_phone_id = contact.channel_business_id
     if sender_phone_id is None:
-        from backend.db.connection import get_db
+        from backend.chatbot.channels import credentials as channel_credentials
 
-        pool = await get_db()
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT whatsapp_phone_number_id FROM businesses WHERE id = $1",
-                contact.business_id,
-            )
-        sender_phone_id = row["whatsapp_phone_number_id"] if row else None
+        sender_phone_id = await channel_credentials.get_sender(
+            contact.business_id, contact.channel
+        )
 
     return ChannelIdentity(
         business_id=str(contact.business_id),
