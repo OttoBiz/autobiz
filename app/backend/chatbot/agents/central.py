@@ -470,35 +470,41 @@ async def _dispatch_task(deps: AgentDeps, task: Task) -> dict[str, Any]:
 def _render_fulfillment_block(business: dict[str, Any] | None) -> str:
     """Render the per-tenant fulfillment context the agent reads.
 
-    The physical address is intentionally OMITTED when the tenant is
-    delivery-only — there's no store to direct the customer to and
-    leaking a back-office address would be wrong. Pickup-capable tenants
-    get the address inline so the agent can quote it without a tool call.
+    Defaults to delivery when nothing is configured. Pickup is only
+    surfaced to the agent when the tenant actually has a physical
+    address on file — a tenant that ticked "pickup" but never filled
+    in the address gets silently downgraded to whatever else they
+    offer (delivery, by default). The customer must never learn that
+    pickup was meant to be available; from their side, it simply
+    isn't, and the agent collects a delivery address as usual.
+
+    The physical address is also kept out of the prompt entirely on
+    delivery-only tenants — there's no store to direct anyone to.
     """
-    modes = (business or {}).get("fulfillment_modes") or ["delivery"]
-    modes_set = set(modes)
+    modes = set((business or {}).get("fulfillment_modes") or ["delivery"])
+
+    addr = (business or {}).get("physical_address") or ""
+    city = (business or {}).get("physical_city") or ""
+    state = (business or {}).get("physical_state") or ""
+    full_address = ", ".join(p for p in (addr, city, state) if p)
+
+    # Pickup without an address is unusable. Drop it from the effective
+    # mode set so the agent doesn't surface or imply it.
+    if "pickup" in modes and not full_address:
+        modes.discard("pickup")
+    if not modes:
+        modes = {"delivery"}
+
     label_parts: list[str] = []
-    if "delivery" in modes_set:
+    if "delivery" in modes:
         label_parts.append("delivery")
-    if "pickup" in modes_set:
+    if "pickup" in modes:
         label_parts.append("pickup")
-    label = " + ".join(label_parts) if label_parts else "delivery"
+    label = " + ".join(label_parts)
 
     lines = [f"This business offers: {label}."]
-
-    if "pickup" in modes_set:
-        addr = (business or {}).get("physical_address") or ""
-        city = (business or {}).get("physical_city") or ""
-        state = (business or {}).get("physical_state") or ""
-        full = ", ".join(p for p in (addr, city, state) if p)
-        if full:
-            lines.append(f"Pickup address: {full}.")
-        else:
-            lines.append(
-                "Pickup address not yet on file — dispatch outbound to the "
-                "vendor for it before quoting one to the customer."
-            )
-
+    if "pickup" in modes:
+        lines.append(f"Pickup address: {full_address}.")
     return "\n".join(lines)
 
 
