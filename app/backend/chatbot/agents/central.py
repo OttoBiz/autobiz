@@ -7,7 +7,7 @@ from pydantic_ai import Agent, RunContext
 
 from backend.chatbot.agents.deps import AgentDeps
 from backend.config import MODEL_NAME
-from backend.db import contacts
+from backend.db import contacts, payment_credentials
 from backend.db.db_utils import get_business_info
 
 SUBAGENT_TIMEOUT_SECONDS = 30
@@ -431,10 +431,10 @@ async def get_business_payment_info(
          do NOT mention this to the customer. Dispatch outbound to
          the vendor for payment details same-turn.
     """
-    business = await get_business_info(str(ctx.deps.business_id))
-    bank_name = (business or {}).get("bank_name") or ""
-    account_number = (business or {}).get("bank_account_number") or ""
-    account_name = (business or {}).get("bank_account_name") or ""
+    creds = await payment_credentials.get(ctx.deps.business_id, "bank_transfer")
+    bank_name = (creds or {}).get("bank_name") or ""
+    account_number = (creds or {}).get("bank_account_number") or ""
+    account_name = (creds or {}).get("bank_account_name") or ""
 
     if not (bank_name and account_number):
         return {"configured": False, "next_action": "dispatch_outbound"}

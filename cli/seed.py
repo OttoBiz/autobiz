@@ -156,14 +156,28 @@ async def ensure_smoke_data(business_id: str, customer_id: str) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO businesses (
-                id, name, bank_name, bank_account_number, bank_account_name
-            )
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO businesses (id, name)
+            VALUES ($1, $2)
             ON CONFLICT (id) DO NOTHING
             """,
             biz_uuid,
             _BUSINESS_NAME,
+        )
+        # Bank-transfer credentials live in payment_credentials now.
+        await conn.execute(
+            """
+            INSERT INTO payment_credentials (business_id, provider, credentials)
+            VALUES (
+                $1, 'bank_transfer',
+                jsonb_build_object(
+                    'bank_name',           $2::text,
+                    'bank_account_number', $3::text,
+                    'bank_account_name',   $4::text
+                )
+            )
+            ON CONFLICT (business_id, provider) DO NOTHING
+            """,
+            biz_uuid,
             _BANK_NAME,
             _BANK_ACCOUNT_NUMBER,
             _BANK_ACCOUNT_NAME,

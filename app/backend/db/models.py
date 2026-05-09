@@ -91,12 +91,8 @@ class BusinessBase(BaseModel):
     twitter_page: Optional[str] = None
     tiktok: Optional[str] = None
 
-    # Payment information
-    bank_name: Optional[str] = None
-    bank_account_number: Optional[str] = None
-    bank_account_name: Optional[str] = None
-    paystack_public_key: Optional[str] = None
-    paystack_secret_key: Optional[str] = None
+    # Payment instruments (bank_transfer, paystack, …) live in
+    # `payment_credentials` keyed by (business_id, provider).
 
     # Fulfillment: subset of {'delivery','pickup'}, at least one. Pickup
     # tenants must populate physical_* at the app layer (not enforced in SQL
@@ -120,10 +116,6 @@ class BusinessUpdate(BaseModel):
     tier: Optional[BusinessTier] = None
     phone_number: Optional[str] = None
     email: Optional[str] = None
-    bank_name: Optional[str] = None
-    bank_account_number: Optional[str] = None
-    bank_account_name: Optional[str] = None
-    paystack_public_key: Optional[str] = None
 
 
 class Business(BusinessBase):

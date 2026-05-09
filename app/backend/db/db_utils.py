@@ -184,8 +184,6 @@ async def get_business_info(business_id: str) -> Optional[Dict[str, Any]]:
     query = """
         SELECT id, name, tier, phone_number, email,
                ig_page, facebook_page, twitter_page, tiktok,
-               bank_name, bank_account_number, bank_account_name,
-               paystack_public_key, paystack_secret_key,
                fulfillment_modes, physical_address, physical_city, physical_state,
                created_at, updated_at
         FROM businesses
@@ -225,8 +223,6 @@ async def get_business_by_handle(handle: str) -> Optional[Dict[str, Any]]:
     query = """
         SELECT id, name, tier, phone_number, email,
                ig_page, facebook_page, twitter_page, tiktok,
-               bank_name, bank_account_number, bank_account_name,
-               paystack_public_key, paystack_secret_key,
                fulfillment_modes, physical_address, physical_city, physical_state,
                created_at, updated_at
         FROM businesses

@@ -100,25 +100,16 @@ async def seed_whatsapp_business(
         async with conn.transaction():
             await conn.execute(
                 """
-                INSERT INTO businesses (
-                    id, name, phone_number,
-                    bank_name, bank_account_number, bank_account_name
-                )
-                VALUES ($1, $2, $3, $4, $5, $6)
+                INSERT INTO businesses (id, name, phone_number)
+                VALUES ($1, $2, $3)
                 ON CONFLICT (id) DO UPDATE SET
                     name = EXCLUDED.name,
                     phone_number = EXCLUDED.phone_number,
-                    bank_name = COALESCE(EXCLUDED.bank_name, businesses.bank_name),
-                    bank_account_number = COALESCE(EXCLUDED.bank_account_number, businesses.bank_account_number),
-                    bank_account_name = COALESCE(EXCLUDED.bank_account_name, businesses.bank_account_name),
                     updated_at = NOW()
                 """,
                 bid,
                 business_name,
                 normalized_phone,
-                bank_name,
-                bank_account_number,
-                bank_account_name,
             )
             # Channel sender ID lives in channel_credentials. Same transaction
             # so a half-seeded tenant (business with no sender) is impossible.
@@ -135,6 +126,33 @@ async def seed_whatsapp_business(
                 bid,
                 phone_number_id,
             )
+            # Bank-transfer credentials live in payment_credentials. Skip if
+            # bank info wasn't provided — partial bank data is unusable to
+            # the agent and would just hide the gap.
+            if bank_name and bank_account_number:
+                await conn.execute(
+                    """
+                    INSERT INTO payment_credentials (
+                        business_id, provider, credentials
+                    )
+                    VALUES (
+                        $1::uuid,
+                        'bank_transfer',
+                        jsonb_strip_nulls(jsonb_build_object(
+                            'bank_name',           $2::text,
+                            'bank_account_number', $3::text,
+                            'bank_account_name',   $4::text
+                        ))
+                    )
+                    ON CONFLICT (business_id, provider) DO UPDATE SET
+                        credentials = EXCLUDED.credentials,
+                        updated_at  = NOW()
+                    """,
+                    bid,
+                    bank_name,
+                    bank_account_number,
+                    bank_account_name,
+                )
             await conn.execute(
                 "DELETE FROM products WHERE business_id = $1", bid
             )
