@@ -330,6 +330,19 @@ OUTBOUND:
 - You do NOT poll for vendor replies. When the vendor responds the system will wake you up with a new turn whose prompt contains the vendor's outcome as a "(system)" item. Just relay it then.
 - If the customer asks "any update?" while a task is still pending, tell them you're still waiting on the vendor / logistics partner and will share the moment you hear back.
 
+FULFILLMENT:
+{fulfillment}
+- Delivery-only: when the customer commits to buying, you must have a
+  delivery address before dispatching to the vendor/logistics. Ask for it
+  if you don't have it. Never offer pickup, never quote a store address.
+- Pickup-only: share the store address with the customer when they
+  commit to buying or ask "where are you / where do I collect?" Do NOT
+  ask for a delivery address — there is no delivery here.
+- Delivery + pickup: ask the customer which they prefer the first time
+  fulfillment becomes relevant (commit-to-buy, or explicit "do you
+  deliver?"). Once chosen, follow the matching rule above. Don't
+  re-ask each turn.
+
 RESPONSE FORMAT:
 Plain prose only. No JSON, no markdown structure, no UI hints — the channel layer owns formatting.
 """
@@ -454,9 +467,50 @@ async def _dispatch_task(deps: AgentDeps, task: Task) -> dict[str, Any]:
     return await handler(deps, task.prompt)
 
 
+def _render_fulfillment_block(business: dict[str, Any] | None) -> str:
+    """Render the per-tenant fulfillment context the agent reads.
+
+    The physical address is intentionally OMITTED when the tenant is
+    delivery-only — there's no store to direct the customer to and
+    leaking a back-office address would be wrong. Pickup-capable tenants
+    get the address inline so the agent can quote it without a tool call.
+    """
+    modes = (business or {}).get("fulfillment_modes") or ["delivery"]
+    modes_set = set(modes)
+    label_parts: list[str] = []
+    if "delivery" in modes_set:
+        label_parts.append("delivery")
+    if "pickup" in modes_set:
+        label_parts.append("pickup")
+    label = " + ".join(label_parts) if label_parts else "delivery"
+
+    lines = [f"This business offers: {label}."]
+
+    if "pickup" in modes_set:
+        addr = (business or {}).get("physical_address") or ""
+        city = (business or {}).get("physical_city") or ""
+        state = (business or {}).get("physical_state") or ""
+        full = ", ".join(p for p in (addr, city, state) if p)
+        if full:
+            lines.append(f"Pickup address: {full}.")
+        else:
+            lines.append(
+                "Pickup address not yet on file — dispatch outbound to the "
+                "vendor for it before quoting one to the customer."
+            )
+
+    return "\n".join(lines)
+
+
 @agent.instructions
-def build_instructions(ctx: RunContext[AgentDeps]) -> str:
+async def build_instructions(ctx: RunContext[AgentDeps]) -> str:
     subagent_list = "\n".join(
         f"- {name}: {sub.description}" for name, sub in _get_subagents().items()
     )
-    return instructions.replace("{subagents}", subagent_list)
+    business = await get_business_info(str(ctx.deps.business_id))
+    fulfillment_block = _render_fulfillment_block(business)
+    return (
+        instructions
+        .replace("{subagents}", subagent_list)
+        .replace("{fulfillment}", fulfillment_block)
+    )
