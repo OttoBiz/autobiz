@@ -14,6 +14,7 @@ from backend.logging_config import get_logger
 from backend.db.cache_utils import get_user_state, modify_user_state, get_party_state, modify_party_state
 from backend.chatbot.utils.agent_trace_stdout import agent_stdout
 from backend.db.db_utils import (
+    add_product as db_add_product,
     create_order as db_create_order,
     get_business_info,
     get_logistics_companies,
@@ -21,10 +22,12 @@ from backend.db.db_utils import (
     pick_random_logistics_company_id,
     get_order_by_id,
     get_order_by_number,
-    get_orders_by_user,
+    list_orders_for_customer_store,
     get_user_by_id,
     touch_order_process_link,
     update_order_status as db_update_order_status,
+    update_product_price_for_business,
+    update_product_stock_for_business,
     upsert_order_process_link,
 )
 from backend.struct import CentralAgentInput, Customer, EntityType, Logistics, Product, Vendor
@@ -35,6 +38,7 @@ from typing import Literal
 from .base_agent import BaseAgent
 from .central_agent_utils import (
     CentralOutboundContext,
+    apply_process_field_updates,
     build_central_agent_run_instructions,
     deliver_central_outbound,
     get_contact,
@@ -86,17 +90,51 @@ class CentralAgentDeps(BaseModel):
 def _slim_order_for_tool(row: Dict[str, Any]) -> Dict[str, Any]:
     keys = (
         "id", "user_id", "business_id", "order_number", "status", "total_amount",
-        "tracking_number", "logistic_id", "delivery_address", "delivery_city", "delivery_state", "created_at",
+        "tracking_number", "logistic_id", "delivery_address", "delivery_city", "delivery_state",
+        "product_name",
+        "created_at", "updated_at",
     )
     out: Dict[str, Any] = {}
     for k in keys:
         v = row.get(k)
         if v is None:
             continue
-        out[k] = str(v) if k in ("id", "user_id", "business_id", "logistic_id") else v
+        if k in ("id", "user_id", "business_id", "logistic_id"):
+            out[k] = str(v)
+        elif k in ("created_at", "updated_at") and hasattr(v, "isoformat"):
+            out[k] = v.isoformat()
+        else:
+            out[k] = v
+    pa = row.get("product_attributes")
+    if isinstance(pa, dict):
+        out["product_attributes"] = pa
     meta = row.get("metadata")
     if isinstance(meta, dict) and meta:
         out["metadata"] = meta
+    return out
+
+
+def _order_product_attributes_for_db(
+    explicit: Optional[Dict[str, Any]],
+    product: Optional[Product],
+    quantity: int,
+) -> Dict[str, Any]:
+    """Merge tool/model product metadata into a JSON-friendly snapshot for `orders.product_attributes`."""
+    out: Dict[str, Any] = {}
+    if product and product.metadata:
+        out.update(dict(product.metadata))
+    if product:
+        if getattr(product, "id", None) and str(product.id).strip():
+            out.setdefault("product_id", str(product.id).strip())
+        try:
+            price = float(product.price)
+        except (TypeError, ValueError):
+            price = None
+        if price:
+            out.setdefault("unit_price", price)
+    if explicit:
+        out.update(explicit)
+    out.setdefault("quantity", int(quantity))
     return out
 
 
@@ -116,14 +154,14 @@ def _slim_process_for_tool(pid: str, proc: Dict[str, Any]) -> Dict[str, Any]:
 central_agent_base = BaseAgent(
     model_name=CENTRAL_AGENT_MODEL_NAME,
     system_prompt="""
-    You are the Lead Transaction Architect. Your mission is to move every "Process" (thread) from initial inquiry to final delivery. 
+    You are the Lead Transaction Architect. Your mission is to fulfil the objective (i.e task type) of every "Process" (thread) ranging from initial inquiry to final delivery by coordinating with Customers, Vendor, and Logistics (wherea applicable). 
     You act as the sole intelligence hub connecting Customers, Vendor, and Logistics. 
-    You do not just pass messages; you interpret data, verify conditions, and drive the deal forward.
+    You do not just pass messages; you interpret data, verify conditions, and drive the deal/action forward.
 
 #The Three-Step Execution Loop
 For every interaction, you MUST internally follow this sequence:
     Status Audit: Check the finished_tasks and thread history. What is the current milestone and task type? (Inquiry → Availability → Payment → Fulfillment → Delivery).
-    Tool Execution: Call necessary tools to fetch real-time facts (e.g., check bank API for payment, check vendor stock) or update processes (e.g update stock in db, mark task as finished).
+    Tool Execution: Call necessary tools to fetch real-time facts (e.g., check bank API for payment, check vendor stock) or update processes (e.g update stock in db, update order status, mark task as finished). To change catalog rows for the vendor in this thread, use **mutate_vendor_catalog** (`set_price`, `set_stock`, or `add`) only after the vendor clearly authorizes the change (use `product_id` from ops context for updates, not customer-facing text).
     Strategic Routing: Based on the Outcome, decide the single most logical recipient to act next.
 
 #Communication Protocols
@@ -146,16 +184,18 @@ For every interaction, you MUST internally follow this sequence:
     Constraint: Only engage Logistics after Vendor confirms "Ready for Pickup."
     
 Strict Business Rules (The "Guardrails")
-    The Payment Hard-Gate: You are strictly forbidden from generating an order or contacting Logistics until a tool has explicitly verified payment_status: SUCCESS or you have received a confirmation message from the vendor that the payment has been verified.
-    The "Hint" Override: If a hint_recipient is provided, evaluate it against your current state, finished tasks and communication history. If the hint says "Logistics" but payment is not confirmed, ignore the hint and route to the Customer for payment.
+    1. The Payment Hard-Gate: You are strictly forbidden from generating an order or contacting Logistics until you (using your tools) have explicitly verified payment_status: SUCCESS or you have received a confirmation message from the vendor that the payment has been verified.
+    2. The "Hint" Override: If a hint_recipient is provided, evaluate it against your current state, finished tasks and communication history. For example, If the hint says "Logistics" but payment is not confirmed, ignore the hint and route to the Customer for payment.
     Interpretation of Outcomes: Never dump raw tool data. "Fold" the outcome into a narrative.
         Bad: "Tool result: success."
         Good: (to Customer) "Your payment was successful! We are now coordinating with the vendor to prep your package."
-
-Post-payment delivery routing: After payment is verified / an order exists, call **get_delivery_logistics_context**. If **db_partner_logistic_id** is set, use that logistics party for coordination. 
-If it is null and **party_assigned_logistic_id** is unset, ask the Vendor whether they want to self-handle delivery or want a registered carrier;
-then call **finalize_vendor_delivery_route** (`self_handled=True` for vendor-only shipping, `self_handled=False` with optional `logistic_id`; 
-omit `logistic_id` to auto-pick a registered company). Persisted party state is visible to business chat.
+    3. Post-payment delivery routing: After payment is verified / an order exists, call **get_delivery_logistics_context**. If **db_partner_logistic_id** is set, use that logistics party for coordination. 
+    If it is null and **party_assigned_logistic_id** is unset, ask the Vendor whether they want to self-handle delivery or want a registered carrier;
+    then call **finalize_vendor_delivery_route** (`self_handled=True` for vendor-only shipping, `self_handled=False` with optional `logistic_id`; 
+    omit `logistic_id` to auto-pick a registered company). Persisted party state is visible to business chat.
+    4. product/inventory update: Any new update you get concerning a product or inventory (i.e price, stock, new SKUs, etc) from the vendor, use **mutate_vendor_catalog** to update the product or inventory in the database first before taking your next step.
+    5. process update: Any new update you get concerning a process (i.e order status, quantity, delivery status, etc) from the vendor, use **update_process** to merge fields into the Redis session (quantity, order_id, order_number, address, tracking, logistic_id, status, product_name, price, task_type) using ``process_id`` from context before taking your next step. For **Logistics coordination** after payment verification, ensure the open process is updated with **order_id** (and price/quantity when known) this way before messaging logistics. For **DB** order row changes (shipped/delivered, tracking), still use **update_order_status** when appropriate.
+    6. Post-payment update: After verifying payment, update the product inventory in the db, deduct the quantity from the stock and update the process with the new quantity.
 
 Thread Closure: Call **mark_process_completed** once the process objective is reached (e.g. delivery confirmed) so downstream UIs stop surfacing it as active.""",
     deps_type=CentralAgentDeps,
@@ -187,8 +227,10 @@ async def create_order(
     delivery_address: Optional[str] = None,
     delivery_city: Optional[str] = None,
     delivery_state: Optional[str] = None,
+    product_attributes: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Create order in DB and cache in Redis processes. Call only after payment is confirmed."""
+    """Create order in DB and cache in Redis processes. Call only after payment is confirmed.
+    Optional `product_attributes` merges with the active product's metadata (size, variant, etc.)."""
     customer_id = _customer_id(ctx)
     business_id = _business_id(ctx)
     pid = (ctx.deps.process_id or "").strip()
@@ -197,6 +239,13 @@ async def create_order(
         return {"error": "Missing customer or business context"}
     if not pid:
         return {"error": "process_id is required to create an order — ensure_central_process must be called first."}
+
+    resolved_name = (product_name or "").strip()
+    if not resolved_name and ctx.deps.product and (ctx.deps.product.name or "").strip():
+        resolved_name = (ctx.deps.product.name or "").strip()
+    resolved_name = resolved_name or None
+
+    attrs = _order_product_attributes_for_db(product_attributes, ctx.deps.product, quantity)
 
     try:
         order = await db_create_order(
@@ -207,7 +256,12 @@ async def create_order(
             delivery_address=delivery_address,
             delivery_city=delivery_city,
             delivery_state=delivery_state,
-            metadata={"product_name": product_name, "quantity": quantity},
+            metadata={
+                **({"product_name": resolved_name} if resolved_name else {}),
+                "quantity": quantity,
+            },
+            product_name=resolved_name,
+            product_attributes=attrs,
         )
         order_id = str(order["id"])
         order_number = order["order_number"]
@@ -215,7 +269,7 @@ async def create_order(
         ap = ctx.deps.active_process
         ap.update(
             {
-                "product_name": product_name or ap.get("product_name") or "",
+                "product_name": resolved_name or product_name or ap.get("product_name") or "",
                 "order_id": order_id,
                 "order_number": order_number,
                 "quantity": quantity,
@@ -233,14 +287,14 @@ async def create_order(
             order_number,
             order_id,
             pid,
-            product_name,
+            resolved_name or product_name,
             customer_id,
         )
         return {
             "order_id": order_id,
             "order_number": order_number,
             "status": "created",
-            "message": f"Order {order_number} created for {product_name}",
+            "message": f"Order {order_number} created for {resolved_name or product_name or 'purchase'}",
         }
     except Exception as e:
         logger.error(
@@ -285,6 +339,33 @@ async def get_order_info(
 
     return {"error": "Order not found"}
 
+@central_agent.tool
+async def list_customer_orders(
+    ctx: RunContext[CentralAgentDeps],
+    limit: int = 30,
+    on_date: Optional[str] = None,
+    created_after: Optional[str] = None,
+    created_before: Optional[str] = None,
+) -> Dict[str, Any]:
+    """List DB orders for this customer with this vendor. Use when reconciling history or matching a receipt to a purchase.
+    `on_date`: YYYY-MM-DD (UTC calendar day on `created_at`). `created_after` / `created_before`: ISO-8601 datetimes (optional bounds)."""
+    customer_id = _customer_id(ctx)
+    business_id = _business_id(ctx)
+    if not customer_id or not business_id:
+        return {"error": "Missing customer or business context", "orders": []}
+    rows = await list_orders_for_customer_store(
+        customer_id,
+        business_id,
+        limit=max(1, min(int(limit), 100)),
+        on_date=(on_date or "").strip() or None,
+        created_after_iso=(created_after or "").strip() or None,
+        created_before_iso=(created_before or "").strip() or None,
+    )
+    return {
+        "count": len(rows),
+        "orders": [_slim_order_for_tool(dict(r)) for r in rows],
+    }
+
 
 @central_agent.tool
 async def update_order_status(
@@ -326,6 +407,171 @@ async def update_order_status(
         return {"status_updated": "updated", "order_id": order_id, "new_status": status}
     except Exception as e:
         return {"error": str(e)}
+
+
+@central_agent.tool
+async def update_process(
+    ctx: RunContext[CentralAgentDeps],
+    process_id: Optional[str] = None,
+    product_name: Optional[str] = None,
+    order_id: Optional[str] = None,
+    order_number: Optional[str] = None,
+    quantity: Optional[int] = None,
+    price: Optional[float] = None,
+    customer_address: Optional[str] = None,
+    status: Optional[str] = None,
+    tracking_number: Optional[str] = None,
+    logistic_id: Optional[str] = None,
+    task_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Update fields on a session process in Redis (customer–vendor pair). Pass only fields that newly became known (e.g. quantity, order_id, delivery address). Defaults ``process_id`` to the active thread when omitted."""
+    pid = (process_id or ctx.deps.process_id or "").strip()
+    if not pid:
+        return {"error": "process_id is required (or no active process in context)."}
+    customer_id = _customer_id(ctx)
+    business_id = _business_id(ctx)
+    if not customer_id or not business_id:
+        return {"error": "Missing customer or vendor context."}
+    user_state = await get_user_state(customer_id, business_id) or {}
+    processes = user_state.setdefault("processes", {})
+    proc = processes.get(pid)
+    if not isinstance(proc, dict):
+        return {"error": f"Process {pid!r} not found in session."}
+    changed = apply_process_field_updates(
+        proc,
+        product_name=product_name,
+        order_id=order_id,
+        order_number=order_number,
+        quantity=quantity,
+        price=price,
+        customer_address=customer_address,
+        status=status,
+        tracking_number=tracking_number,
+        logistic_id=logistic_id,
+        task_type=task_type,
+    )
+    if not changed:
+        return {
+            "ok": True,
+            "process_id": pid,
+            "updated": [],
+            "message": "No fields supplied; pass at least one optional field to update.",
+        }
+    processes[pid] = proc
+    user_state["processes"] = processes
+    if ctx.deps.process_id == pid:
+        ctx.deps.active_process.clear()
+        ctx.deps.active_process.update(proc)
+    await modify_user_state(customer_id, business_id, user_state)
+    return {
+        "ok": True,
+        "process_id": pid,
+        "updated": changed,
+        "process": _slim_process_for_tool(pid, proc),
+    }
+
+
+async def _catalog_set_price_row(
+    business_id: str, product_id: str, price: float
+) -> Dict[str, Any]:
+    row = await update_product_price_for_business(business_id, product_id, price)
+    if not row:
+        return {"error": "Product not found or not owned by this vendor"}
+    return {
+        "success": True,
+        "action": "set_price",
+        "product_id": str(row.get("id", "")),
+        "price": float(row.get("price") or 0),
+        "name": row.get("name"),
+    }
+
+
+async def _catalog_set_stock_row(
+    business_id: str, product_id: str, stock_quantity: int
+) -> Dict[str, Any]:
+    row = await update_product_stock_for_business(
+        business_id, product_id, int(stock_quantity)
+    )
+    if not row:
+        return {"error": "Product not found or not owned by this vendor"}
+    return {
+        "success": True,
+        "action": "set_stock",
+        "product_id": str(row.get("id", "")),
+        "stock_quantity": row.get("stock_quantity"),
+        "name": row.get("name"),
+    }
+
+
+async def _catalog_add_row(
+    business_id: str,
+    name: str,
+    price: float,
+    stock_quantity: int,
+    description: str,
+    category: str,
+    attributes: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    row = await db_add_product(
+        business_id=business_id,
+        name=name,
+        price=price,
+        stock_quantity=stock_quantity,
+        description=description,
+        category=category,
+        attributes=attributes,
+    )
+    if not row:
+        return {"error": "Could not add product"}
+    return {
+        "success": True,
+        "action": "add",
+        "product_id": str(row.get("id", "")),
+        "name": row.get("name"),
+        "price": row.get("price"),
+        "stock_quantity": row.get("stock_quantity"),
+    }
+
+
+@central_agent.tool
+async def mutate_vendor_catalog(
+    ctx: RunContext[CentralAgentDeps],
+    action: Literal["set_price", "set_stock", "add"],
+    product_id: Optional[str] = None,
+    name: Optional[str] = None,
+    price: Optional[float] = None,
+    stock_quantity: Optional[int] = None,
+    description: str = "",
+    category: str = "",
+) -> Dict[str, Any]:
+    """Update vendor catalog in DB for this thread. Use action ``set_price`` (needs product_id, price), ``set_stock`` (needs product_id, stock_quantity), or ``add`` (needs name, price; optional stock_quantity, description, category)."""
+    bid = _business_id(ctx)
+    if not bid:
+        return {"error": "No vendor context"}
+
+    pid = (product_id or "").strip()
+    nm = (name or "").strip()
+
+    if action == "set_price":
+        if not pid:
+            return {"error": "product_id required for set_price"}
+        if price is None:
+            return {"error": "price required for set_price"}
+        return await _catalog_set_price_row(bid, pid, price)
+
+    if action == "set_stock":
+        if not pid:
+            return {"error": "product_id required for set_stock"}
+        if stock_quantity is None:
+            return {"error": "stock_quantity required for set_stock"}
+        return await _catalog_set_stock_row(bid, pid, stock_quantity)
+
+    if not nm:
+        return {"error": "name required for add"}
+    if price is None:
+        return {"error": "price required for add"}
+    sq = int(stock_quantity) if stock_quantity is not None else 0
+    return await _catalog_add_row(bid, nm, price, sq, description, category)
 
 
 @central_agent.tool
@@ -577,7 +823,7 @@ async def run_central_agent(
         from backend.chatbot.utils.history_summarizer import maybe_summarize_comm_history
 
         redis_state = user_state or await get_user_state(customer_id, business_id) or {}
-        pid, proc = get_or_create_process_for_event(redis_state, event_message)
+        pid, proc = await get_or_create_process_for_event(redis_state, event_message)
         event_message.process_id = pid
 
         comm = proc.setdefault("communication_history", [])
@@ -591,9 +837,14 @@ async def run_central_agent(
         
         order_num_out = proc.get("order_number") or proc.get("order_id") or event_message.order_id
 
+        # Only business chat forwards use AGENT→VENDOR as a structured hint; duplicating the
+        # *inbound* message to the vendor inbox when central targets another party is correct
+        # there. Logistics (and other specialists) use the same structured hint but must not
+        # spam the vendor inbox when central legitimately replies to logistics.
         force_vendor_inbox = (
             event_message.sender == EntityType.AGENT
             and event_message.recipient == EntityType.VENDOR
+            and caller_agent == "business_chat_interface"
         )
 
         _tt = _task_label(event_message.task_type)
@@ -650,8 +901,10 @@ async def run_central_agent(
             # f"Inbound hint (non-binding): sender={_enum_label(event_message.sender)} "
             f"proposed_recipient (hint)={_enum_label(event_message.recipient)}\n\n"
         )
+        proc_details = json.dumps(proc)
         run_prompt = (
             hint
+            + f"Process details: {proc_details}\n\n"
             + f"Task Type: {_task_label(event_message.task_type)}\n**Finished tasks:**\n{ft_text}\n\n**Thread**\n{json.dumps(comm)}"
         )
 

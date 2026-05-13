@@ -1,10 +1,42 @@
 """
 Utility functions for agents
 """
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from backend.db.cache_utils import get_user_state, modify_user_state
 from backend.db.db_utils import get_business_info, get_products
 from backend.config import config, TIER_FREE, TIER_GOLD, TIER_PLATINUM
+
+
+def normalize_business_tier(raw: Optional[Any]) -> str:
+    """Lowercase tier slug for ``check_tier_access``; empty/None → free."""
+    if raw is None:
+        return TIER_FREE
+    s = str(raw).strip().lower()
+    return s if s else TIER_FREE
+
+
+async def resolve_seller_tier_for_upsell(
+    business_id: str,
+    user_state: Optional[Dict[str, Any]] = None,
+    tier_hint: Optional[str] = None,
+) -> Tuple[str, bool]:
+    """
+    Normalized seller tier and whether upselling/cross-sell (cross-store) features apply.
+
+    ``tier_hint`` wins when non-empty (e.g. from orchestrator handoff). Otherwise uses
+    ``user_state['business_information']['tier']``, then DB for ``business_id``.
+    """
+    if tier_hint is not None and str(tier_hint).strip():
+        t = normalize_business_tier(tier_hint)
+        return t, await check_tier_access(t, "upselling")
+    tier = None
+    if user_state:
+        tier = (user_state.get("business_information") or {}).get("tier")
+    if tier is None and (business_id or "").strip():
+        info = await get_business_info((business_id or "").strip()) or {}
+        tier = info.get("tier")
+    t = normalize_business_tier(tier)
+    return t, await check_tier_access(t, "upselling")
 
 
 async def check_tier_access(business_tier: str, feature: str) -> bool:
@@ -133,7 +165,7 @@ def get_process_snapshot(user_state: Dict[str, Any], process_id: Optional[str]) 
 def format_handoff_process_context(process_id: str, proc: Dict[str, Any]) -> str:
     """Single line for specialist prompts (not duplicated in instructions slim profiles)."""
     parts = [f"process_id={process_id}"]
-    for k in ("product_name", "order_id", "task_type", "status", "order_number"):
+    for k in ("product_name", "quantity", "order_id", "task_type", "status", "order_number"):
         v = proc.get(k)
         if v is not None and str(v).strip() != "":
             parts.append(f"{k}={v}")

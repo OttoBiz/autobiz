@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
 from backend.logging_config import get_logger
+from backend.db.cache_utils import modify_user_state
 from backend.struct import CentralAgentInput, Customer, EntityType, Logistics, Product, TaskType, Vendor
 
 logger = get_logger(__name__)
@@ -177,11 +178,26 @@ def build_central_agent_run_instructions(
     )
 
 
-def get_or_create_process_for_event(
+def _pair_ids_from_event(event_message: CentralAgentInput) -> tuple[str, str]:
+    customer_id = (
+        str(getattr(event_message.customer, "id", "") or "").strip()
+        if event_message.customer
+        else ""
+    )
+    business_id = (
+        str(getattr(event_message.business, "id", "") or "").strip()
+        if event_message.business
+        else ""
+    )
+    return customer_id, business_id
+
+
+async def get_or_create_process_for_event(
     redis_state: Dict[str, Any],
     event_message: CentralAgentInput,
 ) -> tuple[str, Dict[str, Any]]:
-    """Resolve process_id and mutable process dict under redis_state['processes']."""
+    """Resolve process_id and mutable process dict under redis_state['processes']; persists pair state when mutated."""
+    customer_id, business_id = _pair_ids_from_event(event_message)
     processes: Dict[str, Any] = redis_state.setdefault("processes", {})
     pid = (event_message.process_id or "").strip()
 
@@ -190,6 +206,8 @@ def get_or_create_process_for_event(
         proc = raw if isinstance(raw, dict) else {}
         if not isinstance(raw, dict):
             processes[pid] = proc
+            if customer_id and business_id:
+                await modify_user_state(customer_id, business_id, redis_state)
         return pid, proc
 
     pname = (event_message.product.name if event_message.product else "") or ""
@@ -213,10 +231,12 @@ def get_or_create_process_for_event(
         product_name=pname,
         order_id=oid,
     )
+    if customer_id and business_id:
+        await modify_user_state(customer_id, business_id, redis_state)
     return new_id, processes[new_id]
 
 
-def ensure_central_process(
+async def ensure_central_process(
     user_state: Dict[str, Any],
     *,
     task_type: TaskType,
@@ -226,11 +246,13 @@ def ensure_central_process(
     order_id: Optional[str] = None,
     process_id: Optional[str] = None,
 ) -> str:
-    """Create or reuse a process before notifying central; mutates user_state. Returns process_id."""
+    """Create or reuse a process before notifying central; mutates user_state. Persists Redis when a new process is created."""
+    cid = (customer_id or "").strip()
+    vid = (vendor_id or "").strip()
     processes: Dict[str, Any] = user_state.setdefault("processes", {})
-    pid = (process_id or "").strip()
-    if pid and pid in processes:
-        return pid
+    pid_in = (process_id or "").strip()
+    if pid_in and pid_in in processes:
+        return pid_in
 
     tt = _task_label(task_type)
     pname = product_name or ""
@@ -248,7 +270,75 @@ def ensure_central_process(
 
     new_id = str(uuid.uuid4())
     processes[new_id] = new_process_dict(task_type, product_name=pname, order_id=order_id)
+    if cid and vid:
+        await modify_user_state(cid, vid, user_state)
     return new_id
+
+
+def normalize_task_type_string(raw: Optional[str]) -> Optional[str]:
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    for t in TaskType:
+        if s.lower() == t.value.lower() or s.lower() == t.name.lower():
+            return t.value
+    return s
+
+
+def apply_process_field_updates(
+    proc: Dict[str, Any],
+    *,
+    product_name: Optional[str] = None,
+    order_id: Optional[str] = None,
+    order_number: Optional[str] = None,
+    quantity: Optional[int] = None,
+    price: Optional[float] = None,
+    customer_address: Optional[str] = None,
+    status: Optional[str] = None,
+    tracking_number: Optional[str] = None,
+    logistic_id: Optional[str] = None,
+    task_type: Optional[str] = None,
+) -> List[str]:
+    """
+    Merge supplied fields into a session ``process`` dict (mutates in place).
+    Only arguments that are not ``None`` are applied. Returns keys touched.
+    """
+    changed: List[str] = []
+    if product_name is not None:
+        proc["product_name"] = str(product_name).strip()
+        changed.append("product_name")
+    if order_id is not None:
+        proc["order_id"] = str(order_id).strip()
+        changed.append("order_id")
+    if order_number is not None:
+        proc["order_number"] = str(order_number).strip()
+        changed.append("order_number")
+    if quantity is not None:
+        proc["quantity"] = int(quantity)
+        changed.append("quantity")
+    if price is not None:
+        proc["price"] = float(price)
+        changed.append("price")
+    if customer_address is not None:
+        proc["customer_address"] = str(customer_address).strip()
+        changed.append("customer_address")
+    if status is not None:
+        proc["status"] = str(status).strip()
+        changed.append("status")
+    if tracking_number is not None:
+        proc["tracking_number"] = str(tracking_number).strip()
+        changed.append("tracking_number")
+    if logistic_id is not None:
+        proc["logistic_id"] = str(logistic_id).strip()
+        changed.append("logistic_id")
+    if task_type is not None:
+        tt = normalize_task_type_string(task_type)
+        if tt:
+            proc["task_type"] = tt
+            changed.append("task_type")
+    return changed
 
 
 async def create_structured_input(
@@ -357,9 +447,15 @@ async def deliver_central_outbound(ctx: CentralOutboundContext) -> str:
 
     msg = ctx.outbound_message
     if ctx.recipient_lower in ("vendor", "logistics") and (
-        ctx.customer_id or ctx.product_name or ctx.order_id or ctx.process_id
+        ctx.business_id
+        or ctx.customer_id
+        or ctx.product_name
+        or ctx.order_id
+        or ctx.process_id
     ):
         parts: List[str] = []
+        if ctx.business_id:
+            parts.append(f"Vendor: {ctx.business_id}")
         if ctx.customer_id:
             parts.append(f"Customer: {ctx.customer_id}")
         if ctx.product_name:

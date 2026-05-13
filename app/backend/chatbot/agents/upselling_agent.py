@@ -9,11 +9,11 @@ from pydantic_ai import RunContext
 
 from backend.chatbot.agents.base_agent import BaseAgent
 from backend.chatbot.utils.agent_utils import (
-    check_tier_access,
     format_handoff_process_context,
     get_process_snapshot,
+    resolve_seller_tier_for_upsell,
 )
-from backend.db.db_utils import get_business_info, get_products
+from backend.db.db_utils import get_products
 from backend.modules.products import get_product_images
 from backend.modules.products import search_products
 
@@ -21,18 +21,8 @@ from backend.modules.products import search_products
 class UpsellingAgentDeps(BaseModel):
     business_id: str
     api_key: Optional[str] = None
-    upsell_tier_eligible: bool = None
-
-
-async def _business_upsell_allowed(business_id: str, user_state: Optional[Dict[str, Any]]) -> bool:
-    tier = None
-    if user_state:
-        tier = (user_state.get("business_information") or {}).get("tier")
-    if tier is None and business_id:
-        info = await get_business_info(business_id) or {}
-        tier = info.get("tier")
-    t = (str(tier) if tier is not None else "free").lower()
-    return await check_tier_access(t, "upselling")
+    seller_tier: str = "free"
+    upsell_tier_eligible: bool = False
 
 
 async def search_related_products(
@@ -94,11 +84,11 @@ upselling_agent_base = BaseAgent(
 **Workflow**
 1. Call `get_related_products` with the unavailable product name to find same-store alternatives.
 2. Call `get_complementary_products` for items that complement what the customer wanted.
-3. If cross-store is allowed (tool will enforce tier), call `get_cross_sell_products` for one external option.
+3. If cross-store is allowed (`get_cross_sell_products`; gated by seller tier in deps), call it for one external option.
 
 **Rules**
 - Acknowledge the gap briefly. Offer up to 2 strong substitutes with clear reasons.
-- Same-store first, cross-store only if tier allows. Never suggest other vendors otherwise.
+- Same-store first; cross-store only when tools allow (seller tier in deps). Never name other vendors when cross-store is blocked.
 - No hard sell.""",
     deps_type=UpsellingAgentDeps,
 )
@@ -152,19 +142,23 @@ async def run_upselling_agent(
     user_state: Optional[Dict[str, Any]] = None,
     instructions: Optional[str] = None,
     process_id: Optional[str] = None,
+    tier: Optional[str] = None,
     **kwargs,
 ) -> str:
-    eligible = await _business_upsell_allowed(business_id or "", user_state)
+    seller_tier, eligible = await resolve_seller_tier_for_upsell(
+        business_id or "", user_state, tier_hint=tier
+    )
     deps = UpsellingAgentDeps(
         business_id=business_id or "",
         api_key=api_key,
+        seller_tier=seller_tier,
         upsell_tier_eligible=eligible,
     )
     extra = f"\nSituation: {situation_summary}" if situation_summary else ""
     scope = (
-        "Cross-store allowed where tools permit."
+        f"Seller tier={seller_tier}; cross-store allowed where tools permit."
         if eligible
-        else "Same-store only; no other vendors."
+        else f"Seller tier={seller_tier}; same-store only; no other vendors."
     )
     proc_line = ""
     if user_state and (process_id or "").strip():

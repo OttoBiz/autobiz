@@ -86,6 +86,8 @@ async def get_order_tracking(order_id: str):
         "delivery_address": order.get("delivery_address"),
         "delivery_city": order.get("delivery_city"),
         "delivery_state": order.get("delivery_state"),
+        "product_name": order.get("product_name"),
+        "product_attributes": order.get("product_attributes"),
         "metadata": order.get("metadata"),
         "updated_at": order.get("updated_at"),
     }

@@ -4,6 +4,7 @@ Database utility functions using asyncpg for async PostgreSQL operations.
 Migrated from SQLAlchemy to asyncpg for better async performance and simpler queries.
 """
 
+from datetime import datetime, timezone
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -11,6 +12,21 @@ from backend.db.connection import get_db
 from backend.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+async def _maybe_log_inventory_activity(business_id: str, record: dict) -> None:
+    """Best-effort feed for simulation UI; never raises."""
+    if not business_id:
+        return
+    try:
+        from backend.db.cache_utils import record_inventory_activity
+
+        await record_inventory_activity(business_id, record)
+    except Exception:
+        logger.debug(
+            "inventory_activity_log_failed | business_id=%s", business_id, exc_info=True
+        )
+
 
 # Effective ISO 4217 code: product override, else business default.
 _EFF_CURRENCY = "COALESCE(NULLIF(TRIM(p.currency), ''), b.currency, 'NGN')"
@@ -111,7 +127,13 @@ async def browse_available_products(
     search: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
-    In-stock products for conversational browse: random sample or highest stock first.
+    Products for conversational browse.
+
+    * ``top_stock``: up to ``limit`` **active** rows for the vendor, ranked by
+      ``stock_quantity`` (highest first), then ``created_at`` (newest first),
+      then ``name``—so callers get the true **top N** catalog slice. May include
+      zero-stock items only after higher-stock rows are exhausted.
+    * ``random``: in-stock-only random sample (up to ``limit``).
 
     Args:
         business_id: Vendor UUID
@@ -123,9 +145,15 @@ async def browse_available_products(
         mode = "top_stock"
     lim = max(1, min(int(limit), 50))
     pool = await get_db()
-    order_sql = (
-        "ORDER BY RANDOM()" if mode == "random" else "ORDER BY p.stock_quantity DESC NULLS LAST"
-    )
+    if mode == "random":
+        stock_filter = "AND COALESCE(p.stock_quantity, 0) > 0"
+        order_sql = "ORDER BY RANDOM()"
+    else:
+        stock_filter = ""
+        order_sql = (
+            "ORDER BY p.stock_quantity DESC NULLS LAST, "
+            "p.created_at DESC NULLS LAST, p.name ASC NULLS LAST"
+        )
     base = f"""
         SELECT p.id, p.business_id, p.name, p.description, p.price, p.stock_quantity,
                p.sku, p.category, p.attributes, p.is_active, p.created_at, p.updated_at,
@@ -134,7 +162,7 @@ async def browse_available_products(
         INNER JOIN businesses b ON b.id = p.business_id
         WHERE p.is_active = true
           AND p.business_id = $1::uuid
-          AND COALESCE(p.stock_quantity, 0) > 0
+          {stock_filter}
     """
     try:
         async with pool.acquire() as conn:
@@ -466,6 +494,8 @@ async def create_order(
     delivery_city: str = None,
     delivery_state: str = None,
     metadata: dict = None,
+    product_name: Optional[str] = None,
+    product_attributes: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Create a new order.
@@ -478,7 +508,9 @@ async def create_order(
         delivery_address: Delivery address (optional)
         delivery_city: Delivery city
         delivery_state: Delivery state
-        metadata: JSONB metadata (product_name, etc.)
+        metadata: JSONB metadata (extra keys; quantity still mirrored here for compatibility)
+        product_name: Purchased product display name
+        product_attributes: JSON-serializable dict (size, color, product_id, etc.)
 
     Returns:
         Created order dictionary
@@ -490,19 +522,27 @@ async def create_order(
     order_number = (
         f"ORD-{datetime.now().strftime('%Y%m%d')}-{random.randint(1000, 9999)}"
     )
-    meta = metadata or {}
+    meta = dict(metadata) if metadata else {}
     meta.setdefault("quantity", quantity)
+    if product_name:
+        meta.setdefault("product_name", product_name)
+
+    pattr: Dict[str, Any] = {}
+    if isinstance(product_attributes, dict):
+        pattr = dict(product_attributes)
 
     query = """
         INSERT INTO orders (
             order_number, user_id, business_id, total_amount,
             delivery_address, delivery_city, delivery_state,
+            product_name, product_attributes,
             status, metadata
         )
-        VALUES ($1, $2::uuid, $3::uuid, $4, $5, $6, $7, 'pending', $8)
+        VALUES ($1, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9, 'pending', $10)
         RETURNING id, order_number, user_id, business_id, logistic_id,
                   status, total_amount, delivery_address, delivery_city,
-                  delivery_state, tracking_number, metadata,
+                  delivery_state, tracking_number, product_name, product_attributes,
+                  metadata,
                   created_at, updated_at
     """
 
@@ -516,6 +556,8 @@ async def create_order(
             delivery_address,
             delivery_city,
             delivery_state,
+            product_name,
+            pattr,
             meta,
         )
         return dict(row)
@@ -550,7 +592,8 @@ async def update_order_status(
         WHERE id = $1::uuid
         RETURNING id, order_number, user_id, business_id, logistic_id,
                   status, total_amount, delivery_address, delivery_city,
-                  delivery_state, tracking_number, metadata,
+                  delivery_state, tracking_number, product_name, product_attributes,
+                  metadata,
                   created_at, updated_at
     """
 
@@ -706,7 +749,8 @@ async def get_order_by_id(order_id: str) -> Optional[Dict[str, Any]]:
     query = """
         SELECT id, order_number, user_id, business_id, logistic_id,
                status, total_amount, delivery_address, delivery_city,
-               delivery_state, tracking_number, metadata,
+               delivery_state, tracking_number, product_name, product_attributes,
+               metadata,
                created_at, updated_at
         FROM orders
         WHERE id = $1::uuid
@@ -724,7 +768,8 @@ async def get_order_by_number(order_number: str) -> Optional[Dict[str, Any]]:
     query = """
         SELECT id, order_number, user_id, business_id, logistic_id,
                status, total_amount, delivery_address, delivery_city,
-               delivery_state, tracking_number, metadata,
+               delivery_state, tracking_number, product_name, product_attributes,
+               metadata,
                created_at, updated_at
         FROM orders
         WHERE order_number = $1
@@ -742,7 +787,8 @@ async def get_orders_by_user(user_id: str, limit: int = 10) -> List[Dict[str, An
     query = """
         SELECT id, order_number, user_id, business_id, logistic_id,
                status, total_amount, delivery_address, delivery_city,
-               delivery_state, tracking_number, metadata,
+               delivery_state, tracking_number, product_name, product_attributes,
+               metadata,
                created_at, updated_at
         FROM orders
         WHERE user_id = $1::uuid
@@ -755,6 +801,80 @@ async def get_orders_by_user(user_id: str, limit: int = 10) -> List[Dict[str, An
         return [dict(row) for row in rows]
 
 
+async def list_orders_for_customer_store(
+    user_id: str,
+    business_id: str,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    on_date: Optional[str] = None,
+    created_after_iso: Optional[str] = None,
+    created_before_iso: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Orders for one customer at one vendor. Optional filters: calendar day (YYYY-MM-DD UTC), ISO time window."""
+    if not _valid_uuid(user_id) or not _valid_uuid(business_id):
+        return []
+
+    from datetime import date, datetime, timedelta, timezone
+
+    def _parse_iso(s: Optional[str]):
+        if not s or not str(s).strip():
+            return None
+        try:
+            t = str(s).strip().replace("Z", "+00:00")
+            dt = datetime.fromisoformat(t)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            return None
+
+    parts = ["user_id = $1::uuid", "business_id = $2::uuid"]
+    params: List[Any] = [user_id, business_id]
+    i = 3
+
+    if on_date:
+        try:
+            d = date.fromisoformat(str(on_date).strip()[:10])
+            start = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+            end = start + timedelta(days=1)
+            parts.append(f"created_at >= ${i} AND created_at < ${i + 1}")
+            params.extend([start, end])
+            i += 2
+        except ValueError:
+            pass
+
+    aft = _parse_iso(created_after_iso)
+    if aft:
+        parts.append(f"created_at >= ${i}")
+        params.append(aft)
+        i += 1
+
+    bfr = _parse_iso(created_before_iso)
+    if bfr:
+        parts.append(f"created_at <= ${i}")
+        params.append(bfr)
+        i += 1
+
+    query = f"""
+        SELECT id, order_number, user_id, business_id, logistic_id,
+               status, total_amount, delivery_address, delivery_city,
+               delivery_state, tracking_number, product_name, product_attributes,
+               metadata,
+               created_at, updated_at
+        FROM orders
+        WHERE {" AND ".join(parts)}
+        ORDER BY created_at DESC
+        LIMIT ${i} OFFSET ${i + 1}
+    """
+    params.extend([limit, offset])
+
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query, *params)
+        return [dict(row) for row in rows]
+
+
 async def get_orders_by_business(
     business_id: str, status: str = None, limit: int = 50
 ) -> List[Dict[str, Any]]:
@@ -764,7 +884,8 @@ async def get_orders_by_business(
     query = """
         SELECT id, order_number, user_id, business_id, logistic_id,
                status, total_amount, delivery_address, delivery_city,
-               delivery_state, tracking_number, metadata,
+               delivery_state, tracking_number, product_name, product_attributes,
+               metadata,
                created_at, updated_at
         FROM orders
         WHERE business_id = $1::uuid
@@ -1100,6 +1221,94 @@ async def update_product_stock(
         return dict(row) if row else None
 
 
+async def update_product_stock_for_business(
+    business_id: str,
+    product_id: str,
+    stock_quantity: int,
+) -> Optional[Dict[str, Any]]:
+    """Scoped stock update: row must belong to business_id."""
+    pool = await get_db()
+    query = """
+        UPDATE products
+        SET stock_quantity = $3,
+            updated_at = NOW()
+        WHERE id = $2::uuid AND business_id = $1::uuid
+        RETURNING id, name, stock_quantity, sku, category, price, updated_at
+    """
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                query, business_id, product_id, int(stock_quantity)
+            )
+            if not row:
+                return None
+            row_dict = dict(row)
+            await _maybe_log_inventory_activity(
+                business_id,
+                {
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "kind": "stock",
+                    "product_id": str(row_dict.get("id", "")),
+                    "name": row_dict.get("name"),
+                    "stock_quantity": int(row_dict.get("stock_quantity") or 0),
+                    "price": float(row_dict.get("price") or 0),
+                    "currency": row_dict.get("currency"),
+                },
+            )
+            return row_dict
+    except Exception:
+        logger.exception(
+            "update_product_stock_for_business_failed | business_id=%s product_id=%s",
+            business_id,
+            product_id,
+        )
+        return None
+
+
+async def update_product_price_for_business(
+    business_id: str,
+    product_id: str,
+    price: float,
+) -> Optional[Dict[str, Any]]:
+    """Scoped price update: row must belong to business_id."""
+    pool = await get_db()
+    query = """
+        UPDATE products
+        SET price = $3,
+            updated_at = NOW()
+        WHERE id = $2::uuid AND business_id = $1::uuid
+        RETURNING id, name, price, stock_quantity, sku, category, updated_at
+    """
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                query, business_id, product_id, float(price)
+            )
+            if not row:
+                return None
+            row_dict = dict(row)
+            await _maybe_log_inventory_activity(
+                business_id,
+                {
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "kind": "price",
+                    "product_id": str(row_dict.get("id", "")),
+                    "name": row_dict.get("name"),
+                    "stock_quantity": int(row_dict.get("stock_quantity") or 0),
+                    "price": float(row_dict.get("price") or 0),
+                    "currency": row_dict.get("currency"),
+                },
+            )
+            return row_dict
+    except Exception:
+        logger.exception(
+            "update_product_price_for_business_failed | business_id=%s product_id=%s",
+            business_id,
+            product_id,
+        )
+        return None
+
+
 async def get_low_stock_products(
     business_id: str, threshold: int = 10
 ) -> List[Dict[str, Any]]:
@@ -1162,7 +1371,22 @@ async def add_product(
                 _json.dumps(attributes) if attributes else "{}",
                 cur,
             )
-            return dict(row) if row else None
+            if not row:
+                return None
+            row_dict = dict(row)
+            await _maybe_log_inventory_activity(
+                business_id,
+                {
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "kind": "add",
+                    "product_id": str(row_dict.get("id", "")),
+                    "name": row_dict.get("name"),
+                    "stock_quantity": int(row_dict.get("stock_quantity") or 0),
+                    "price": float(row_dict.get("price") or 0),
+                    "currency": row_dict.get("currency"),
+                },
+            )
+            return row_dict
     except Exception:
         logger.error("add_product_failed | business_id=%s name=%s", business_id, name, exc_info=True)
         return None

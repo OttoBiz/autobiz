@@ -321,6 +321,12 @@ def generate_orders(users, vendors, logistics, count=30):
                 "tracking_number": f"TRK-{random.randint(100000, 999999)}"
                 if status in ("shipped", "delivered")
                 else None,
+                "product_name": f"{fake.word().title()} {fake.word().title()}",
+                "product_attributes": {
+                    "size": random.choice(["S", "M", "L", "XL"]),
+                    "color": random.choice(["Red", "Blue", "Black", "Green"]),
+                    "line_items": random.randint(1, 5),
+                },
                 "metadata": json.dumps({"items": random.randint(1, 5)}),
                 "created_at": created.isoformat(),
             }
@@ -475,10 +481,10 @@ async def insert_orders(pool, data):
         INSERT INTO orders (
             id, order_number, user_id, business_id, logistic_id,
             status, total_amount, delivery_address, delivery_city,
-            delivery_state, tracking_number, metadata
+            delivery_state, tracking_number, product_name, product_attributes, metadata
         ) VALUES (
             $1::uuid, $2, $3::uuid, $4::uuid, $5::uuid,
-            $6, $7, $8, $9, $10, $11, $12::jsonb
+            $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb
         )
         ON CONFLICT (order_number) DO NOTHING
     """
@@ -497,6 +503,8 @@ async def insert_orders(pool, data):
                 o["delivery_city"],
                 o["delivery_state"],
                 o["tracking_number"],
+                o["product_name"],
+                o["product_attributes"],
                 o["metadata"],
             )
     logger.info("Inserted %d orders", len(data))

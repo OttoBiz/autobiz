@@ -50,8 +50,14 @@ def amount_to_kobo(amount_major: float) -> int:
     return max(1, int(round(float(amount_major) * 100)))
 
 
+def paystack_subunit_to_major(amount_subunit: int) -> float:
+    """Paystack `amount` (initialize, webhook, verify): integer in the currency's smallest unit → major units (÷100)."""
+    return round(int(amount_subunit) / 100.0, 2)
+
+
 def kobo_to_major(amount_kobo: int) -> float:
-    return round(int(amount_kobo) / 100.0, 2)
+    """Back-compat alias; Paystack uses the same subunit scaling for supported currencies—not NGN-only."""
+    return paystack_subunit_to_major(amount_kobo)
 
 
 def verify_webhook_signature(raw_body: bytes, signature_header: str, secret_key: str) -> bool:
@@ -133,9 +139,10 @@ async def verify_transaction(secret_key: str, reference: str) -> Dict[str, Any]:
         return {
             "ok": True,
             "verified": paid,
-            "amount_major": kobo_to_major(amount_kobo),
+            "amount_major": paystack_subunit_to_major(amount_kobo),
             "amount_kobo": amount_kobo,
-            "currency": inner.get("currency") or "NGN",
+            "currency": inner.get("currency"),
+            "paid_at": inner.get("paid_at"),
             "message": "success" if paid else inner.get("gateway_response") or "not successful",
             "raw": inner,
         }

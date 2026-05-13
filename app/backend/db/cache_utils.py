@@ -186,3 +186,43 @@ async def append_inbox_turn_to_party_state(party_id: str, message_text: str) -> 
     history.append(ModelResponse(parts=[TextPart(content=message_text)]))
     user_state["chat_history"] = history
     await modify_party_state(party_id, user_state)
+
+
+INV_ACTIVITY_CAP = 100
+
+
+def _inventory_activity_key(business_id: str) -> str:
+    return f"inv_activity:{business_id}"
+
+
+async def record_inventory_activity(business_id: str, record: dict) -> None:
+    """Append one catalog change event (stock/price/add) for dev UI feeds."""
+    if not business_id or not isinstance(record, dict):
+        return
+    try:
+        redis_conn.rpush_json_capped(
+            _inventory_activity_key(business_id), record, INV_ACTIVITY_CAP
+        )
+    except Exception:
+        logger.warning(
+            "inventory_activity_push_failed | business_id=%s",
+            business_id,
+            exc_info=True,
+        )
+
+
+async def get_inventory_activity(business_id: str, limit: int = 50) -> list:
+    """Recent inventory events, newest first."""
+    if not business_id:
+        return []
+    try:
+        lim = max(1, min(int(limit), 100))
+        rows = redis_conn.list_tail_json(_inventory_activity_key(business_id), lim)
+        return list(reversed(rows))
+    except Exception:
+        logger.warning(
+            "inventory_activity_read_failed | business_id=%s",
+            business_id,
+            exc_info=True,
+        )
+        return []

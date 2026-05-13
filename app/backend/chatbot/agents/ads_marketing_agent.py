@@ -10,10 +10,10 @@ from backend.chatbot.agents.base_agent import BaseAgent
 from backend.chatbot.utils.agent_utils import (
     format_handoff_process_context,
     get_process_snapshot,
+    resolve_seller_tier_for_upsell,
 )
 from backend.chatbot.agents.upselling_agent import (
     UpsellingAgentDeps,
-    _business_upsell_allowed,
     format_conversation,
     search_complementary_same_store,
     search_cross_sell_products,
@@ -26,7 +26,7 @@ ads_marketing_agent_base = BaseAgent(
 **Workflow**
 1. Call `get_complementary_products` with the purchased product's category for same-store complements.
 2. Call `get_related_products` with the purchased product name for additional options.
-3. If cross-store is allowed (tool enforces tier), call `get_cross_sell_products` for one external suggestion.
+3. If cross-store is allowed (`get_cross_sell_products`; seller tier in deps), call it for one external suggestion.
 
 **Rules**
 - Max 2 suggestions unless the customer asks for more. Short, helpful, not pushy.
@@ -86,23 +86,33 @@ async def run_ads_marketing_agent(
     logistics_summary: str = "",
     instructions: Optional[str] = None,
     process_id: Optional[str] = None,
+    tier: Optional[str] = None,
     **kwargs,
 ) -> str:
-    eligible = await _business_upsell_allowed(business_id or "", user_state)
+    seller_tier, eligible = await resolve_seller_tier_for_upsell(
+        business_id or "", user_state, tier_hint=tier
+    )
     deps = UpsellingAgentDeps(
         business_id=business_id or "",
         api_key=kwargs.get("api_key"),
+        seller_tier=seller_tier,
         upsell_tier_eligible=eligible,
     )
     chat_history = (user_state or {}).get("chat_history", []) if user_state else []
     log_line = f"\nLogistics/order status (trusted): {logistics_summary}" if logistics_summary else ""
+    scope = (
+        f"Seller tier={seller_tier}; cross-store allowed where tools permit."
+        if eligible
+        else f"Seller tier={seller_tier}; same-store only; no other vendors."
+    )
     proc_line = ""
     if user_state and (process_id or "").strip():
         proc = get_process_snapshot(user_state, process_id)
         if proc:
             proc_line = "\n" + format_handoff_process_context(str(process_id).strip(), proc)
     prompt = f"""Purchased product: {purchased_product}
-Customer message: {customer_message}{log_line}{proc_line}
+Customer message: {customer_message}
+{scope}{log_line}{proc_line}
 
 {format_conversation(chat_history[-6:]) if chat_history else ""}
 

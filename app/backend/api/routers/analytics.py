@@ -95,6 +95,10 @@ async def user_analytics(request: AnalyticsRequest):
                 "order_number": o.get("order_number"),
                 "amount": float(o.get("total_amount") or 0),
                 "status": o.get("status"),
+                "product_name": o.get("product_name"),
+                "product_attributes": o.get("product_attributes")
+                if isinstance(o.get("product_attributes"), dict)
+                else {},
                 "date": o["created_at"].isoformat()
                 if isinstance(o.get("created_at"), datetime)
                 else str(o.get("created_at") or ""),

@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from backend.config import PAYSTACK_WEBHOOK_CONFIRMED_MAX
 from backend.db.cache_utils import get_user_state, modify_user_state, redis_conn
 from backend.db.db_utils import get_business_info, record_paystack_webhook_event
-from backend.payments.paystack_client import verify_webhook_signature
+from backend.payments.paystack_client import paystack_subunit_to_major, verify_webhook_signature
 
 logger = logging.getLogger(__name__)
 
@@ -135,8 +135,12 @@ async def paystack_webhook(request: Request):
         if isinstance(conf, list):
             entry = {
                 "reference": reference,
-                "amount_kobo": amount_kobo,
+                "amount_kobo": data.get("amount"),
+                "amount_major": float(paystack_subunit_to_major(ak))
+                if ak is not None
+                else None,
                 "currency": currency,
+                "paid_at": data.get("paid_at"),
             }
             if not any(
                 isinstance(x, dict) and x.get("reference") == reference for x in conf

@@ -1,6 +1,8 @@
 services:
   backend:
+    # Local-only name; not on Docker Hub — avoid "pull access denied" on compose up
     image: ottobiz:latest
+    pull_policy: never
     build:
       context: .
       dockerfile: dockerfile

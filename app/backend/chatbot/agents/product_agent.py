@@ -225,7 +225,7 @@ async def modify_task_type_for_process_id(
 ) -> Dict[str, Any]:
     """Modify task type for the current (existing) process. Use this to change the task type from PRODUCT_ENQUIRY to payment verification once product has been purchased."""
     us = await get_user_state(ctx.deps.user_id, ctx.deps.business_id) or {}
-    pid = ensure_central_process(
+    pid = await ensure_central_process(
         us,
         task_type=task_type or TaskType.PRODUCT_ENQUIRY,
         customer_id=ctx.deps.user_id,
@@ -246,14 +246,16 @@ async def modify_task_type_for_process_id(
 async def notify_vendor(
     ctx: RunContext[ProductAgentDeps],
     message: str,
-    product_name: str = "",
+    product_name: str,
+    price: float,
+    quantity: int = 1,
     task_type: Optional[TaskType] = None,
     process_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Pushes a request to the **vendor inbox** via the central agent. Use when: catalog/database (get_product_info tool) has no match for what the customer asked, stock/price unknown, or payment setup missing. Pass a single clear sentence for `message` (what the customer wants + any specs)."""
     try:
         user_state = await get_user_state(ctx.deps.user_id, ctx.deps.business_id) or {}
-        pid = ensure_central_process(
+        pid = await ensure_central_process(
             user_state,
             task_type=task_type or TaskType.PRODUCT_ENQUIRY,
             customer_id=ctx.deps.user_id,
@@ -261,14 +263,13 @@ async def notify_vendor(
             product_name=product_name,
             process_id=process_id or ctx.deps.process_id,
         )
-        await modify_user_state(ctx.deps.user_id, ctx.deps.business_id, user_state)
         agent_input = await create_structured_input(
             sender=EntityType.AGENT,
             recipient=EntityType.VENDOR,
             message=message,
             customer=Customer(id=ctx.deps.user_id),
             business=Vendor(id=ctx.deps.business_id),
-            product=Product(id="", name=product_name, quantity=1, price=0.0) if product_name else None,
+            product=Product(id="", name=product_name, quantity=quantity, price=price) if product_name else None,
             process_id=pid,
             task_type=TaskType.PRODUCT_ENQUIRY,
         )

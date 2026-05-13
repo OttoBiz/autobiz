@@ -5,10 +5,12 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from backend.db.db_utils import get_inventory as db_get_inventory
-from backend.db.db_utils import get_low_stock_products
+from backend.db.db_utils import get_low_stock_products, get_products
+from backend.db.cache_utils import get_inventory_activity
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,60 @@ def _summarize(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "out_of_stock_count": out_stock,
         "needs_attention": low + out_stock,
     }
+
+
+@router.get("/top-products/{business_id}")
+async def get_top_products_for_business(
+    business_id: str,
+    limit: int = 15,
+):
+    """
+    Latest active catalog rows for a vendor (default 15). For simulation UI / stock visibility.
+    """
+    lim = max(1, min(int(limit), 50))
+    try:
+        rows = await get_products(business_id=business_id, limit=lim)
+    except Exception:
+        logger.exception("top_products fetch failed | business_id=%s", business_id)
+        raise HTTPException(status_code=500, detail="Failed to retrieve products.")
+    products: List[Dict[str, Any]] = []
+    for r in rows:
+        pid = r.get("id")
+        products.append(
+            {
+                "id": str(pid) if pid is not None else "",
+                "name": r.get("name"),
+                "price": float(r.get("price") or 0),
+                "stock_quantity": int(r.get("stock_quantity") or 0),
+                "currency": r.get("currency") or "NGN",
+                "category": r.get("category"),
+            }
+        )
+    return JSONResponse(
+        content={
+            "business_id": business_id,
+            "count": len(products),
+            "products": products,
+        },
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
+
+
+@router.get("/activity/{business_id}")
+async def get_inventory_activity_feed(
+    business_id: str,
+    limit: int = 40,
+):
+    """
+    Recent catalog mutations (stock/price/add) from agents, stored in Redis.
+    For simulation / transparency UI only.
+    """
+    lim = max(1, min(int(limit), 100))
+    events = await get_inventory_activity(business_id, lim)
+    return JSONResponse(
+        content={"business_id": business_id, "count": len(events), "events": events},
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
 
 
 @router.post("/")

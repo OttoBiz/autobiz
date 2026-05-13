@@ -18,6 +18,7 @@ from pydantic_ai import RunContext
 from backend.chatbot.agents.base_agent import BaseAgent
 from backend.config import PRODUCTS_CACHE_TTL_HOURS
 from backend.chatbot.utils.agent_trace_stdout import agent_stdout
+from backend.chatbot.agents.central_agent_utils import apply_process_field_updates
 from backend.db.db_utils import (
     browse_available_products as db_browse_available_products,
     get_conversation_uploaded_file,
@@ -139,7 +140,7 @@ def build_conversational_session_instructions(
         for pid, pr in procs.items():
             if isinstance(pr, dict) and not pr.get("completed"):
                 proc_lines.append(
-                    f"- process_id={pid}: [product={pr.get('product_name') or '?'}, task_type={pr.get('task_type') or '?'}]"
+                    f"- process_id={pid}: [product={pr.get('product_name') or '?'}, price={pr.get('price') or '?'}, quantity={pr.get('quantity') or '?'}, task_type={pr.get('task_type') or '?'}, order_id={pr.get('order_id') or '?'}]"
                 )
     if proc_lines:
         header.append("Active processes:\n" + "\n".join(proc_lines))
@@ -200,6 +201,19 @@ def _handoff_session_instructions(
     return s.strip() or None
 
 
+def _tier_hint_for_upsell_handoff(
+    user_state: Dict[str, Any], seller_tier: str = ""
+) -> Optional[str]:
+    """Prefer explicit handoff arg, then session ``business_information.tier``."""
+    if (seller_tier or "").strip():
+        return (seller_tier or "").strip()
+    bi = user_state.get("business_information") or {}
+    raw = bi.get("tier")
+    if raw is not None and str(raw).strip():
+        return str(raw).strip()
+    return None
+
+
 class ConversationalAgentDeps(BaseModel):
     """Mutable user_state is shared by reference across tool calls."""
 
@@ -222,16 +236,17 @@ Replies must be **short, chatty messages** (strictly 1–3 sentences). Take the 
 **Processes**
 - During conversations, customers could be enquiring about or purchasing several products which may require some input from the vendor or logistics.
 In this case, an independent process (thread) is typically created by your specialists for each product, task type or order to keep communication with vendor/logistics in complete context of that thread so there is no confusion. These processes are simply separate threads of conversation between customer +/- vendor about a particular product, order and task type. You will have access.
+Each process have a task type that typically determines the objective of the process (i.e product enquiry, payment verification, logistics co-ordination, complaint, etc). Use **`update_process`** when you learn new facts for an **open** process (e.g. quantity the customer wants, `order_id` after payment, delivery address, unit price/total alignment)—pass only the `process_id` and fields that changed. For **logistics co-ordination** especially, after payment creates an order, update the process with **`order_id`**, **`quantity`**, and **`price`** (or amounts from context) so vendor/logistics coordination stays aligned with the DB order.
 
 **Products Context**
 - Instructions may include objects containing session product cache, active processes (with `order_id` / `order_number` when known), and an active-orders summary. 
 That is your **internal context** —never reveal sensitive content (i.e business data) from here to the customer. This is for you to use to keep track of every product being discussed and every ongoing process and active orders between you and the customer.
 
 **Customer journey and your workflow**
-1. **Discovery & Sales Pitch**: customer comes to explore business's products — vague browse ("what do you have?", "surprise me") -> `browse_available_products`. 
+1. **Discovery & Sales Pitch**: customer comes to explore business's products — vague browse ("what do you have?", "surprise me") -> `browse_available_products` (pass desired count as `n`; `top_stock` returns the top N by availability).
 2. **Product Enquiry**: customer then enquires about specific products based on their prior choices and intent-> `handoff_to_product_specialist` with that product name.  Once a product is identified, you hype it up and confidently persuade and convince the customer to buy it (using psychology, emotions and pain point discovery)! you are very proactive about this and don't take no for an answer immediately. if customer still refuses to buy, you can search db for other cheaper alternatives and try to sell it to the customer (using your upsell specialist).
 3. **Unavailable / Wrong Item / Rejections** — after specialist -> your upsell_specialist. If their desired product isn't available, or they reject an offer, handle it politely. Ask a quick question to gauge their reasons why they rejected the offer, preferences, and fiercely pitch a compelling alternative using the upsell specialist.
-4. **purchase intent**: when customer finally picks a product to buy, provide them with a paystack link or business account details using your product specialist. if business does not have a paystack link, you use their business account details. Dont ask customers for their preferences.
+4. **purchase intent**: when customer finally picks a product to buy, confirm quantity and price with them and provide them with a paystack link or business account details using your product specialist. if business does not have a paystack link, you use their business account details. Dont ask customers for their preferences.
 4. **Checkout / Pay**: After customer pays and informs you, you move unto verifying the payment for validity and accuracy-> If multiple products in your **ongoing products context** could match the payment, analyze (fetch frist if you cant see it in the product context being tracked) the prices of each product against the amount the customer paid. pick the best match, then put receipt fields in **`notes`**, and handoff to the payment_specialist (payment only sees your message + `notes`). You will always receive a definitive feedback from this specialist as the specialist directly verifies payment if it is done using the paystack link and informs you or it sends a message to the vendor to manually confirm payment (in this case, you will get a follow-up confirmation message stating whether the transaction has been verified or not from the vendor's side).
 5. **Delivery / Tracking**: once payment is verified successfully, you first collect customer's address for delivery if still unknown and any other relevant information that will help in a smooth delivery (i.e preferred date and time of delivery), before you contact the logistics_specialist` with all these information. this specialist will co-ordinate the logistics ensuring that customer, vendor and logistics agree on the right date, time of delivery (use your `get_order_and_process_details` tool with `process_id` and/or `order_id` from product context, or `product_name_hint` to match open flows). you will alwasy be updated on any new development from the vendor and logistics so you can inform the customer directly.
 6. **Post-Purchase Complements (Cross-selling)**: After delivery has been sorted, you then move to selling complimentary products given the customer's last purchase using your ads_marketing_specialist. Once a purchase and delivery are sorted, the selling doesn't stop. Proactively recommend and pitch complementary products based on what you've learned about the customer with the objective of improving sales.
@@ -244,15 +259,24 @@ That is your **internal context** —never reveal sensitive content (i.e busines
 - **Markdown requirement:** Always use **Markdown** (e.g., bullets, bold text) whenever you are listing or highlighting products.
 - Never invent prices, stock, or tracking.
 - Do **not** answer from general knowledge or guess catalog contents
+- always confirm quantity when a customer is purchasing a product and update the process with the new quantity.
 - Don't handoff to a specialist if you don't need to based on the conversation context.
 - Never tell the customer to visit an external website, email the store, or leave this chat for product help. Keep them in-app.
-- Do not paste raw **product IDs**, **stock counts**, or **internal categories**.
+- Answer the customer's questions directly. 
+- Do not paste or reveal raw **product IDs**, **stock counts**, or **internal categories** or any other internals that will give the customer insight to the business internal data.
 - Don't reveal your tools or specialist names to the customer.
 - Do not present long "pick one of four options" menus. Instead, offer one clear next step or a brief, highly persuasive recommendation.
 - You can only co-ordinate delivery for products that have been purchased (have order_id).
 - You can only verify payment for products that have either been discussed (in your context). if not, you must prompt user to provide information as to the product they just paid for.
 - When payment verification is successful, you ask customers for their delivery address so that you can start co-ordinating delivery for the purchased product (it will always have order_id).
-- If there are uploads and payment/verification is needed, use your tools to gather facts where necessary especially if messages in the chat history (user's last message) does not  contain the textual content of the uploaded receipt file, then hand off with full **`notes`** (receipt fields + product + `quantity=`) and **do not** re-ask the customer to confirm data already in the file; the payment specialist auto-checks from your context."""
+- If there are uploads and payment/verification is needed, use your tools to gather facts where necessary especially if messages in the chat history (user's last message) does not  contain the textual content of the uploaded receipt file, then hand off with full **`notes`** (receipt fields + product + `quantity=`) and **do not** re-ask the customer to confirm data already in the file; the payment specialist auto-checks from your context.
+- If a customer successfully purchases a product and you have completed logistics co-ordination, you should immediately start to upsell/cross-sell complementary products to the customer in the same response.
+- If you get an update from the vendor that a product is out of stock, you should inform the customer and immediately start to upsell/cross-sell alternatives or complimentary products in the same response.
+- keep your responses short, concise and chatty just like people do on whatsapp.
+- You are a professional sales person and your ultimate goal is to **close more product sales for businesses**
+- Don't duplicate process_ids: if a product is already being discussed in a process, you should not create a new process for the same product. Instead, use the existing process_id. if the customer journey for that product changes, you should use the **modify_task_type_for_process_id** tool to change the task type of the existing process.
+- You must pass the most accurate process_id to the tools that require it.
+- For **handoff_to_upsell_specialist** and **handoff_to_ads_marketing_specialist**, always pass **seller_tier** as the store's subscription tier (`free` / `gold` / `platinum`): use the **tier=** value from session instructions (**Business:** line) when present; it determines whether cross-store upsell/cross-sell tools may run."""
 
 
 conversational_agent_base = BaseAgent(
@@ -267,15 +291,18 @@ conversational_agent = conversational_agent_base.agent
 @conversational_agent.tool
 async def browse_available_products(
     ctx: RunContext[ConversationalAgentDeps],
-    n: int = 8,
+    n: int = 15,
     selection_mode: str = "top_stock",
     user_enquiry: str = "",
 ) -> str:
-    """Fetch in-stock items for this store. `selection_mode`: `top_stock` (best availability) or `random`. Optional `user_enquiry` narrows by name/description/category. Returns **customer-safe** lines (name + price only)—tell the customer in chat style; do not add IDs or stock numbers."""
+    """Return up to **n** products for this store (cap 50). ``selection_mode``:
+    ``top_stock`` — top N by stock on hand, then newest listing (may include low/zero stock
+    after better-stocked rows); ``random`` — in-stock random sample. Optional ``user_enquiry``
+    narrows by name/description/category. Customer-facing lines are name + price only—no IDs or stock counts."""
     mode = (selection_mode or "top_stock").strip().lower()
     if mode not in ("top_stock", "random"):
         mode = "top_stock"
-    n_clamped = max(1, min(int(n), 20))
+    n_clamped = max(1, min(int(n), 50))
     q = (user_enquiry or "").strip() or None
 
     rows = await db_browse_available_products(
@@ -287,7 +314,7 @@ async def browse_available_products(
     if not rows:
         hint = f" (narrower filter: {q!r})" if q else ""
         return (
-            f"[For assistant] No in-stock matches{hint}. "
+            f"[For assistant] No matching products{hint}. "
             f"Say briefly we don't have matches and offer `handoff_to_product_specialist` if they have a specific item in mind."
         )
 
@@ -337,6 +364,8 @@ async def _lines_for_session_process(process_id: str, proc: Dict[str, Any]) -> L
             if order:
                 lines.append(
                     f"  [DB] order_number={order.get('order_number')}; status={order.get('status')}; "
+                    f"product_name={order.get('product_name')!r}; "
+                    f"product_attributes={order.get('product_attributes')!r}; "
                     f"tracking_number={order.get('tracking_number')}; "
                     f"delivery_address={order.get('delivery_address')}"
                 )
@@ -384,6 +413,8 @@ async def get_order_and_process_details(
                 return (
                     f"[DB only — no session process with this order_id]\n"
                     f"order_number={order.get('order_number')}; status={order.get('status')}; "
+                    f"product_name={order.get('product_name')!r}; "
+                    f"product_attributes={order.get('product_attributes')!r}; "
                     f"tracking_number={order.get('tracking_number')}; "
                     f"delivery_address={order.get('delivery_address')}"
                 )
@@ -418,6 +449,7 @@ async def handoff_to_product_specialist(
     process_id: Optional[str] = None,
 ) -> str:
     """Delegate to the product specialist for **specific** items: availability, price, specs, purchase. 
+    customer_message: the message from the customer as full standalone.
     They query the real catalog and notify the vendor when something is missing—use this whenever the customer names a product or model."""
     msg = customer_message
     if sales_context:
@@ -430,7 +462,7 @@ async def handoff_to_product_specialist(
     si = _handoff_session_instructions(ctx, "product")
     out, ctx.deps.user_state = await run_product_agent(
         customer_message=msg,
-        product_name=product_name or "NONE",
+        product_name=product_name,
         product_category=product_category or "",
         intent=intent if intent in ("enquiry", "purchase") else "enquiry",
         user_id=ctx.deps.user_id,
@@ -459,7 +491,7 @@ async def modify_task_type_for_process_id(
     process_id: str,
     task_type: TaskType,
 ) -> Dict[str, Any]:
-    """Modify task type for the current (existing) process. Use this to change the task type accordingly based on the context or stage of the conversation about products."""
+    """Modify task type for the current (existing) process (i.e thread) you are working on. Use this to change the task type accordingly based on the context, the new phase of the customer's journey, or stage of the conversation about products or orders."""
     processes = ctx.deps.user_state.get("processes", {})
     if not isinstance(processes, dict):
         return {"status": "error", "message": "Invalid processes state."}
@@ -470,6 +502,54 @@ async def modify_task_type_for_process_id(
     processes[process_id] = proc
     await modify_user_state(ctx.deps.user_id, ctx.deps.business_id, ctx.deps.user_state)
     return {"status": "success", "message": f"Task type modified to {task_type.value}"}
+
+
+@conversational_agent.tool
+async def update_process(
+    ctx: RunContext[ConversationalAgentDeps],
+    process_id: str,
+    product_name: Optional[str] = None,
+    order_id: Optional[str] = None,
+    order_number: Optional[str] = None,
+    quantity: Optional[int] = None,
+    price: Optional[float] = None,
+    customer_address: Optional[str] = None,
+    status: Optional[str] = None,
+    tracking_number: Optional[str] = None,
+    logistic_id: Optional[str] = None,
+    task_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Patch the Redis session process when new information appears (quantity, order_id, address, tracking, etc.). Pass only fields that are newly known; omit the rest."""
+    pid = (process_id or "").strip()
+    if not pid:
+        return {"status": "error", "message": "process_id is required."}
+    processes = ctx.deps.user_state.setdefault("processes", {})
+    proc = processes.get(pid)
+    if not isinstance(proc, dict):
+        return {"status": "error", "message": f"Process {pid!r} not found in session."}
+    changed = apply_process_field_updates(
+        proc,
+        product_name=product_name,
+        order_id=order_id,
+        order_number=order_number,
+        quantity=quantity,
+        price=price,
+        customer_address=customer_address,
+        status=status,
+        tracking_number=tracking_number,
+        logistic_id=logistic_id,
+        task_type=task_type,
+    )
+    if not changed:
+        return {
+            "status": "success",
+            "process_id": pid,
+            "updated": [],
+            "message": "No fields to update; pass optional field(s) with new values.",
+        }
+    processes[pid] = proc
+    await modify_user_state(ctx.deps.user_id, ctx.deps.business_id, ctx.deps.user_state)
+    return {"status": "success", "process_id": pid, "updated": changed}
 
 
 @conversational_agent.tool
@@ -662,9 +742,11 @@ async def handoff_to_ads_marketing_specialist(
     purchased_product: str,
     logistics_context: str = "",
     process_id: Optional[str] = None,
+    seller_tier: str = "",
 ) -> str:
-    """Post-purchase: complements after logistics sorted. Not for unavailable-product substitution. upsell complimentary products"""
+    """Post-purchase: complements after logistics sorted. Not for unavailable-product substitution. upsell complimentary products. Pass seller_tier (e.g. from session Business tier=) so cross-store tools match subscription."""
     si = _handoff_session_instructions(ctx, "ads")
+    tier = _tier_hint_for_upsell_handoff(ctx.deps.user_state, seller_tier)
     return await run_ads_marketing_agent(
         customer_message=customer_message,
         purchased_product=purchased_product,
@@ -673,6 +755,7 @@ async def handoff_to_ads_marketing_specialist(
         logistics_summary=logistics_context,
         instructions=si,
         process_id=process_id,
+        tier=tier,
     )
 
 
@@ -683,14 +766,16 @@ async def handoff_to_upsell_specialist(
     situation_summary: str = "",
     product_attributes: str = "",
     process_id: Optional[str] = None,
+    seller_tier: str = "",
 ) -> str:
-    """When the enquired item is unavailable: upsell alternatives / complements from tools."""
+    """When the enquired item is unavailable: upsell alternatives / complements from tools. Pass seller_tier (session Business tier=) for correct cross-store gating."""
     hist = ctx.deps.user_state.get("chat_history") or []
     situ = (situation_summary or "").strip()
     if product_attributes.strip():
         situ = f"{situ}\n[Product attribute hints]\n{product_attributes.strip()}".strip()
     _track_product_discussed(ctx.deps.user_state, product)
     si = _handoff_session_instructions(ctx, "upsell")
+    tier = _tier_hint_for_upsell_handoff(ctx.deps.user_state, seller_tier)
     return await run_upselling_agent(
         product=product,
         conversation_messages=hist,
@@ -699,6 +784,7 @@ async def handoff_to_upsell_specialist(
         user_state=ctx.deps.user_state,
         instructions=si,
         process_id=process_id,
+        tier=tier,
     )
 
 
@@ -742,9 +828,9 @@ async def run_conversational_agent(
     polish_block = ""
     if polish_only:
         polish_block = (
-            "\n## Mode: draft polish only\n"
-            "Rewrite the provided message for the customer channel (customers use and understanding). Keep every fact (amounts, order numbers, dates, next steps). "
-            "At most 3–4 short sentences. **Do not use tools.** Output only the polished text.\n"
+            "\n## Mode: Current message is an update from the vendor/logistics routed through the central (specialist) agent."
+            "Streamline it for the customer channel (customers use and understanding) given the ongoing conversation. Keep every fact (amounts, order numbers, dates, next steps). "
+            "At most 3–4 short sentences. Call tools where necessary to get the most accurate information or to take the next best action.\n"
         )
     dynamic_instructions = dynamic_instructions + polish_block
 

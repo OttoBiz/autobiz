@@ -2,22 +2,25 @@
 Business Chat Interface - Handles business owner interactions
 Converted to Pydantic AI with analytics and inventory tools
 """
+import re
 import uuid
 import logfire
 from fastapi import BackgroundTasks
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 from pydantic_ai import RunContext
 from backend.chatbot.agents.base_agent import BaseAgent
-from backend.chatbot.agents.central_agent import run_central_agent
+from backend.chatbot.agents.central_agent import (
+    run_central_agent,
+    _catalog_add_row,
+    _catalog_set_price_row,
+    _catalog_set_stock_row,
+)
 from backend.chatbot.agents.central_agent_utils import create_structured_input
-from backend.chatbot.utils.agent_utils import format_chat_history
 from backend.db.cache_utils import get_party_state, get_user_state, modify_party_state, modify_user_state
 from backend.db.db_utils import (
-    add_product as db_add_product,
     get_business_analytics,
     get_business_info,
     get_inventory,
-    update_product_stock,
     get_low_stock_products,
     pick_random_logistics_company_id,
 )
@@ -46,6 +49,36 @@ from backend.chatbot.utils.history_summarizer import maybe_summarize_chat_histor
 
 logger = get_logger(__name__)
 
+_VENDOR_TAG_RE = re.compile(
+    r"Vendor:\s*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})",
+    re.IGNORECASE,
+)
+
+
+def extract_vendor_id_from_thread_text(text: str) -> Optional[str]:
+    """Parse `Vendor: <uuid>` from central/inbox metadata brackets."""
+    if not text or not text.strip():
+        return None
+    m = _VENDOR_TAG_RE.search(text)
+    return str(m.group(1)) if m else None
+
+
+def latest_vendor_id_from_chat_history(history: Any) -> Optional[str]:
+    """Walk newest-first; return first vendor UUID found in any message part."""
+    if not history:
+        return None
+    for msg in reversed(history):
+        parts = getattr(msg, "parts", None)
+        if not parts:
+            continue
+        for part in parts:
+            c = getattr(part, "content", None)
+            if isinstance(c, str):
+                vid = extract_vendor_id_from_thread_text(c)
+                if vid:
+                    return vid
+    return None
+
 
 async def _get_business_info(business_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """Load business row and `business_type`."""
@@ -66,7 +99,13 @@ class ReplyContext(BaseModel):
     customer_id: str
     process_id: Optional[str] = None
     task_type: Optional[str] = None
-    vendor_id: str # Business/vendor for the order (when logistics replying)
+    vendor_id: str = Field(
+        default="",
+        description=(
+            "Store (vendor) business UUID for this thread. **Logistics:** copy from `Vendor: <uuid>` "
+            "in the latest central agent / inbox message. **Vendor:** may be left empty; routing uses the party id."
+        ),
+    )
     logistic_id: Optional[str] = None # Logistics/logistics company for the order (when business replying)
     product_id: str
     product_name: str
@@ -122,17 +161,18 @@ You are ottobiz AI, the primary AI Business Assistant dedicated to serving busin
 
 **MODE 1: DIRECT BUSINESS SUPPORT (Default Mode)**
 You provide direct, localized assistance to vendor or logistic businesses queries or questions.
-* **Capabilities:** Business analytics, supply chain predictions, inventory management, updating their product in the database, low stock alerts, and executing system updates (e.g., updating product stock quantities).
-* **Inventory:** Call `get_inventory_info` at most once per user question; derive rankings (e.g. best-stocked item) from the returned list—do not call it again in the same reply loop.
+* **Capabilities:** Business analytics, supply chain predictions, inventory management, updating their product in the database (price, stock, new SKUs), low stock alerts, and executing system updates (e.g., updating product stock quantities or prices).
+* **Inventory writes:** Use **`mutate_vendor_catalog`** (`set_price`, `set_stock`, `add`) only here—when the vendor/store is **directly** managing catalog rows for their own `business_id`. **Do not** call it on cross-party / inbox / coordination turns (Mode 2); those must set **`for_central_agent = True`** so the central agent applies approved catalog updates on the customer–vendor session.
+* **Inventory read:** Call `get_inventory_info` at most once per user question; derive rankings (e.g. best-stocked item) from the returned list—do not call it again in the same reply loop.
 * **Action:** Process these requests directly within the current chat context.
 
 **MODE 2: CROSS-PARTY COORDINATION (Thread Handoff)**
-Sometimes, the business's message is a response to a third-party's message (which contains a Process ID). This means the business (vendor/logistics) needs to coordinate with another party (e.g. customer, another vendor, logistics company). 
-In this case, you will act as an effective relay, passing the message to the relevant party (e.g. customer, vendor, logistics or AI agent).
-Inbox lines use markers like `Customer:`, `Process:`, `Task:`. You can use this information to determine the context reference of the last business's message.
+Sometimes, the business's message is a response to a third-party's (external agents) message (which contains a Process ID). This means the business (vendor/logistics) needs to coordinate with another party (e.g. customer, another vendor, logistics company). 
+In this case, you will act as an effective relay, passing the message to the relevant party (e.g. customer, vendor, logistics or AI agent) through the central agent.
+Inbox lines use markers like **`Vendor:`** (store UUID), **`Customer:`**, **`Product:`**, **`Process:`**, **`Task:`**. You MUST copy **`Vendor: <uuid>`** into **`reply_context.vendor_id`** when you are a **logistics** provider replying—this UUID is the customer–vendor session key central uses. If you omit it, copy it from the newest visible bracket line in chat history.
 
 **Hard rules**
-- If `recipient` is **Customer**→ set **`for_central_agent = True`**, fill **ReplyContext** (`customer_id`, `process_id`, `product_name` from the thread), and put the shopper-facing text in **`response`** (central relays it).
+- If `recipient` is **Customer**→ set **`for_central_agent = True`**, fill **ReplyContext** (`customer_id`, `process_id`, `product_name` from the thread), and put the shopper-facing text in **`response`** (central relays it). **Never** call **`mutate_vendor_catalog`** on those turns.
 - If the vendor/logistics only answers internal business ops with no cross-party relay → `for_central_agent = False`, recipient= None.
 
 Optional `task_type` when the thread names it; `recipient` Vendor/Logistics is for coordination between those parties (still `for_central_agent = True`).""",
@@ -189,56 +229,56 @@ async def get_inventory_info(
         return [{"error": f"Inventory unavailable: {e}"}]
 
 @business_chat_agent.tool
-async def add_product_to_inventory(
+async def mutate_vendor_catalog(
     ctx: RunContext[BusinessChatDeps],
-    product_name: str,
-    price: float,
-    quantity: int,
+    action: Literal["set_price", "set_stock", "add"],
+    product_id: Optional[str] = None,
+    name: Optional[str] = None,
+    price: Optional[float] = None,
+    stock_quantity: Optional[int] = None,
     description: str = "",
     category: str = "",
     product_attributes: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Add a new product to the inventory"""
-    try:
-        result = await db_add_product(
-            business_id=ctx.deps.business_id,
-            name=product_name,
-            price=price,
-            stock_quantity=quantity,
-            description=description,
-            category=category,
-            attributes=product_attributes,
-        )
-        if not result:
-            return {"error": "Could not add product"}
-        return {
-            "success": True,
-            "product_id": str(result.get("id", "")),
-            "name": result.get("name"),
-            "price": result.get("price"),
-            "stock_quantity": result.get("stock_quantity"),
-        }
-    except Exception as e:
-        return {"error": f"Add product failed: {e}"}
+    """Update this store's catalog in the database.
 
-@business_chat_agent.tool
-async def update_product_availability(
-    ctx: RunContext[BusinessChatDeps],
-    product_id: str,
-    stock_quantity: int
-) -> Dict[str, Any]:
-    """Update product stock quantity/availability when business confirm that more stock is available"""
-    try:
-        updated = await update_product_stock(product_id, stock_quantity)
-        if not updated:
-            return {"error": "Product not found"}
-        return {
-            "success": True,
-            "product_id": str(updated.get("id", "")),
-            "stock_quantity": updated.get("stock_quantity"),
-        }
-    except Exception as e:
-        return {"error": f"Update failed: {e}"}
+    **Mode 1 only** — the vendor is **directly** editing their own catalog in this chat. Use
+    ``set_price`` (``product_id``, ``price``), ``set_stock`` (``product_id``, ``stock_quantity``),
+    or ``add`` (``name``, ``price``; optional ``stock_quantity``, ``description``, ``category``, ``product_attributes``).
+
+    **Do not call** when the turn is cross-party coordination or any path that sets
+    ``for_central_agent = True`` (inbox / relay to customer or central): state the change in
+    ``response`` and hand off so central applies it on the customer–vendor session.
+    """
+    bid = (ctx.deps.business_id or "").strip()
+    if not bid:
+        return {"error": "No business context"}
+
+    pid = (product_id or "").strip()
+    nm = (name or "").strip()
+
+    if action == "set_price":
+        if not pid:
+            return {"error": "product_id required for set_price"}
+        if price is None:
+            return {"error": "price required for set_price"}
+        return await _catalog_set_price_row(bid, pid, price)
+
+    if action == "set_stock":
+        if not pid:
+            return {"error": "product_id required for set_stock"}
+        if stock_quantity is None:
+            return {"error": "stock_quantity required for set_stock"}
+        return await _catalog_set_stock_row(bid, pid, stock_quantity)
+
+    if not nm:
+        return {"error": "name required for add"}
+    if price is None:
+        return {"error": "price required for add"}
+    sq = int(stock_quantity) if stock_quantity is not None else 0
+    return await _catalog_add_row(
+        bid, nm, price, sq, description, category, product_attributes
+    )
 
 
 @business_chat_agent.tool
@@ -325,6 +365,9 @@ async def _business_chat_inner(
             business_user_state["chat_history_summary"] = new_summary
             business_user_state["chat_history"] = chat_history
 
+        _hist_vendor_id = latest_vendor_id_from_chat_history(chat_history)
+        _msg_vendor_id = extract_vendor_id_from_thread_text(business_request.message or "")
+
         agent_stdout(
             f"business_chat chat_history BEFORE agent.run (party_id={state_key_id})",
             format_message_history_for_stdout(chat_history),
@@ -398,7 +441,32 @@ async def _business_chat_inner(
             )
             return response
 
-        biz_id = rc.vendor_id if business_is_logistics else state_key_id
+        biz_id: str
+        if business_is_logistics:
+            biz_id = (
+                (rc.vendor_id or "").strip()
+                or (_hist_vendor_id or "").strip()
+                or (_msg_vendor_id or "").strip()
+            )
+            if not biz_id:
+                business_user_state["chat_history"].append(
+                    ModelRequest(parts=[UserPromptPart(content=business_request.message)])
+                )
+                response = (
+                    "I could not determine which store this belongs to. Reply in context of an inbox message "
+                    "that includes `Vendor: <uuid>` (or paste that line), so central can load the right customer session."
+                )
+                business_user_state["chat_history"].append(
+                    ModelResponse(parts=[TextPart(content=response)])
+                )
+                await modify_party_state(state_key_id, business_user_state)
+                agent_stdout(
+                    f"business_chat chat_history AFTER persist (party_id={state_key_id})",
+                    format_message_history_for_stdout(business_user_state.get("chat_history")),
+                )
+                return response
+        else:
+            biz_id = (state_key_id or "").strip()
 
         central_user_state = await get_user_state(rc.customer_id, biz_id) or {}
         tt = TaskType.UNKNOWN
@@ -407,15 +475,17 @@ async def _business_chat_inner(
                 if t.value == rc.task_type or t.name == rc.task_type:
                     tt = t
                     break
-        pid = (rc.process_id or "").strip() or ensure_central_process(
-            central_user_state,
-            task_type=tt,
-            customer_id=rc.customer_id,
-            vendor_id=biz_id,
-            product_name=rc.product_name or "",
-            order_id=rc.order_id,
-        )
-        # await modify_user_state(rc.customer_id, biz_id, central_user_state)
+        pid = (rc.process_id or "").strip()
+        if not pid:
+            pid = await ensure_central_process(
+                central_user_state,
+                task_type=tt,
+                customer_id=rc.customer_id,
+                vendor_id=biz_id,
+                product_name=rc.product_name or "",
+                order_id=rc.order_id,
+            )
+        await modify_user_state(rc.customer_id, biz_id, central_user_state)
 
         if business_is_logistics:
             _logistic_uuid = (state_key_id or "").strip()

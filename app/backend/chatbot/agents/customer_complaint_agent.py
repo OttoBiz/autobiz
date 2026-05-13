@@ -73,7 +73,7 @@ async def notify_central_agent(
 
         pname = product_name or ctx.deps.product_name or ""
         us = await get_user_state(ctx.deps.user_id, ctx.deps.business_id) or {}
-        pid = ensure_central_process(
+        pid = await ensure_central_process(
             us,
             task_type=task_type or TaskType.COMPLAINT,
             customer_id=ctx.deps.user_id,
@@ -81,7 +81,6 @@ async def notify_central_agent(
             product_name=pname,
             process_id=process_id or ctx.deps.process_id,
         )
-        await modify_user_state(ctx.deps.user_id, ctx.deps.business_id, us)
         agent_input = await create_structured_input(
             sender=EntityType.AGENT,
             recipient=coerce_entity(recipient),

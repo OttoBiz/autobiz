@@ -16,7 +16,7 @@ from backend.chatbot.agents.central_agent_utils import (
 )
 from backend.chatbot.utils.agent_utils import get_or_create_user_state, save_user_state
 from backend.db.cache_utils import get_user_state, modify_user_state
-from backend.db.db_utils import get_order_by_id
+from backend.db.db_utils import get_order_by_id, list_orders_for_customer_store
 from backend.struct import Customer, EntityType, Product, TaskType, Vendor
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
@@ -41,8 +41,9 @@ logistics_agent_base = BaseAgent(
 
 **Workflow**
 1. With an order_id (or process_id that has an order in session), call `get_order_tracking` for status, tracking number, and delivery details.
-2. If delivery address is missing or needs confirmation, ask the customer directly.
-3. When you need to escalate (e.g. delivery date and time alignment between customer and vendor+/- logistics company, 
+2. To list past purchases at this store from the database (by day or time window), call `list_customer_orders` with optional `on_date` (YYYY-MM-DD) or ISO `created_after` / `created_before`.
+3. If delivery address is missing or needs confirmation, ask the customer directly.
+4. When you need to escalate (e.g. delivery date and time alignment between customer and vendor+/- logistics company, 
 delayed shipment, missing tracking), call `notify_central_agent` with the order_id to get feedback response from the vendor/logistics company.
 if you need more information from the customer (i.e when they will be available for the delivery), you can't about it all at once and ask the customer for a seamless experience.
 
@@ -53,6 +54,32 @@ if you need more information from the customer (i.e when they will be available 
 )
 
 logistics_agent = logistics_agent_base.agent
+
+
+def _slim_order_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for k in (
+        "id", "user_id", "business_id", "order_number", "status", "total_amount",
+        "tracking_number", "logistic_id", "delivery_address", "delivery_city", "delivery_state",
+        "product_name",
+        "created_at", "updated_at",
+    ):
+        v = row.get(k)
+        if v is None:
+            continue
+        if k in ("id", "user_id", "business_id", "logistic_id"):
+            out[k] = str(v)
+        elif k in ("created_at", "updated_at") and hasattr(v, "isoformat"):
+            out[k] = v.isoformat()
+        else:
+            out[k] = v
+    pa = row.get("product_attributes")
+    if isinstance(pa, dict):
+        out["product_attributes"] = pa
+    meta = row.get("metadata")
+    if isinstance(meta, dict) and meta:
+        out["metadata"] = meta
+    return out
 
 
 @logistics_agent.tool
@@ -114,15 +141,46 @@ async def get_order_tracking(
     order = await get_order_by_id(order_id)
     if not order:
         return {"error": "Order not found", "order_id": order_id}
+    ca, ua = order.get("created_at"), order.get("updated_at")
     return {
         "order_id": str(order["id"]),
         "order_number": order.get("order_number"),
         "status": order.get("status"),
         "tracking_number": order.get("tracking_number"),
+        "product_name": order.get("product_name"),
+        "product_attributes": order.get("product_attributes")
+        if isinstance(order.get("product_attributes"), dict)
+        else {},
         "delivery_address": order.get("delivery_address"),
         "delivery_city": order.get("delivery_city"),
         "delivery_state": order.get("delivery_state"),
+        "created_at": ca.isoformat() if hasattr(ca, "isoformat") else ca,
+        "updated_at": ua.isoformat() if hasattr(ua, "isoformat") else ua,
     }
+
+
+@logistics_agent.tool
+async def list_customer_orders(
+    ctx: RunContext[LogisticsDeps],
+    limit: int = 30,
+    on_date: Optional[str] = None,
+    created_after: Optional[str] = None,
+    created_before: Optional[str] = None,
+) -> Dict[str, Any]:
+    """DB orders for this customer with this store. Filter by `on_date` (YYYY-MM-DD UTC) or ISO `created_after` / `created_before` to match a specific purchase time."""
+    uid = (ctx.deps.user_id or "").strip()
+    bid = (ctx.deps.business_id or "").strip()
+    if not uid or not bid:
+        return {"error": "Missing user or business context", "orders": []}
+    rows = await list_orders_for_customer_store(
+        uid,
+        bid,
+        limit=max(1, min(int(limit), 100)),
+        on_date=(on_date or "").strip() or None,
+        created_after_iso=(created_after or "").strip() or None,
+        created_before_iso=(created_before or "").strip() or None,
+    )
+    return {"count": len(rows), "orders": [_slim_order_row(dict(r)) for r in rows]}
 
 
 @logistics_agent.tool
@@ -154,7 +212,7 @@ async def notify_central_agent(
         if order_id:
             full_msg = f"[Order ID: {order_id}] {message}"
         us = await get_user_state(ctx.deps.user_id, ctx.deps.business_id) or {}
-        pid = ensure_central_process(
+        pid = await ensure_central_process(
             us,
             task_type=task_type or TaskType.LOGISTICS_COORDINATION,
             customer_id=ctx.deps.user_id,
@@ -164,7 +222,6 @@ async def notify_central_agent(
             process_id=process_id,
         )
         proc = us.get("processes", {}).get(pid) or {}
-        await modify_user_state(ctx.deps.user_id, ctx.deps.business_id, us)
         addr = customer_address
         if not addr and isinstance(us, dict):
             addr = us.get("customer_address")

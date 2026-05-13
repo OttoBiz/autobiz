@@ -75,6 +75,29 @@ class Cache:
     def push_to_list(self, key: str, value: dict) -> None:
         self._client.rpush(key, json.dumps(value, cls=JSONEncoder))
 
+    def rpush_json_capped(self, key: str, value: dict, max_items: int) -> None:
+        """Append JSON value and trim list to the last ``max_items`` entries."""
+        if max_items < 1:
+            return
+        payload = json.dumps(value, cls=JSONEncoder)
+        pipe = self._client.pipeline()
+        pipe.rpush(key, payload)
+        pipe.ltrim(key, -max_items, -1)
+        pipe.execute()
+
+    def list_tail_json(self, key: str, count: int) -> List[dict]:
+        """Last ``count`` list elements as parsed JSON (oldest-first within the window)."""
+        if count <= 0:
+            return []
+        items = self._client.lrange(key, -count, -1)
+        out: List[dict] = []
+        for item in items:
+            try:
+                out.append(json.loads(item))
+            except (json.JSONDecodeError, TypeError):
+                continue
+        return out
+
     def pop_all_from_list(self, key: str) -> list:
         items = self._client.lrange(key, 0, -1)
         self._client.delete(key)

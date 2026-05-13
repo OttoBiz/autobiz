@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { useState, useRef, useEffect } from "react"
+import { useState, useRef, useEffect, useSyncExternalStore } from "react"
 import { ChatMessageBody } from "@/components/chat-message-body"
 import {
   Send,
@@ -22,9 +22,75 @@ import {
   ShoppingCart,
   Users,
   RotateCcw,
+  ChevronDown,
+  ChevronRight,
+  RefreshCw,
 } from "lucide-react"
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000"
+
+const TRANSPARENCY_POLL_MS = 4000
+
+/** Stable placeholder time for welcome rows — avoids SSR/client `Date` hydration mismatches. */
+const STATIC_WELCOME_TS = new Date("2000-01-01T12:00:00.000Z")
+
+interface CatalogProductRow {
+  id: string
+  name?: string | null
+  price: number
+  stock_quantity: number
+  currency?: string | null
+}
+
+interface DiscussedProductRow {
+  id?: string | null
+  name?: string | null
+  price: number
+  stock_quantity: number
+  currency?: string | null
+  cache_key?: string
+}
+
+interface SessionProcessRow {
+  process_id: string
+  task_type?: string
+  product_name?: string
+  order_id?: string
+  order_number?: string
+  status?: string
+  quantity?: number | string | null
+  tracking_number?: string
+  logistic_id?: string | null
+  customer_address?: string
+  completed?: boolean
+}
+
+interface InventoryActivityEvent {
+  at?: string
+  kind?: string
+  product_id?: string
+  name?: string | null
+  stock_quantity?: number
+  price?: number
+  currency?: string | null
+}
+
+interface SessionOrderRow {
+  id: string
+  order_number?: string | null
+  status?: string | null
+  total_amount?: number
+  product_name?: string | null
+  tracking_number?: string | null
+  delivery_address?: string | null
+  delivery_city?: string | null
+  delivery_state?: string | null
+  logistic_id?: string | null
+  metadata?: Record<string, unknown> | null
+  product_attributes?: Record<string, unknown> | null
+  created_at?: string | null
+  updated_at?: string | null
+}
 
 interface ChatMessage {
   id: string
@@ -67,6 +133,29 @@ const predefinedLogistics: Persona[] = [
   { id: "00000000-0000-0000-0002-000000000003", name: "Quick Ship" },
 ]
 
+function sessionOrderQtyHint(o: SessionOrderRow): string | null {
+  const m = o.metadata
+  const pa = o.product_attributes
+  const fromMeta =
+    m && typeof m === "object" && "quantity" in m ? (m as { quantity?: unknown }).quantity : undefined
+  const fromPa =
+    pa && typeof pa === "object" && "quantity" in pa
+      ? (pa as { quantity?: unknown }).quantity
+      : undefined
+  const q = fromMeta ?? fromPa
+  if (q == null || q === "") return null
+  return String(q)
+}
+
+/** true only after client hydration; keeps SSR + first client pass in sync for boolean DOM props like `disabled`. */
+function useHydrated(): boolean {
+  return useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false,
+  )
+}
+
 export default function Page() {
   // Customer chat state
   const [customerMessages, setCustomerMessages] = useState<ChatMessage[]>([
@@ -74,7 +163,7 @@ export default function Page() {
       id: "welcome-customer",
       content: "Hello! Select a user and business to start chatting.",
       sender: "ai",
-      timestamp: new Date(),
+      timestamp: STATIC_WELCOME_TS,
     },
   ])
   const [customerInput, setCustomerInput] = useState("")
@@ -87,7 +176,7 @@ export default function Page() {
       id: "welcome-business",
       content: "Select a business to start chatting.",
       sender: "ai",
-      timestamp: new Date(),
+      timestamp: STATIC_WELCOME_TS,
     },
   ])
   const [businessInput, setBusinessInput] = useState("")
@@ -100,7 +189,7 @@ export default function Page() {
       id: "welcome-logistics",
       content: "Logistics is linked automatically when you pick a business.",
       sender: "ai",
-      timestamp: new Date(),
+      timestamp: STATIC_WELCOME_TS,
     },
   ])
   const [logisticsInput, setLogisticsInput] = useState("")
@@ -114,15 +203,31 @@ export default function Page() {
   const [supplyChainData, setSupplyChainData] = useState<any>(null)
   const [isLoadingAnalytics, setIsLoadingAnalytics] = useState(false)
 
-  const [customerSessionId, setCustomerSessionId] = useState(() => crypto.randomUUID())
-  const [businessSessionId, setBusinessSessionId] = useState(() => crypto.randomUUID())
-  const [logisticsSessionId, setLogisticsSessionId] = useState(() => crypto.randomUUID())
+  const [customerSessionId, setCustomerSessionId] = useState("")
+  const [businessSessionId, setBusinessSessionId] = useState("")
+  const [logisticsSessionId, setLogisticsSessionId] = useState("")
 
   const [apiKey, setApiKey] = useState("")
+
+  const [topProducts, setTopProducts] = useState<CatalogProductRow[]>([])
+  const [agentProducts, setAgentProducts] = useState<DiscussedProductRow[]>([])
+  const [agentProcesses, setAgentProcesses] = useState<SessionProcessRow[]>([])
+  const [inventoryActivity, setInventoryActivity] = useState<InventoryActivityEvent[]>([])
+  const [activeSessionOrders, setActiveSessionOrders] = useState<SessionOrderRow[]>([])
+  const [sbInventoryActivityOpen, setSbInventoryActivityOpen] = useState(true)
+
+  /** Chats + sidebar vs compact reports — avoids long vertical scroll. */
+  const [workspaceTab, setWorkspaceTab] = useState<"chats" | "reports">("chats")
 
   const customerMessagesEndRef = useRef<HTMLDivElement>(null)
   const businessMessagesEndRef = useRef<HTMLDivElement>(null)
   const logisticsMessagesEndRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    setCustomerSessionId((s) => s.trim() || crypto.randomUUID())
+    setBusinessSessionId((s) => s.trim() || crypto.randomUUID())
+    setLogisticsSessionId((s) => s.trim() || crypto.randomUUID())
+  }, [])
 
   const scrollToBottom = (ref: React.RefObject<HTMLDivElement>) => {
     ref.current?.scrollIntoView({ behavior: "smooth" })
@@ -172,6 +277,118 @@ export default function Page() {
       cancelled = true
     }
   }, [selectedBusiness])
+
+  const transparencyIdsRef = useRef({ businessId: "", userId: "" })
+  /* Sync on every render so interval/refresh never reads stale ids (useEffect runs too late and was clearing session panels). */
+  transparencyIdsRef.current = {
+    businessId: selectedBusiness?.id ?? "",
+    userId: selectedUser?.id ?? "",
+  }
+
+  const loadAgentContextOnlyRef = useRef<() => Promise<void>>(async () => {})
+
+  loadAgentContextOnlyRef.current = async () => {
+    const businessId = transparencyIdsRef.current.businessId
+    const userId = transparencyIdsRef.current.userId
+    if (!businessId || !userId) return
+    const ts = Date.now()
+    try {
+      const res = await fetch(
+        `${BACKEND_URL}/api/v1/session/agent-context?user_id=${encodeURIComponent(userId)}&vendor_id=${encodeURIComponent(businessId)}&_=${ts}`,
+        { cache: "no-store" },
+      )
+      if (res.ok) {
+        const data = await res.json()
+        setAgentProducts(
+          Array.isArray(data.products_discussed) ? data.products_discussed : [],
+        )
+        setAgentProcesses(Array.isArray(data.processes) ? data.processes : [])
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const loadTransparencyRef = useRef<() => Promise<void>>(async () => {})
+
+  loadTransparencyRef.current = async () => {
+    const businessId = transparencyIdsRef.current.businessId
+    const userId = transparencyIdsRef.current.userId
+    if (!businessId) {
+      setTopProducts([])
+      setAgentProducts([])
+      setAgentProcesses([])
+      setInventoryActivity([])
+      setActiveSessionOrders([])
+      return
+    }
+    const ts = Date.now()
+    const fetchInit: RequestInit = { cache: "no-store" }
+    try {
+      const catalogRes = await fetch(
+        `${BACKEND_URL}/api/v1/inventory/top-products/${businessId}?limit=15&_=${ts}`,
+        fetchInit,
+      )
+      if (catalogRes.ok) {
+        const data = await catalogRes.json()
+        setTopProducts(Array.isArray(data.products) ? data.products : [])
+      }
+    } catch {
+      /* simulation UI — ignore */
+    }
+    try {
+      const actRes = await fetch(
+        `${BACKEND_URL}/api/v1/inventory/activity/${businessId}?limit=40&_=${ts}`,
+        fetchInit,
+      )
+      if (actRes.ok) {
+        const j = await actRes.json()
+        setInventoryActivity(Array.isArray(j.events) ? j.events : [])
+      }
+    } catch {
+      /* ignore */
+    }
+    if (userId && businessId) {
+      try {
+        const res = await fetch(
+          `${BACKEND_URL}/api/v1/session/agent-context?user_id=${encodeURIComponent(userId)}&vendor_id=${encodeURIComponent(businessId)}&_=${ts}`,
+          fetchInit,
+        )
+        if (res.ok) {
+          const data = await res.json()
+          setAgentProducts(
+            Array.isArray(data.products_discussed) ? data.products_discussed : [],
+          )
+          setAgentProcesses(Array.isArray(data.processes) ? data.processes : [])
+        }
+      } catch {
+        /* ignore */
+      }
+      try {
+        const ordRes = await fetch(
+          `${BACKEND_URL}/api/v1/session/active-orders?user_id=${encodeURIComponent(userId)}&vendor_id=${encodeURIComponent(businessId)}&limit=25&_=${ts}`,
+          fetchInit,
+        )
+        if (ordRes.ok) {
+          const j = await ordRes.json()
+          setActiveSessionOrders(Array.isArray(j.orders) ? j.orders : [])
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    /* Missing userId: skip Redis session fetches; do not clear panels (was wiping data due to stale ref). */
+  }
+
+  useEffect(() => {
+    setAgentProducts([])
+    setAgentProcesses([])
+    setActiveSessionOrders([])
+    const tick = () => void loadTransparencyRef.current()
+    tick()
+    const t = setInterval(tick, TRANSPARENCY_POLL_MS)
+    return () => clearInterval(t)
+  }, [selectedBusiness?.id, selectedUser?.id])
 
   useEffect(() => {
     if (!selectedUser || !selectedBusiness) return
@@ -293,10 +510,15 @@ export default function Page() {
     setIsCustomerLoading(true)
 
     try {
+      let sid = customerSessionId.trim()
+      if (!sid) {
+        sid = crypto.randomUUID()
+        setCustomerSessionId(sid)
+      }
       const formData = new FormData()
       formData.append("user_id", selectedUser.id)
       formData.append("vendor_id", selectedBusiness.id)
-      formData.append("session_id", customerSessionId)
+      formData.append("session_id", sid)
       formData.append("message", message ?? "")
 
       if (apiKey.trim()) {
@@ -336,6 +558,7 @@ export default function Page() {
       setCustomerMessages((prev) => [...prev, errorMessage])
     } finally {
       setIsCustomerLoading(false)
+      void loadTransparencyRef.current()
     }
   }
 
@@ -356,12 +579,17 @@ export default function Page() {
     setIsBusinessLoading(true)
 
     try {
+      let sid = businessSessionId.trim()
+      if (!sid) {
+        sid = crypto.randomUUID()
+        setBusinessSessionId(sid)
+      }
       const response = await fetch(`${BACKEND_URL}/api/v1/business/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           business_id: selectedBusiness.id,
-          session_id: businessSessionId,
+          session_id: sid,
           sender: "business",
           message: message,
           api_key: apiKey || undefined,
@@ -381,6 +609,7 @@ export default function Page() {
       setBusinessMessages((prev) => [...prev, { id: (Date.now() + 1).toString(), content: `Error: ${error instanceof Error ? error.message : "Unknown error"}`, sender: "ai", timestamp: new Date() }])
     } finally {
       setIsBusinessLoading(false)
+      void loadTransparencyRef.current()
     }
   }
 
@@ -401,12 +630,17 @@ export default function Page() {
     setIsLogisticsLoading(true)
 
     try {
+      let sid = logisticsSessionId.trim()
+      if (!sid) {
+        sid = crypto.randomUUID()
+        setLogisticsSessionId(sid)
+      }
       const response = await fetch(`${BACKEND_URL}/api/v1/logistics/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           business_id: selectedLogistics.id,
-          session_id: logisticsSessionId,
+          session_id: sid,
           sender: "logistics",
           message: message,
           api_key: apiKey || undefined,
@@ -522,7 +756,7 @@ export default function Page() {
           id: "welcome-customer",
           content: "Hello! Select a user and business to start chatting.",
           sender: "ai",
-          timestamp: new Date(),
+          timestamp: STATIC_WELCOME_TS,
         },
       ])
       setBusinessMessages([
@@ -530,15 +764,15 @@ export default function Page() {
           id: "welcome-business",
           content: "Select a business to start chatting.",
           sender: "ai",
-          timestamp: new Date(),
+          timestamp: STATIC_WELCOME_TS,
         },
       ])
       setLogisticsMessages([
         {
           id: "welcome-logistics",
-          content: "Select a logistics company to start chatting.",
+          content: "Logistics is linked automatically when you pick a business.",
           sender: "ai",
-          timestamp: new Date(),
+          timestamp: STATIC_WELCOME_TS,
         },
       ])
       setCustomerSessionId(crypto.randomUUID())
@@ -574,7 +808,8 @@ export default function Page() {
     }
   }
 
-  const canChat = selectedUser && selectedBusiness
+  const canChat = !!(selectedUser && selectedBusiness)
+  const hydrated = useHydrated()
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50">
@@ -624,16 +859,16 @@ export default function Page() {
         </div>
       </header>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
         {/* Persona Selection */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
           {/* User Persona */}
-          <div className="bg-white rounded-lg shadow-md p-4">
-            <div className="flex items-center space-x-2 mb-3">
+          <div className="bg-white rounded-lg shadow-md p-3">
+            <div className="flex items-center space-x-2 mb-2">
               <Users className="w-5 h-5 text-blue-600" />
-              <h3 className="font-semibold text-gray-800">User Persona</h3>
+              <h3 className="text-sm font-semibold text-gray-800">User Persona</h3>
             </div>
-            <div className="grid grid-cols-2 gap-2 max-h-32 overflow-y-auto">
+            <div className="grid grid-cols-2 gap-2 max-h-28 overflow-y-auto">
               {predefinedUsers.map((user) => (
                 <button
                   key={user.id}
@@ -651,12 +886,12 @@ export default function Page() {
           </div>
 
           {/* Business Persona */}
-          <div className="bg-white rounded-lg shadow-md p-4">
-            <div className="flex items-center space-x-2 mb-3">
+          <div className="bg-white rounded-lg shadow-md p-3">
+            <div className="flex items-center space-x-2 mb-2">
               <Building2 className="w-5 h-5 text-green-600" />
-              <h3 className="font-semibold text-gray-800">Business Persona</h3>
+              <h3 className="text-sm font-semibold text-gray-800">Business Persona</h3>
             </div>
-            <div className="grid grid-cols-2 gap-2 max-h-32 overflow-y-auto">
+            <div className="grid grid-cols-2 gap-2 max-h-28 overflow-y-auto">
               {predefinedBusinesses.map((business) => (
                 <button
                   key={business.id}
@@ -674,15 +909,15 @@ export default function Page() {
           </div>
 
           {/* Linked logistics (auto from backend when a business is selected) */}
-          <div className="bg-white rounded-lg shadow-md p-4">
-            <div className="flex items-center space-x-2 mb-3">
+          <div className="bg-white rounded-lg shadow-md p-3">
+            <div className="flex items-center space-x-2 mb-2">
               <Truck className="w-5 h-5 text-orange-600" />
-              <h3 className="font-semibold text-gray-800">Linked logistics</h3>
+              <h3 className="text-sm font-semibold text-gray-800">Linked logistics</h3>
             </div>
-            <p className="text-xs text-gray-500 mb-2">
+            <p className="text-[11px] text-gray-500 mb-2 leading-snug">
               DB partner when configured; otherwise a random registered carrier for simulation.
             </p>
-            <div className="grid grid-cols-2 gap-2 max-h-32 overflow-y-auto">
+            <div className="grid grid-cols-2 gap-2 max-h-28 overflow-y-auto">
               {predefinedLogistics.map((logistics) => (
                 <div
                   key={logistics.id}
@@ -699,10 +934,49 @@ export default function Page() {
           </div>
         </div>
 
-        {/* Chat Windows - Side by Side */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+        <div
+          className="flex flex-wrap items-center gap-2 mb-3 border-b border-gray-200 pb-2"
+          role="tablist"
+          aria-label="Workspace"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={workspaceTab === "chats"}
+            onClick={() => setWorkspaceTab("chats")}
+            className={`rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
+              workspaceTab === "chats"
+                ? "bg-blue-600 text-white shadow-sm"
+                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+            }`}
+          >
+            Chats & session
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={workspaceTab === "reports"}
+            onClick={() => setWorkspaceTab("reports")}
+            className={`rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
+              workspaceTab === "reports"
+                ? "bg-purple-600 text-white shadow-sm"
+                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+            }`}
+          >
+            Reports & data
+          </button>
+          <span className="text-xs text-gray-500 ml-auto hidden sm:inline">
+            {workspaceTab === "chats"
+              ? "Three chat panes + catalog / orders / agent state"
+              : "Business & user analytics, inventory, supply chain"}
+          </span>
+        </div>
+
+        {workspaceTab === "chats" ? (
+        <div className="flex flex-col xl:flex-row gap-3">
+          <div className="flex-1 min-w-0 grid grid-cols-1 lg:grid-cols-3 gap-3">
           {/* Customer Chat */}
-          <div className="bg-white rounded-lg shadow-xl border border-gray-200 h-[500px] flex flex-col">
+          <div className="bg-white rounded-lg shadow-xl border border-gray-200 min-h-[20rem] h-[min(28rem,52vh)] flex flex-col">
             <div className="bg-blue-500 text-white p-3 rounded-t-lg flex items-center space-x-2">
               <User className="w-5 h-5" />
               <h3 className="font-semibold">Customer Chat</h3>
@@ -763,7 +1037,7 @@ export default function Page() {
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   className="p-2 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
-                  disabled={!canChat}
+                  disabled={!hydrated || !canChat}
                 >
                   <Paperclip className="w-4 h-4" />
                 </button>
@@ -774,12 +1048,17 @@ export default function Page() {
                   onKeyPress={(e) => e.key === "Enter" && handleCustomerSend()}
                   placeholder={canChat ? "Type a message..." : "Select user & business first"}
                   className="flex-1 border rounded px-3 py-2 text-sm"
-                  disabled={!canChat || isCustomerLoading}
+                  disabled={!hydrated || !canChat || isCustomerLoading}
                 />
                 <button
                   type="button"
                   onClick={handleCustomerSend}
-                  disabled={!canChat || isCustomerLoading || (!customerInput.trim() && selectedFiles.length === 0)}
+                  disabled={
+                    !hydrated ||
+                    !canChat ||
+                    isCustomerLoading ||
+                    (!customerInput.trim() && selectedFiles.length === 0)
+                  }
                   className="bg-blue-500 text-white px-4 py-2 rounded disabled:opacity-50"
                 >
                   <Send className="w-4 h-4" />
@@ -797,7 +1076,7 @@ export default function Page() {
               </div>
 
           {/* Business Chat */}
-          <div className="bg-white rounded-lg shadow-xl border border-gray-200 h-[500px] flex flex-col">
+          <div className="bg-white rounded-lg shadow-xl border border-gray-200 min-h-[20rem] h-[min(28rem,52vh)] flex flex-col">
             <div className="bg-green-500 text-white p-3 rounded-t-lg flex items-center space-x-2">
               <Building2 className="w-5 h-5" />
               <h3 className="font-semibold">Business Chat</h3>
@@ -835,11 +1114,11 @@ export default function Page() {
                   onKeyPress={(e) => e.key === "Enter" && handleBusinessSend()}
                   placeholder={selectedBusiness ? "Type a message..." : "Select business first"}
                   className="flex-1 border rounded px-3 py-2 text-sm"
-                  disabled={!selectedBusiness || isBusinessLoading}
+                  disabled={!hydrated || !selectedBusiness || isBusinessLoading}
                   />
                   <button
                   onClick={handleBusinessSend}
-                  disabled={!selectedBusiness || isBusinessLoading}
+                  disabled={!hydrated || !selectedBusiness || isBusinessLoading}
                   className="bg-green-500 text-white px-4 py-2 rounded disabled:opacity-50"
                 >
                   <Send className="w-4 h-4" />
@@ -849,7 +1128,7 @@ export default function Page() {
           </div>
 
           {/* Logistics Chat */}
-          <div className="bg-white rounded-lg shadow-xl border border-gray-200 h-[500px] flex flex-col">
+          <div className="bg-white rounded-lg shadow-xl border border-gray-200 min-h-[20rem] h-[min(28rem,52vh)] flex flex-col">
             <div className="bg-orange-500 text-white p-3 rounded-t-lg flex items-center space-x-2">
               <Truck className="w-5 h-5" />
               <h3 className="font-semibold">Logistics Chat</h3>
@@ -887,11 +1166,11 @@ export default function Page() {
                   onKeyPress={(e) => e.key === "Enter" && handleLogisticsSend()}
                   placeholder={selectedLogistics ? "Type a message..." : "Select logistics first"}
                   className="flex-1 border rounded px-3 py-2 text-sm"
-                  disabled={!selectedLogistics || isLogisticsLoading}
+                  disabled={!hydrated || !selectedLogistics || isLogisticsLoading}
                 />
                 <button
                   onClick={handleLogisticsSend}
-                  disabled={!selectedLogistics || isLogisticsLoading}
+                  disabled={!hydrated || !selectedLogistics || isLogisticsLoading}
                   className="bg-orange-500 text-white px-4 py-2 rounded disabled:opacity-50"
                 >
                   <Send className="w-4 h-4" />
@@ -899,20 +1178,362 @@ export default function Page() {
               </div>
             </div>
           </div>
-            </div>
+          </div>
 
-        {/* Analytics Sections */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <aside className="w-full xl:w-80 shrink-0 space-y-3">
+            {selectedBusiness ? (
+              <>
+                <div className="bg-white rounded-lg shadow-md border border-gray-200 p-3">
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <h4 className="text-sm font-semibold text-gray-800 flex items-center gap-1">
+                      <Package className="w-4 h-4 text-green-600" />
+                      Catalog (top 15)
+                    </h4>
+                    <button
+                      type="button"
+                      disabled={!hydrated}
+                      onClick={() => void loadTransparencyRef.current()}
+                      className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-gray-400 mb-1">
+                    DB snapshot · auto every {TRANSPARENCY_POLL_MS / 1000}s
+                  </p>
+                  <div className="max-h-52 overflow-y-auto text-xs">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="text-gray-500 border-b">
+                          <th className="py-1 pr-1 font-medium">Product</th>
+                          <th className="py-1 pr-1 font-medium">Price</th>
+                          <th className="py-1 font-medium">Qty</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {topProducts.length === 0 ? (
+                          <tr>
+                            <td colSpan={3} className="py-2 text-gray-400">
+                              No products
+                            </td>
+                          </tr>
+                        ) : (
+                          topProducts.map((p) => (
+                            <tr key={p.id || p.name} className="border-b border-gray-100">
+                              <td
+                                className="py-1 pr-1 truncate max-w-[8rem]"
+                                title={p.name ?? ""}
+                              >
+                                {p.name ?? "—"}
+                              </td>
+                              <td className="py-1 pr-1 whitespace-nowrap">
+                                {p.currency ?? ""} {Number(p.price).toFixed(2)}
+                              </td>
+                              <td className="py-1">{p.stock_quantity}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-lg shadow-md border border-gray-200 overflow-hidden flex flex-col max-h-[24rem] min-h-0">
+                  <div className="flex items-stretch shrink-0 border-b border-gray-100 bg-gray-50">
+                    <div className="flex-1 flex items-center px-3 py-2 text-sm font-medium text-gray-800 text-left min-w-0">
+                      <span className="truncate flex items-center gap-1">
+                        <ShoppingCart className="w-4 h-4 shrink-0 text-indigo-600" />
+                        Active orders (DB)
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      title="Refresh catalog, orders, and session panels"
+                      disabled={!hydrated}
+                      onClick={() => void loadTransparencyRef.current()}
+                      className="px-2.5 border-l border-gray-200 text-gray-600 hover:text-indigo-700 hover:bg-indigo-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <div className="p-3 flex-1 min-h-[10rem] max-h-72 overflow-y-auto overscroll-contain text-xs border-t border-gray-100 space-y-2">
+                      <p className="text-[10px] text-gray-400">
+                        Non-terminal orders · needs user + business · auto every {TRANSPARENCY_POLL_MS / 1000}s
+                      </p>
+                      {!canChat ? (
+                        <p className="text-gray-400">Select user and business</p>
+                      ) : activeSessionOrders.length === 0 ? (
+                        <p className="text-gray-400">No active orders for this pair</p>
+                      ) : (
+                        activeSessionOrders.map((ord) => {
+                          const qty = sessionOrderQtyHint(ord)
+                          const addr = [ord.delivery_address, ord.delivery_city, ord.delivery_state]
+                            .filter(Boolean)
+                            .join(", ")
+                          return (
+                            <div
+                              key={ord.id}
+                              className="border border-indigo-100 rounded-md p-2 bg-indigo-50/40 text-gray-800"
+                            >
+                              <div className="font-semibold text-indigo-900">
+                                {ord.order_number ?? ord.id.slice(0, 8)}
+                                <span className="font-normal text-gray-600 ml-2">
+                                  · {ord.status ?? "—"}
+                                </span>
+                              </div>
+                              {ord.product_name ? (
+                                <div className="mt-0.5">
+                                  <span className="text-gray-500">product</span> {ord.product_name}
+                                </div>
+                              ) : null}
+                              <div className="mt-0.5 text-gray-700">
+                                <span className="text-gray-500">total</span>{" "}
+                                {ord.total_amount != null ? Number(ord.total_amount).toFixed(2) : "—"}
+                                {qty ? (
+                                  <>
+                                    {" "}
+                                    · <span className="text-gray-500">qty</span> {qty}
+                                  </>
+                                ) : null}
+                              </div>
+                              <div className="font-mono text-[10px] text-gray-500 mt-0.5 break-all">
+                                id {ord.id}
+                              </div>
+                              {ord.tracking_number ? (
+                                <div>
+                                  <span className="text-gray-500">tracking</span> {ord.tracking_number}
+                                </div>
+                              ) : null}
+                              {ord.logistic_id ? (
+                                <div className="text-[10px]">
+                                  <span className="text-gray-500">logistics</span> {ord.logistic_id}
+                                </div>
+                              ) : null}
+                              {addr ? (
+                                <div className="text-gray-600 mt-0.5 line-clamp-2" title={addr}>
+                                  {addr}
+                                </div>
+                              ) : null}
+                              {ord.updated_at ? (
+                                <div className="text-[10px] text-gray-400 mt-1">updated {ord.updated_at}</div>
+                              ) : null}
+                            </div>
+                          )
+                        })
+                      )}
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-lg shadow-md border border-gray-200 overflow-hidden flex flex-col max-h-[22rem] min-h-0">
+                  <div className="flex items-stretch shrink-0 border-b border-gray-100 bg-gray-50">
+                    <div className="flex-1 flex items-center px-3 py-2 text-sm font-medium text-gray-800 text-left min-w-0">
+                      <span className="truncate">Products discussed (session)</span>
+                    </div>
+                    <button
+                      type="button"
+                      title="Refresh from Redis (products discussed + processes)"
+                      disabled={!hydrated}
+                      onClick={() => void loadAgentContextOnlyRef.current()}
+                      className="px-2.5 border-l border-gray-200 text-gray-600 hover:text-blue-600 hover:bg-blue-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <div className="p-3 flex-1 min-h-[10rem] max-h-64 overflow-y-auto overscroll-contain text-xs border-t border-gray-100">
+                      {!canChat ? (
+                        <p className="text-gray-400">Select user and business</p>
+                      ) : agentProducts.length === 0 ? (
+                        <p className="text-gray-400">None in session yet — chat about a product (Redis user:vendor)</p>
+                      ) : (
+                        <ul className="space-y-2">
+                          {agentProducts.map((p, i) => (
+                            <li
+                              key={`${p.cache_key ?? ""}-${p.id ?? ""}-${i}`}
+                              className="border-b border-gray-50 pb-1 last:border-0"
+                            >
+                              <div className="font-medium text-gray-800">
+                                {p.name ?? p.id ?? "—"}
+                              </div>
+                              <div className="text-gray-500">
+                                {p.currency ?? ""}{" "}
+                                {p.price != null && Number(p.price) > 0 ? Number(p.price).toFixed(2) : "—"} · stock{" "}
+                                {p.stock_quantity ?? "—"}
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-lg shadow-md border border-gray-200 overflow-hidden flex flex-col max-h-[26rem] min-h-0">
+                  <div className="flex items-stretch shrink-0 border-b border-gray-100 bg-gray-50">
+                    <div className="flex-1 flex items-center px-3 py-2 text-sm font-medium text-gray-800 text-left min-w-0">
+                      <span className="truncate">Processes (session)</span>
+                    </div>
+                    <button
+                      type="button"
+                      title="Refresh from Redis (products discussed + processes)"
+                      disabled={!hydrated}
+                      onClick={() => void loadAgentContextOnlyRef.current()}
+                      className="px-2.5 border-l border-gray-200 text-gray-600 hover:text-blue-600 hover:bg-blue-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <div className="p-3 flex-1 min-h-[12rem] max-h-72 overflow-y-auto overscroll-contain text-xs border-t border-gray-100 space-y-2">
+                      <p className="text-[10px] text-gray-400 shrink-0">
+                        Redis session processes · auto every {TRANSPARENCY_POLL_MS / 1000}s and after chat
+                      </p>
+                      {!canChat ? (
+                        <p className="text-gray-400">Select user and business</p>
+                      ) : agentProcesses.length === 0 ? (
+                        <p className="text-gray-400">No processes</p>
+                      ) : (
+                        agentProcesses.map((pr) => (
+                          <div
+                            key={pr.process_id}
+                            className="border border-gray-100 rounded-md p-2 bg-gray-50/90 text-gray-800"
+                          >
+                            <div className="font-mono text-[11px] break-all" title={pr.process_id}>
+                              {pr.process_id}
+                            </div>
+                            <div>
+                              <span className="text-gray-500">task</span>{" "}
+                              {pr.task_type ?? "—"}
+                            </div>
+                            <div>
+                              <span className="text-gray-500">product</span>{" "}
+                              {pr.product_name ?? "—"}
+                            </div>
+                            <div>
+                              <span className="text-gray-500">order</span>{" "}
+                              {pr.order_number ?? pr.order_id ?? "—"}
+                            </div>
+                            <div>
+                              <span className="text-gray-500">status</span> {pr.status ?? "—"} ·{" "}
+                              <span className="text-gray-500">qty</span>{" "}
+                              {pr.quantity ?? "—"}
+                            </div>
+                            {pr.tracking_number ? (
+                              <div>
+                                <span className="text-gray-500">tracking</span>{" "}
+                                {pr.tracking_number}
+                              </div>
+                            ) : null}
+                            {pr.completed ? (
+                              <div className="text-green-600 font-medium">completed</div>
+                            ) : null}
+                          </div>
+                        ))
+                      )}
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-lg shadow-md border border-gray-200 overflow-hidden flex flex-col max-h-[22rem] min-h-0">
+                  <div className="flex items-stretch shrink-0 border-b border-gray-100 bg-gray-50">
+                    <button
+                      type="button"
+                      className="flex-1 flex items-center justify-between px-3 py-2 text-sm font-medium text-gray-800 hover:bg-gray-100 text-left min-w-0"
+                      onClick={() => setSbInventoryActivityOpen((v) => !v)}
+                    >
+                      <span className="truncate">Inventory updates (agents)</span>
+                      {sbInventoryActivityOpen ? (
+                        <ChevronDown className="w-4 h-4 shrink-0 ml-1" />
+                      ) : (
+                        <ChevronRight className="w-4 h-4 shrink-0 ml-1" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      title="Refresh catalog & inventory activity"
+                      disabled={!hydrated}
+                      onClick={() => void loadTransparencyRef.current()}
+                      className="px-2.5 border-l border-gray-200 text-gray-600 hover:text-emerald-700 hover:bg-emerald-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                    </button>
+                  </div>
+                  {sbInventoryActivityOpen && (
+                    <div className="p-3 flex-1 min-h-[10rem] max-h-64 overflow-y-auto overscroll-contain text-xs border-t border-gray-100 space-y-2">
+                      <p className="text-[10px] text-gray-400">
+                        Stock / price / new products from agent tools · same interval as catalog
+                      </p>
+                      {inventoryActivity.length === 0 ? (
+                        <p className="text-gray-400">No mutations logged yet (try a stock or price update in chat)</p>
+                      ) : (
+                        <ul className="space-y-2">
+                          {inventoryActivity.map((ev, idx) => {
+                            const t = ev.at
+                              ? new Date(ev.at).toLocaleString(undefined, {
+                                  month: "short",
+                                  day: "numeric",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })
+                              : "—"
+                            const kind =
+                              ev.kind === "stock"
+                                ? "Stock"
+                                : ev.kind === "price"
+                                  ? "Price"
+                                  : ev.kind === "add"
+                                    ? "New product"
+                                    : ev.kind ?? "Update"
+                            return (
+                              <li
+                                key={`${ev.product_id ?? idx}-${ev.at ?? idx}`}
+                                className="border border-gray-100 rounded-md p-2 bg-emerald-50/40 text-gray-800"
+                              >
+                                <div className="flex justify-between gap-2 text-[10px] text-gray-500">
+                                  <span className="font-medium text-emerald-800">{kind}</span>
+                                  <span>{t}</span>
+                                </div>
+                                <div className="font-medium mt-0.5">{ev.name ?? ev.product_id ?? "—"}</div>
+                                <div className="text-gray-600 mt-0.5">
+                                  {ev.kind === "add"
+                                    ? `${ev.currency ?? ""} ${ev.price != null ? Number(ev.price).toFixed(2) : "—"} · Qty ${ev.stock_quantity ?? "—"}`
+                                    : ev.kind === "price"
+                                      ? `Price ${ev.currency ?? ""} ${ev.price != null ? Number(ev.price).toFixed(2) : "—"}`
+                                      : ev.kind === "stock"
+                                        ? `Stock qty ${ev.stock_quantity ?? "—"}`
+                                        : [
+                                            ev.price != null
+                                              ? `${ev.currency ?? ""} ${Number(ev.price).toFixed(2)}`
+                                              : null,
+                                            ev.stock_quantity != null ? `Qty ${ev.stock_quantity}` : null,
+                                          ]
+                                            .filter(Boolean)
+                                            .join(" · ") || "—"}
+                                </div>
+                              </li>
+                            )
+                          })}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="bg-white rounded-lg shadow border border-dashed border-gray-200 p-4 text-sm text-gray-500">
+                Select a business to load catalog and session debug panels.
+              </div>
+            )}
+          </aside>
+        </div>
+        ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
           {/* Business Analytics */}
-          <div className="bg-white rounded-lg shadow-md p-4">
-              <div className="flex items-center space-x-2 mb-3">
+          <div className="bg-white rounded-lg shadow-md p-3">
+              <div className="flex items-center space-x-2 mb-2">
               <BarChart3 className="w-5 h-5 text-purple-600" />
               <h3 className="font-semibold text-gray-800">Business Analytics</h3>
               </div>
               <button
               onClick={handleBusinessAnalytics}
-              disabled={!selectedBusiness || isLoadingAnalytics}
-              className="w-full bg-purple-500 text-white py-2 rounded disabled:opacity-50 mb-3"
+              disabled={!hydrated || !selectedBusiness || isLoadingAnalytics}
+              className="w-full bg-purple-500 text-white py-1.5 text-sm rounded disabled:opacity-50 mb-2"
             >
               Get Analytics
               </button>
@@ -924,15 +1545,15 @@ export default function Page() {
             </div>
 
             {/* User Analytics */}
-          <div className="bg-white rounded-lg shadow-md p-4">
-              <div className="flex items-center space-x-2 mb-3">
+          <div className="bg-white rounded-lg shadow-md p-3">
+              <div className="flex items-center space-x-2 mb-2">
               <TrendingUp className="w-5 h-5 text-blue-600" />
               <h3 className="font-semibold text-gray-800">User Analytics</h3>
             </div>
             <button
               onClick={handleUserAnalytics}
-              disabled={!selectedUser || isLoadingAnalytics}
-              className="w-full bg-blue-500 text-white py-2 rounded disabled:opacity-50 mb-3"
+              disabled={!hydrated || !selectedUser || isLoadingAnalytics}
+              className="w-full bg-blue-500 text-white py-1.5 text-sm rounded disabled:opacity-50 mb-2"
             >
               Get Analytics
             </button>
@@ -944,15 +1565,15 @@ export default function Page() {
           </div>
 
           {/* Inventory Management */}
-          <div className="bg-white rounded-lg shadow-md p-4">
-            <div className="flex items-center space-x-2 mb-3">
+          <div className="bg-white rounded-lg shadow-md p-3">
+            <div className="flex items-center space-x-2 mb-2">
               <Package className="w-5 h-5 text-green-600" />
               <h3 className="font-semibold text-gray-800">Inventory</h3>
               </div>
               <button
               onClick={handleInventoryManagement}
-              disabled={!selectedBusiness || isLoadingAnalytics}
-              className="w-full bg-green-500 text-white py-2 rounded disabled:opacity-50 mb-3"
+              disabled={!hydrated || !selectedBusiness || isLoadingAnalytics}
+              className="w-full bg-green-500 text-white py-1.5 text-sm rounded disabled:opacity-50 mb-2"
             >
               Get Inventory
               </button>
@@ -964,15 +1585,15 @@ export default function Page() {
           </div>
 
           {/* Supply Chain */}
-          <div className="bg-white rounded-lg shadow-md p-4">
-            <div className="flex items-center space-x-2 mb-3">
+          <div className="bg-white rounded-lg shadow-md p-3">
+            <div className="flex items-center space-x-2 mb-2">
               <Truck className="w-5 h-5 text-orange-600" />
               <h3 className="font-semibold text-gray-800">Supply Chain</h3>
             </div>
             <button
               onClick={handleSupplyChain}
-              disabled={!selectedBusiness || isLoadingAnalytics}
-              className="w-full bg-orange-500 text-white py-2 rounded disabled:opacity-50 mb-3"
+              disabled={!hydrated || !selectedBusiness || isLoadingAnalytics}
+              className="w-full bg-orange-500 text-white py-1.5 text-sm rounded disabled:opacity-50 mb-2"
             >
               Get Supply Chain
             </button>
@@ -983,6 +1604,7 @@ export default function Page() {
             )}
           </div>
         </div>
+        )}
       </div>
     </div>
   )

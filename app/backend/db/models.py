@@ -175,6 +175,8 @@ class OrderBase(BaseModel):
     delivery_address: Optional[str] = None
     delivery_city: Optional[str] = None
     delivery_state: Optional[str] = None
+    product_name: Optional[str] = None
+    product_attributes: Optional[Dict[str, Any]] = None
     metadata: Optional[Dict[str, Any]] = None
 
 
