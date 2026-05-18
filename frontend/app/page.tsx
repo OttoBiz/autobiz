@@ -3,6 +3,11 @@
 import type React from "react"
 import { useState, useRef, useEffect, useSyncExternalStore } from "react"
 import { ChatMessageBody } from "@/components/chat-message-body"
+import { API_BASE } from "@/lib/api-base"
+import {
+  useTransparencyPanels,
+  type SessionOrderRow,
+} from "@/lib/use-transparency-panels"
 import {
   Send,
   Mic,
@@ -27,70 +32,10 @@ import {
   RefreshCw,
 } from "lucide-react"
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000"
-
 const TRANSPARENCY_POLL_MS = 4000
 
 /** Stable placeholder time for welcome rows — avoids SSR/client `Date` hydration mismatches. */
 const STATIC_WELCOME_TS = new Date("2000-01-01T12:00:00.000Z")
-
-interface CatalogProductRow {
-  id: string
-  name?: string | null
-  price: number
-  stock_quantity: number
-  currency?: string | null
-}
-
-interface DiscussedProductRow {
-  id?: string | null
-  name?: string | null
-  price: number
-  stock_quantity: number
-  currency?: string | null
-  cache_key?: string
-}
-
-interface SessionProcessRow {
-  process_id: string
-  task_type?: string
-  product_name?: string
-  order_id?: string
-  order_number?: string
-  status?: string
-  quantity?: number | string | null
-  tracking_number?: string
-  logistic_id?: string | null
-  customer_address?: string
-  completed?: boolean
-}
-
-interface InventoryActivityEvent {
-  at?: string
-  kind?: string
-  product_id?: string
-  name?: string | null
-  stock_quantity?: number
-  price?: number
-  currency?: string | null
-}
-
-interface SessionOrderRow {
-  id: string
-  order_number?: string | null
-  status?: string | null
-  total_amount?: number
-  product_name?: string | null
-  tracking_number?: string | null
-  delivery_address?: string | null
-  delivery_city?: string | null
-  delivery_state?: string | null
-  logistic_id?: string | null
-  metadata?: Record<string, unknown> | null
-  product_attributes?: Record<string, unknown> | null
-  created_at?: string | null
-  updated_at?: string | null
-}
 
 interface ChatMessage {
   id: string
@@ -150,7 +95,10 @@ function sessionOrderQtyHint(o: SessionOrderRow): string | null {
 /** true only after client hydration; keeps SSR + first client pass in sync for boolean DOM props like `disabled`. */
 function useHydrated(): boolean {
   return useSyncExternalStore(
-    () => () => {},
+    (onStoreChange) => {
+      onStoreChange()
+      return () => {}
+    },
     () => true,
     () => false,
   )
@@ -209,12 +157,25 @@ export default function Page() {
 
   const [apiKey, setApiKey] = useState("")
 
-  const [topProducts, setTopProducts] = useState<CatalogProductRow[]>([])
-  const [agentProducts, setAgentProducts] = useState<DiscussedProductRow[]>([])
-  const [agentProcesses, setAgentProcesses] = useState<SessionProcessRow[]>([])
-  const [inventoryActivity, setInventoryActivity] = useState<InventoryActivityEvent[]>([])
-  const [activeSessionOrders, setActiveSessionOrders] = useState<SessionOrderRow[]>([])
   const [sbInventoryActivityOpen, setSbInventoryActivityOpen] = useState(true)
+
+  const {
+    topProducts,
+    agentProducts,
+    agentProcesses,
+    inventoryActivity,
+    activeSessionOrders,
+    refreshing: transparencyRefreshing,
+    updatedAt: transparencyUpdatedAt,
+    fetchError: transparencyFetchError,
+    loadAll: refreshTransparency,
+    loadSession: refreshSessionPanels,
+  } = useTransparencyPanels(
+    API_BASE,
+    selectedBusiness?.id,
+    selectedUser?.id,
+    TRANSPARENCY_POLL_MS,
+  )
 
   /** Chats + sidebar vs compact reports — avoids long vertical scroll. */
   const [workspaceTab, setWorkspaceTab] = useState<"chats" | "reports">("chats")
@@ -254,7 +215,7 @@ export default function Page() {
     ;(async () => {
       try {
         const res = await fetch(
-          `${BACKEND_URL}/api/v1/business/delivery-partner/${selectedBusiness.id}`,
+          `${API_BASE}/api/v1/business/delivery-partner/${selectedBusiness.id}`,
         )
         if (!res.ok) return
         const j = await res.json()
@@ -278,123 +239,11 @@ export default function Page() {
     }
   }, [selectedBusiness])
 
-  const transparencyIdsRef = useRef({ businessId: "", userId: "" })
-  /* Sync on every render so interval/refresh never reads stale ids (useEffect runs too late and was clearing session panels). */
-  transparencyIdsRef.current = {
-    businessId: selectedBusiness?.id ?? "",
-    userId: selectedUser?.id ?? "",
-  }
-
-  const loadAgentContextOnlyRef = useRef<() => Promise<void>>(async () => {})
-
-  loadAgentContextOnlyRef.current = async () => {
-    const businessId = transparencyIdsRef.current.businessId
-    const userId = transparencyIdsRef.current.userId
-    if (!businessId || !userId) return
-    const ts = Date.now()
-    try {
-      const res = await fetch(
-        `${BACKEND_URL}/api/v1/session/agent-context?user_id=${encodeURIComponent(userId)}&vendor_id=${encodeURIComponent(businessId)}&_=${ts}`,
-        { cache: "no-store" },
-      )
-      if (res.ok) {
-        const data = await res.json()
-        setAgentProducts(
-          Array.isArray(data.products_discussed) ? data.products_discussed : [],
-        )
-        setAgentProcesses(Array.isArray(data.processes) ? data.processes : [])
-      }
-    } catch {
-      /* ignore */
-    }
-  }
-
-  const loadTransparencyRef = useRef<() => Promise<void>>(async () => {})
-
-  loadTransparencyRef.current = async () => {
-    const businessId = transparencyIdsRef.current.businessId
-    const userId = transparencyIdsRef.current.userId
-    if (!businessId) {
-      setTopProducts([])
-      setAgentProducts([])
-      setAgentProcesses([])
-      setInventoryActivity([])
-      setActiveSessionOrders([])
-      return
-    }
-    const ts = Date.now()
-    const fetchInit: RequestInit = { cache: "no-store" }
-    try {
-      const catalogRes = await fetch(
-        `${BACKEND_URL}/api/v1/inventory/top-products/${businessId}?limit=15&_=${ts}`,
-        fetchInit,
-      )
-      if (catalogRes.ok) {
-        const data = await catalogRes.json()
-        setTopProducts(Array.isArray(data.products) ? data.products : [])
-      }
-    } catch {
-      /* simulation UI — ignore */
-    }
-    try {
-      const actRes = await fetch(
-        `${BACKEND_URL}/api/v1/inventory/activity/${businessId}?limit=40&_=${ts}`,
-        fetchInit,
-      )
-      if (actRes.ok) {
-        const j = await actRes.json()
-        setInventoryActivity(Array.isArray(j.events) ? j.events : [])
-      }
-    } catch {
-      /* ignore */
-    }
-    if (userId && businessId) {
-      try {
-        const res = await fetch(
-          `${BACKEND_URL}/api/v1/session/agent-context?user_id=${encodeURIComponent(userId)}&vendor_id=${encodeURIComponent(businessId)}&_=${ts}`,
-          fetchInit,
-        )
-        if (res.ok) {
-          const data = await res.json()
-          setAgentProducts(
-            Array.isArray(data.products_discussed) ? data.products_discussed : [],
-          )
-          setAgentProcesses(Array.isArray(data.processes) ? data.processes : [])
-        }
-      } catch {
-        /* ignore */
-      }
-      try {
-        const ordRes = await fetch(
-          `${BACKEND_URL}/api/v1/session/active-orders?user_id=${encodeURIComponent(userId)}&vendor_id=${encodeURIComponent(businessId)}&limit=25&_=${ts}`,
-          fetchInit,
-        )
-        if (ordRes.ok) {
-          const j = await ordRes.json()
-          setActiveSessionOrders(Array.isArray(j.orders) ? j.orders : [])
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-    /* Missing userId: skip Redis session fetches; do not clear panels (was wiping data due to stale ref). */
-  }
-
-  useEffect(() => {
-    setAgentProducts([])
-    setAgentProcesses([])
-    setActiveSessionOrders([])
-    const tick = () => void loadTransparencyRef.current()
-    tick()
-    const t = setInterval(tick, TRANSPARENCY_POLL_MS)
-    return () => clearInterval(t)
-  }, [selectedBusiness?.id, selectedUser?.id])
-
   useEffect(() => {
     if (!selectedUser || !selectedBusiness) return
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`${BACKEND_URL}/api/v1/customer/inbox/${selectedUser.id}`)
+        const res = await fetch(`${API_BASE}/api/v1/customer/inbox/${selectedUser.id}`)
         const data = await res.json()
         if (data.messages?.length > 0) {
           const relevant = data.messages.filter(
@@ -424,7 +273,7 @@ export default function Page() {
     const interval = setInterval(async () => {
       if (selectedBusiness) {
         try {
-          const res = await fetch(`${BACKEND_URL}/api/v1/business/inbox/${selectedBusiness.id}`)
+          const res = await fetch(`${API_BASE}/api/v1/business/inbox/${selectedBusiness.id}`)
           const data = await res.json()
           if (data.messages?.length > 0) {
             const incoming = data.messages.map((m: { message: string; sender: string; customer_id?: string; product_name?: string; order_id?: string; business_id?: string }, i: number) => {
@@ -449,7 +298,7 @@ export default function Page() {
 
       if (selectedLogistics) {
         try {
-          const res = await fetch(`${BACKEND_URL}/api/v1/logistics/inbox/${selectedLogistics.id}`)
+          const res = await fetch(`${API_BASE}/api/v1/logistics/inbox/${selectedLogistics.id}`)
           const data = await res.json()
           if (data.messages?.length > 0) {
             const incoming = data.messages.map((m: { message: string; sender: string; customer_id?: string; product_name?: string; order_id?: string; business_id?: string }, i: number) => {
@@ -529,7 +378,7 @@ export default function Page() {
         formData.append("files", file, file.name || "upload")
       })
 
-      const response = await fetch(`${BACKEND_URL}/api/v1/customer/chat`, {
+      const response = await fetch(`${API_BASE}/api/v1/customer/chat`, {
         method: "POST",
         body: formData,
       })
@@ -558,7 +407,7 @@ export default function Page() {
       setCustomerMessages((prev) => [...prev, errorMessage])
     } finally {
       setIsCustomerLoading(false)
-      void loadTransparencyRef.current()
+      void refreshTransparency()
     }
   }
 
@@ -584,7 +433,7 @@ export default function Page() {
         sid = crypto.randomUUID()
         setBusinessSessionId(sid)
       }
-      const response = await fetch(`${BACKEND_URL}/api/v1/business/chat`, {
+      const response = await fetch(`${API_BASE}/api/v1/business/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -609,7 +458,7 @@ export default function Page() {
       setBusinessMessages((prev) => [...prev, { id: (Date.now() + 1).toString(), content: `Error: ${error instanceof Error ? error.message : "Unknown error"}`, sender: "ai", timestamp: new Date() }])
     } finally {
       setIsBusinessLoading(false)
-      void loadTransparencyRef.current()
+      void refreshTransparency()
     }
   }
 
@@ -635,7 +484,7 @@ export default function Page() {
         sid = crypto.randomUUID()
         setLogisticsSessionId(sid)
       }
-      const response = await fetch(`${BACKEND_URL}/api/v1/logistics/chat`, {
+      const response = await fetch(`${API_BASE}/api/v1/logistics/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -671,7 +520,7 @@ export default function Page() {
     }
     setIsLoadingAnalytics(true)
     try {
-      const response = await fetch(`${BACKEND_URL}/api/v1/analytics/business`, {
+      const response = await fetch(`${API_BASE}/api/v1/analytics/business`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -695,7 +544,7 @@ export default function Page() {
     }
     setIsLoadingAnalytics(true)
     try {
-      const response = await fetch(`${BACKEND_URL}/api/v1/analytics/user`, {
+      const response = await fetch(`${API_BASE}/api/v1/analytics/user`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -719,7 +568,7 @@ export default function Page() {
     }
     setIsLoadingAnalytics(true)
     try {
-      const response = await fetch(`${BACKEND_URL}/api/v1/inventory/`, {
+      const response = await fetch(`${API_BASE}/api/v1/inventory/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -738,7 +587,7 @@ export default function Page() {
 
   const handleClearRedisSession = async () => {
     try {
-      const res = await fetch(`${BACKEND_URL}/api/v1/session/clear`, {
+      const res = await fetch(`${API_BASE}/api/v1/session/clear`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -791,7 +640,7 @@ export default function Page() {
     }
     setIsLoadingAnalytics(true)
     try {
-      const response = await fetch(`${BACKEND_URL}/api/v1/supply-chain/`, {
+      const response = await fetch(`${API_BASE}/api/v1/supply-chain/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1183,6 +1032,21 @@ export default function Page() {
           <aside className="w-full xl:w-80 shrink-0 space-y-3">
             {selectedBusiness ? (
               <>
+                <p className="text-[10px] text-gray-500 flex items-center gap-1.5 px-0.5">
+                  {transparencyRefreshing ? (
+                    <RefreshCw className="w-3 h-3 shrink-0 animate-spin text-indigo-600" />
+                  ) : null}
+                  {transparencyFetchError ? (
+                    <span className="text-amber-700">{transparencyFetchError}</span>
+                  ) : transparencyUpdatedAt ? (
+                    <span>
+                      Last sync {transparencyUpdatedAt.toLocaleTimeString()} · auto every{" "}
+                      {TRANSPARENCY_POLL_MS / 1000}s
+                    </span>
+                  ) : (
+                    <span>Syncing panels…</span>
+                  )}
+                </p>
                 <div className="bg-white rounded-lg shadow-md border border-gray-200 p-3">
                   <div className="flex items-center justify-between gap-2 mb-2">
                     <h4 className="text-sm font-semibold text-gray-800 flex items-center gap-1">
@@ -1192,7 +1056,7 @@ export default function Page() {
                     <button
                       type="button"
                       disabled={!hydrated}
-                      onClick={() => void loadTransparencyRef.current()}
+                      onClick={() => void refreshTransparency()}
                       className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       Refresh
@@ -1250,10 +1114,12 @@ export default function Page() {
                       type="button"
                       title="Refresh catalog, orders, and session panels"
                       disabled={!hydrated}
-                      onClick={() => void loadTransparencyRef.current()}
+                      onClick={() => void refreshTransparency()}
                       className="px-2.5 border-l border-gray-200 text-gray-600 hover:text-indigo-700 hover:bg-indigo-50 disabled:opacity-40 disabled:cursor-not-allowed"
                     >
-                      <RefreshCw className="w-4 h-4" />
+                      <RefreshCw
+                        className={`w-4 h-4 ${transparencyRefreshing ? "animate-spin" : ""}`}
+                      />
                     </button>
                   </div>
                   <div className="p-3 flex-1 min-h-[10rem] max-h-72 overflow-y-auto overscroll-contain text-xs border-t border-gray-100 space-y-2">
@@ -1333,10 +1199,12 @@ export default function Page() {
                       type="button"
                       title="Refresh from Redis (products discussed + processes)"
                       disabled={!hydrated}
-                      onClick={() => void loadAgentContextOnlyRef.current()}
+                      onClick={() => void refreshSessionPanels()}
                       className="px-2.5 border-l border-gray-200 text-gray-600 hover:text-blue-600 hover:bg-blue-50 disabled:opacity-40 disabled:cursor-not-allowed"
                     >
-                      <RefreshCw className="w-4 h-4" />
+                      <RefreshCw
+                        className={`w-4 h-4 ${transparencyRefreshing ? "animate-spin" : ""}`}
+                      />
                     </button>
                   </div>
                   <div className="p-3 flex-1 min-h-[10rem] max-h-64 overflow-y-auto overscroll-contain text-xs border-t border-gray-100">
@@ -1375,10 +1243,12 @@ export default function Page() {
                       type="button"
                       title="Refresh from Redis (products discussed + processes)"
                       disabled={!hydrated}
-                      onClick={() => void loadAgentContextOnlyRef.current()}
+                      onClick={() => void refreshSessionPanels()}
                       className="px-2.5 border-l border-gray-200 text-gray-600 hover:text-blue-600 hover:bg-blue-50 disabled:opacity-40 disabled:cursor-not-allowed"
                     >
-                      <RefreshCw className="w-4 h-4" />
+                      <RefreshCw
+                        className={`w-4 h-4 ${transparencyRefreshing ? "animate-spin" : ""}`}
+                      />
                     </button>
                   </div>
                   <div className="p-3 flex-1 min-h-[12rem] max-h-72 overflow-y-auto overscroll-contain text-xs border-t border-gray-100 space-y-2">
@@ -1448,10 +1318,12 @@ export default function Page() {
                       type="button"
                       title="Refresh catalog & inventory activity"
                       disabled={!hydrated}
-                      onClick={() => void loadTransparencyRef.current()}
+                      onClick={() => void refreshTransparency()}
                       className="px-2.5 border-l border-gray-200 text-gray-600 hover:text-emerald-700 hover:bg-emerald-50 disabled:opacity-40 disabled:cursor-not-allowed"
                     >
-                      <RefreshCw className="w-4 h-4" />
+                      <RefreshCw
+                        className={`w-4 h-4 ${transparencyRefreshing ? "animate-spin" : ""}`}
+                      />
                     </button>
                   </div>
                   {sbInventoryActivityOpen && (

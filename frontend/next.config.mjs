@@ -1,4 +1,9 @@
 /** @type {import('next').NextConfig} */
+const backendTarget =
+  process.env.BACKEND_URL ||
+  process.env.NEXT_PUBLIC_BACKEND_URL ||
+  "http://localhost:8000"
+
 const nextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
@@ -10,8 +15,14 @@ const nextConfig = {
     domains: ["localhost"],
     unoptimized: true,
   },
-  // Environment variables are loaded from .env.local
-  // NEXT_PUBLIC_BACKEND_URL defaults to http://localhost:8000 for local development
+  async rewrites() {
+    return [
+      {
+        source: "/backend/:path*",
+        destination: `${backendTarget.replace(/\/$/, "")}/:path*`,
+      },
+    ]
+  },
 }
 
 export default nextConfig
