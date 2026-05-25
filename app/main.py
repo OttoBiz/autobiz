@@ -144,33 +144,71 @@ async def get_business_response(business_request: BusinessRequest):
 
 
 @app.get("/")
-async def health():
-    """Health check endpoint"""
+async def root():
+    """Quick liveness check — useful in browser to confirm the API is reachable."""
+    from datetime import datetime, timezone
     return {
         "status": "ok",
         "service": "Ottobiz API",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        "time": datetime.now(timezone.utc).isoformat(),
+        "docs": "/docs",
+        "health": "/health",
     }
 
 
 @app.get("/health")
 async def health_check():
-    """Detailed health check"""
+    """Detailed health check — probes DB and Redis so you can confirm both are live."""
+    from datetime import datetime, timezone
+    import redis.asyncio as aioredis
+
+    now = datetime.now(timezone.utc).isoformat()
+    checks: dict = {}
+
+    # --- Database ---
+    try:
+        from backend.db.connection import get_db
+        pool = await get_db()
+        async with pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        checks["database"] = "ok"
+    except Exception as exc:
+        checks["database"] = f"error: {exc}"
+
+    # --- Redis ---
+    try:
+        redis_url = os.getenv("REDIS_URL", "")
+        if redis_url:
+            r = aioredis.from_url(redis_url, socket_connect_timeout=2)
+            await r.ping()
+            await r.aclose()
+            checks["redis"] = "ok"
+        else:
+            checks["redis"] = "no REDIS_URL"
+    except Exception as exc:
+        checks["redis"] = f"error: {exc}"
+
+    overall = "healthy" if all(v == "ok" for v in checks.values()) else "degraded"
+
     return {
-        "status": "healthy",
+        "status": overall,
         "service": "Ottobiz API",
         "version": "1.0.0",
+        "time": now,
+        "checks": checks,
         "endpoints": {
-            "customer": "/api/v1/customer",
-            "business": "/api/v1/business",
+            "docs": "/docs",
+            "customer_chat": "/api/v1/customer/chat",
+            "business_chat": "/api/v1/business/chat",
             "logistics": "/api/v1/logistics",
             "analytics": "/api/v1/analytics",
             "inventory": "/api/v1/inventory",
             "supply_chain": "/api/v1/supply-chain",
-            "session": "/api/v1/session/clear",
-            "paystack_webhook": "/api/v1/payments/paystack/webhook",
-            "paystack_callback": "/api/v1/payments/paystack/callback",
-        }
+            "session_clear": "/api/v1/session/clear",
+            "session_context": "/api/v1/session/agent-context",
+            "payments_webhook": "/api/v1/payments/paystack/webhook",
+        },
     }
 
 
