@@ -1,0 +1,27 @@
+# build output
+.next
+out
+build
+
+# deps (re-installed inside the image)
+node_modules
+
+# local env files (never bake secrets into the image)
+.env*.local
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# editor / OS
+.DS_Store
+*.pem
+.vscode
+.idea
+
+# vercel
+.vercel
+
+# typescript incremental
+*.tsbuildinfo
+next-env.d.ts
