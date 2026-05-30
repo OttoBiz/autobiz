@@ -15,8 +15,24 @@ export default function RootLayout({
 }: {
   children: React.ReactNode
 }) {
+  // Read server-side env var at request time (not build time) and inject it
+  // into window.__BACKEND_URL__ so the client bundle can use it directly
+  // without relying on NEXT_PUBLIC_* build-time baking or a proxy rewrite.
+  const backendUrl = (
+    process.env.BACKEND_URL ||
+    process.env.NEXT_PUBLIC_BACKEND_URL ||
+    ""
+  ).replace(/\/$/, "")
+
   return (
     <html lang="en">
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `window.__BACKEND_URL__=${JSON.stringify(backendUrl)};`,
+          }}
+        />
+      </head>
       <body className={inter.className}>{children}</body>
     </html>
   )
