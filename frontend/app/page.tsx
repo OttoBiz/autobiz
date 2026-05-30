@@ -33,6 +33,7 @@ import {
 } from "lucide-react"
 
 const TRANSPARENCY_POLL_MS = 4000
+const backendUrl = process.env.BACKEND_URL || "http://localhost:8000"
 
 /** Stable placeholder time for welcome rows — avoids SSR/client `Date` hydration mismatches. */
 const STATIC_WELCOME_TS = new Date("2000-01-01T12:00:00.000Z")
@@ -215,7 +216,7 @@ export default function Page() {
     ;(async () => {
       try {
         const res = await fetch(
-          `${API_BASE}/api/v1/business/delivery-partner/${selectedBusiness.id}`,
+          `${backendUrl}/api/v1/business/delivery-partner/${selectedBusiness.id}`,
         )
         if (!res.ok) return
         const j = await res.json()
@@ -243,7 +244,7 @@ export default function Page() {
     if (!selectedUser || !selectedBusiness) return
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/v1/customer/inbox/${selectedUser.id}`)
+        const res = await fetch(`${backendUrl}/api/v1/customer/inbox/${selectedUser.id}`)
         const data = await res.json()
         if (data.messages?.length > 0) {
           const relevant = data.messages.filter(
@@ -273,7 +274,7 @@ export default function Page() {
     const interval = setInterval(async () => {
       if (selectedBusiness) {
         try {
-          const res = await fetch(`${API_BASE}/api/v1/business/inbox/${selectedBusiness.id}`)
+          const res = await fetch(`${backendUrl}/api/v1/business/inbox/${selectedBusiness.id}`)
           const data = await res.json()
           if (data.messages?.length > 0) {
             const incoming = data.messages.map((m: { message: string; sender: string; customer_id?: string; product_name?: string; order_id?: string; business_id?: string }, i: number) => {
@@ -298,7 +299,7 @@ export default function Page() {
 
       if (selectedLogistics) {
         try {
-          const res = await fetch(`${API_BASE}/api/v1/logistics/inbox/${selectedLogistics.id}`)
+          const res = await fetch(`${backendUrl}/api/v1/logistics/inbox/${selectedLogistics.id}`)
           const data = await res.json()
           if (data.messages?.length > 0) {
             const incoming = data.messages.map((m: { message: string; sender: string; customer_id?: string; product_name?: string; order_id?: string; business_id?: string }, i: number) => {
@@ -378,7 +379,7 @@ export default function Page() {
         formData.append("files", file, file.name || "upload")
       })
 
-      const response = await fetch(`${API_BASE}/api/v1/customer/chat`, {
+      const response = await fetch(`${backendUrl}/api/v1/customer/chat`, {
         method: "POST",
         body: formData,
       })
@@ -433,7 +434,7 @@ export default function Page() {
         sid = crypto.randomUUID()
         setBusinessSessionId(sid)
       }
-      const response = await fetch(`${API_BASE}/api/v1/business/chat`, {
+      const response = await fetch(`${backendUrl}/api/v1/business/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -484,7 +485,7 @@ export default function Page() {
         sid = crypto.randomUUID()
         setLogisticsSessionId(sid)
       }
-      const response = await fetch(`${API_BASE}/api/v1/logistics/chat`, {
+      const response = await fetch(`${backendUrl}/api/v1/logistics/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -520,7 +521,7 @@ export default function Page() {
     }
     setIsLoadingAnalytics(true)
     try {
-      const response = await fetch(`${API_BASE}/api/v1/analytics/business`, {
+      const response = await fetch(`${backendUrl}/api/v1/analytics/business`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -544,7 +545,7 @@ export default function Page() {
     }
     setIsLoadingAnalytics(true)
     try {
-      const response = await fetch(`${API_BASE}/api/v1/analytics/user`, {
+      const response = await fetch(`${backendUrl}/api/v1/analytics/user`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -568,7 +569,7 @@ export default function Page() {
     }
     setIsLoadingAnalytics(true)
     try {
-      const response = await fetch(`${API_BASE}/api/v1/inventory/`, {
+      const response = await fetch(`${backendUrl}/api/v1/inventory/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -587,7 +588,7 @@ export default function Page() {
 
   const handleClearRedisSession = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/session/clear`, {
+      const res = await fetch(`${backendUrl}/api/v1/session/clear`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -640,7 +641,7 @@ export default function Page() {
     }
     setIsLoadingAnalytics(true)
     try {
-      const response = await fetch(`${API_BASE}/api/v1/supply-chain/`, {
+      const response = await fetch(`${backendUrl}/api/v1/supply-chain/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
