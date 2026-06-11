@@ -204,6 +204,10 @@ Key tables:
 
 ## 🚢 Deployment
 
+### VPS: multiple apps on one server (Docker + Vercel)
+
+See **[docs/VPS_MULTI_APP_DEPLOYMENT.md](docs/VPS_MULTI_APP_DEPLOYMENT.md)** for running Ottobiz alongside another app on the same VPS (port layout, nginx, Vercel `BACKEND_URL`, firewall).
+
 ### Backend (Render.com)
 1. Connect your GitHub repository
 2. Set environment variables
@@ -211,9 +215,10 @@ Key tables:
 4. Start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
 
 ### Frontend (Vercel)
-1. Connect your GitHub repository
-2. Set `NEXT_PUBLIC_BACKEND_URL` environment variable
-3. Deploy automatically on push
+1. Connect your GitHub repository (set root directory to `frontend` if needed)
+2. Set `BACKEND_URL` to your public API URL (see `frontend/.env.example`)
+3. Optionally set `NEXT_PUBLIC_BACKEND_URL` for direct browser → API calls; otherwise leave empty to use `/backend` proxy
+4. Redeploy after changing environment variables (they apply at build time)
 
 ## 📝 Environment Variables
 
@@ -229,7 +234,8 @@ Key tables:
 - `PAYSTACK_SECRET_KEY` - Paystack secret key (optional)
 
 ### Frontend
-- `NEXT_PUBLIC_BACKEND_URL` - Backend API URL
+- `BACKEND_URL` - Server-side proxy target for `/backend/*` rewrites (Vercel / `next.config.mjs`)
+- `NEXT_PUBLIC_BACKEND_URL` - Optional browser-facing API URL; if empty, client uses `/backend`
 
 ## 🤝 Contributing
 

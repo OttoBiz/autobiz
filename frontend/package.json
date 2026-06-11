@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "vercel-build": "next build"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
     "@types/node": "^20.8.0",

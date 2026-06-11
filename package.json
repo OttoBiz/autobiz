@@ -1,0 +1,17 @@
+{
+  "name": "ottobiz",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Monorepo root — Next.js app lives in frontend/",
+  "scripts": {
+    "build": "npm run build --prefix frontend",
+    "dev": "npm run dev --prefix frontend",
+    "vercel-build": "npm run build --prefix frontend"
+  },
+  "dependencies": {
+    "next": "16.2.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
